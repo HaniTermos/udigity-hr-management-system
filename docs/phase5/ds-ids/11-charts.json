@@ -1,0 +1,1 @@
+{"created":{"Chart/Legend":{"id":"56:2484","type":"COMPONENT_SET","props":{"Label#56:0":"TEXT","Series":["1","2","3","4","5","6"]},"variants":6},"Chart/Bar":{"id":"56:2566","type":"COMPONENT_SET","props":{"Type":["Single","Grouped"]},"variants":2},"Chart/Line":{"id":"56:2570","type":"COMPONENT","props":{}}},"existing":{},"rebuilt":[],"warnings":[]}
