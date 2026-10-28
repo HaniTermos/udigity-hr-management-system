@@ -1,0 +1,16 @@
+| file | frame name | id | link | status | date |
+|---|---|---|---|---|---|
+| SCR-OWN-008 — Reassignment impact — Desktop — Light.png | SCR-OWN-008 — Reassignment impact — Desktop — Light | 302:22859 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=302-22859 | new | 2026-10-23 |
+| SCR-OWN-008 — Reassignment impact — Desktop — Dark.png | SCR-OWN-008 — Reassignment impact — Desktop — Dark | 302:23106 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=302-23106 | new | 2026-10-23 |
+| SCR-OWN-008 — Reassignment impact — Desktop — Light — All choices made.png | SCR-OWN-008 — Reassignment impact — Desktop — Light — All choices made | 302:23346 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=302-23346 | new | 2026-10-23 |
+| SCR-OWN-008 — Reassignment impact — Desktop — Light — Override confirm.png | SCR-OWN-008 — Reassignment impact — Desktop — Light — Override confirm | 302:23584 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=302-23584 | new | 2026-10-23 |
+| SCR-OWN-008 — Reassignment impact — Desktop — Light — Save conflict.png | SCR-OWN-008 — Reassignment impact — Desktop — Light — Save conflict | 302:23742 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=302-23742 | new | 2026-10-23 |
+| SCR-OWN-008 — Reassignment impact — Desktop — Light — Success.png | SCR-OWN-008 — Reassignment impact — Desktop — Light — Success | 302:23900 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=302-23900 | new | 2026-10-23 |
+| SCR-OWN-011 — Settings — Desktop — Light.png | SCR-OWN-011 — Settings — Desktop — Light | 275:22810 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=275-22810 | new | 2026-10-23 |
+| SCR-OWN-011 — Settings — Desktop — Dark.png | SCR-OWN-011 — Settings — Desktop — Dark | 275:23280 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=275-23280 | new | 2026-10-23 |
+| SCR-OWN-011 — Settings — Desktop — Light — Not configured.png | SCR-OWN-011 — Settings — Desktop — Light — Not configured | 275:23706 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=275-23706 | new | 2026-10-23 |
+| SCR-OWN-011 — Settings — Desktop — Light — Validation error.png | SCR-OWN-011 — Settings — Desktop — Light — Validation error | 275:24147 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=275-24147 | new | 2026-10-23 |
+| SCR-OWN-011 — Settings — Desktop — Light — Test office check.png | SCR-OWN-011 — Settings — Desktop — Light — Test office check | 275:24593 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=275-24593 | new | 2026-10-23 |
+| SCR-OWN-011 — Settings — Desktop — Light — Save conflict.png | SCR-OWN-011 — Settings — Desktop — Light — Save conflict | 275:25028 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=275-25028 | new | 2026-10-23 |
+| SCR-OWN-011 — Settings — Desktop — Light — Success.png | SCR-OWN-011 — Settings — Desktop — Light — Success | 275:25468 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=275-25468 | new | 2026-10-23 |
+| SCR-OWN-011 — Settings — Desktop — Light — Security tab.png | SCR-OWN-011 — Settings — Desktop — Light — Security tab | 275:25905 | https://www.figma.com/design/GNrhb3DWa6mIhEX6F4Nmvw?node-id=275-25905 | new | 2026-10-23 |
