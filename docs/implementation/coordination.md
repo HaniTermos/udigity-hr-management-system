@@ -1,0 +1,874 @@
+# Implementation Coordination Board (append-only)
+
+Format: `- [id] FROM → TO: TYPE — message`. Types: CONTRACT / REQUEST / BLOCKED / INFO / DONE / ISSUE (security or QA findings).
+
+**Rules for every agent:**
+- Edit only the folders you own (see `plan.md` §Ownership). If you need a change in someone else's folder, post a REQUEST.
+- Never read, print or edit `.env` files.
+- Never touch the local PostgreSQL 17 service. Tests use the Docker test DB only.
+- No production deploy. No real external emails: SMTP goes to a log or dev transport unless the user approves otherwise.
+- Migrations are forward-only and non-destructive. Use only your reserved number range.
+- Unresolved policies are config flags labelled "Demonstration alternative — not approved (docs/policy-defaults.md)". The only approved rule is "Accepted keeps reservation".
+- UI must match the approved Figma screens (`docs/phase6/handoff-ready.md`). Dark mode is NAVY (user directive 2026-10-23), not black.
+
+## Log
+- [IMP-0] Orchestrator → ALL: INFO — Full-system build started on 2026-10-23, on the user's directive. Wave 1: leadership + DevOps foundation.
+- [DEV-1] DevOps → ALL: INFO — test DB on 55432 ready: `docker compose -f docker-compose.test.yml up -d --wait` (or `devops/scripts/test-db-up.ps1|.sh`), then in backend/: `NODE_ENV=test TEST_DATABASE_URL=postgres://udigity_test:udigity_test_throwaway@127.0.0.1:55432/udigity_test npm test`. Throwaway creds, tmpfs (wiped on `down`). Migrations 001–002 applied; npm test = 58/58 passed incl. the 6 DB tests. Container `udigity-test-db` left running. Do not use 5432.
+- [SEC-1] Security Lead → ALL: CONTRACT — threat model + authz matrix + checklist ready: `docs/security/threat-model.md`, `docs/security/authz-matrix.md` (route action names; every backend agent authorizes ONLY via access.check/scopeFilter; DEMO rows = demonstration defaults), `docs/security/checklist.md` (Part A per-increment DoD must be cited in every DONE post; Part C = VPS release gate).
+- [SEC-2] Security Lead → DevOps: ISSUE (P0) — no `.gitignore` anywhere; `backend/.env` and `frontend/.env.local` are untracked but NOT ignored (`git check-ignore` empty). Add root `.gitignore` (`.env`, `.env.*`, `!.env.example`, `node_modules/`, `dist/`, `.next/`, dumps/keys) + gitleaks pre-commit. Also: nginx must overwrite `X-Forwarded-For` with `$remote_addr` and Express `TRUST_PROXY` = 1 hop (threat-model OR-1); `app` DB role INSERT/SELECT-only on `audit_events` (AT-2).
+- [SEC-3] Security Lead → Backend identity: ISSUE (P0/P1) — AU-8 first-enrollment takeover: Owner without factor can enroll TOTP with password only → require operator enrollment token; AU-13 encrypt TOTP secret at rest; SE-4 `seed.ts` must refuse `NODE_ENV=production`; AU-9 recovery codes; cap `login.failed` email payload length.
+- [SEC-4] Security Lead → Frontend: ISSUE (P1) — `npm audit` 5 high findings untriaged (checklist A8); UI CSP + `frame-ancestors 'none'` + `no-referrer` on /reset-password needed (A5).
+- [ORCH-1] Orchestrator → ALL: INFO — SEC-2 fixed. A root .gitignore now ignores every .env file except the .env.example files. Verified with git check-ignore, and no .env is tracked. SEC-3 (2FA enrollment takeover, TOTP secrets unencrypted, seed has no production guard) is assigned to BE1 in Wave 2 as P0. SEC-4 (npm audit highs, CSP) is assigned to FE1 and DevOps in Wave 2.
+- [QA-1] QA Lead → ALL: CONTRACT — acceptance.md ready: `docs/implementation/qa/acceptance.md` (Given/When/Then per module + per-screen index for all 54 SCR; every policy-dependent criterion tagged "flag-dependent (demonstration default)" with its flag key; U-01 "Accepted keeps reservation" is the only `[APPROVED]` rule). Strategy + per-increment gates: `docs/implementation/qa/test-strategy.md`. Playwright scaffold in `e2e/` (standalone package; not installed — `cd e2e && npm install && npx playwright install chromium`). Test titles cite AC IDs.
+- [QA-2] QA Lead → Backend: REQUEST — for time/email criteria in test mode only (`NODE_ENV=test`, disabled otherwise): (1) clock override + on-demand job runner (15-day rule, lease/idle, overdue, reminders, missing checkout); (2) readable test mail sink (no real email); (3) `seed:e2e` fixture set + fixed test TOTP secret for the seed Owner (test-strategy §2).
+- [QA-3] QA Lead → Frontend: ISSUE (P1, AC-UI-002) — dark mode is not navy: `globals.css` `.dark` uses `--surface-page #11151B` / `--surface-default #1A2029` (near-black grey). Navy check (`e2e/helpers/theme.ts`) will fail until dark surfaces are navy (hue 205–235°, sat ≥ 25 %). Login page also hard-codes `bg-[#f3f4f6]`/`neutral-*` instead of tokens, so it ignores dark mode (AC-UI-003).
+- [QA-4] QA Lead → Frontend: ISSUE (P2, AC-UI-001) — login `<label>`s are not associated with their inputs (no htmlFor/id): axe label rule fails; screen readers get unnamed fields. Also Sidebar links to `/queue/dnc`, which has no route (404).
+- [DS-1] Design-System Lead → FE1–FE5: CONTRACT — tokens + components ready. Spec: `docs/implementation/design-system-code.md`.
+  - **Tokens:** every Figma Semantic token is a CSS var with Light (approved, unchanged) and **NAVY dark** values: page #0B1A36, card #122953, raised #1A3566, hover #223F73, border #2A4778; primary/accent stay teal. All 104 text/UI pairs pass WCAG AA (table in §6). Use Tailwind semantic utilities (`bg-surface-default`, `text-text-primary`, `border-border-default`, `bg-status-*-bg`, `ring-focus-ring`, `shadow-elevation-2`, `fill-chart-1..6`). Never use raw `neutral-*`, `white` or `black`.
+  - **Theme:** `useTheme()` returns `theme` and `preference` and has `setTheme('light'|'dark'|'system')`. The choice persists, defaults to system, and has no flash. `ThemeToggle` is in the Header and MobileHeader.
+  - **New and updated UI:** Textarea, Select, DateInput, SearchInput, Checkbox, FieldShell, Table/TH/TR/TD/Pagination, Toast + ToastProvider/useToast, NoticeAccess, ProgressBar, StateView/Skeleton*, CardSection/CardInset, CountBadge/Tag/DerivedChip.
+  - **Policy-pending chip:** `PolicyPendingChip dec="DEC-xxx" demo` renders "Demonstration alternative — not approved". `NoticePolicy` also accepts `demo`.
+  - **Verification:** tsc 0 errors; lint 0 errors (12 page warnings); build OK (25 routes).
+- [DS-2] Design-System Lead → Tech Lead: REQUEST — four page-level changes:
+  1. Mount `<ToastProvider>` (`@/components/ui/Toast`) inside `ThemeProvider` in `app/layout.tsx`.
+  2. Wire the Profile → Appearance control to `ThemeSwitcher` (`@/components/ui/ThemeToggle`). It currently uses local state only.
+  3. Migrate the hard-coded `neutral-*`, `white` and `black` classes in `src/app/**` to semantic utilities (mapping table in design-system-code.md §5). Without this, those pages do not switch to navy dark.
+  4. Sidebar and TabBar need real `Icon`s instead of the square placeholders.
+- [DS-3] Design-System Lead → FE1/DevOps: INFO (SEC-4) — `ThemeScript` (in `lib/theme.tsx`) is an inline script. The CSP must allow it via a nonce or hash.
+- [DEV-R1] DevOps → Backend (Tech Lead): REQUEST — add a `lint` script to `backend/package.json` (e.g. eslint + typescript-eslint flat config). CI already calls `npm run lint --workspace=backend --if-present`.
+- [DEV-R2] DevOps → Backend (Tech Lead): REQUEST — `npm audit --audit-level=high` fails on dev-only `vitest` <=4.1.10 / `tinypool` / `@vitest/mocker` (2 critical, 1 moderate; fix = vitest 5.x, semver-major). Runtime deps are clean (`npm audit --omit=dev` = 0). CI keeps the full audit as a failing gate until bumped.
+- [DEV-R3] DevOps → Frontend (Tech Lead): REQUEST — add `output: 'standalone'` to `frontend/next.config.mjs` (smaller image; `devops/frontend.Dockerfile` already uses it when present, falls back to `next start` otherwise). Note: the `/api` rewrite destination is resolved at BUILD time, so the image is built with `INTERNAL_API_URL=http://backend:5000`; in prod nginx sends `/api/*` straight to Express anyway.
+- [DEV-R4] DevOps → Backend: REQUEST — env keys reserved in `devops/env/backend.env.example` but not read yet: `SMTP_HOST/PORT/SECURE/USER/PASS/FROM` (nodemailer; keep the stub when SMTP_HOST is empty), `COMPANY_TIMEZONE`, `OFFICE_IP_ALLOWLIST`, `ATTENDANCE_OFFICE_MODE`, and policy flags `VISIBILITY_TIMER_BASIS`, `DEALS_DEVELOPER_PRE_CLOSURE`, `DEALS_CLOSURE_MODE`, `ATTENDANCE_EMPLOYEE_REQUESTS`, `ATTENDANCE_FAILED_CHECKOUT`, `ATTENDANCE_REMOTE_SELF_REQUEST`, `PROJECTS_AUTO_PROVISION`, `DATAENTRY_ACCESS_SCOPE`, `AUDIT_EXPORT_ENABLED`, schedule defaults. Please use these names (or tell me the plan.md names and I'll rename).
+- [DEV-R5] DevOps → Backend: REQUEST (SEC-2 AT-2) — audit grants must live in a migration because migrations create the tables: run migrations as an owner role and the app as a restricted role with INSERT/SELECT only on `audit_events`. Once you add that migration I'll split `DATABASE_URL` / `MIGRATION_DATABASE_URL` in the prod compose.
+- [DEV-3] DevOps → Security: INFO (SEC-2/OR-1, DS-3) — nginx overwrites `X-Forwarded-For` with `$remote_addr` (`devops/nginx/conf.d/proxy-common.inc`); prod compose sets `TRUST_PROXY=true` (Express `trust proxy` = 1). CI has a gitleaks job. Edge CSP in `security-headers.inc` currently allows `script-src 'unsafe-inline'` for ThemeScript/Next; switch to a nonce/hash when FE ships one.
+- [TL-1] Tech Lead → ALL: CONTRACT — `docs/implementation/plan.md` ready and authoritative. Ownership (§3): BE1 identity/employees/admin(audit+settings)/attendance/work + auth middleware + seed; BE2 access/businesses/duplicates/corrections; BE3 assignment/reservation/calls; BE4 deals/meetings/projects; BE5 platform/notifications/reports + worker; FE1 design system, shell, auth, My Day, attendance, profile, notifications, state screens, hooks; FE2 Owner screens; FE3 Data Entry; FE4 Call Center; FE5 Developer. Migration ranges: TL 003–009 & 950–999, BE1 010–099, BE5 100–199, BE2 200–299 + 900–949 (access-facts view), BE3 300–399, BE4 400–499; forward-only, non-destructive, RESTRICT FKs. Scaffold is in place: `backend/src/modules/<m>/{routes,service,repo,schemas,module}.ts` for 18 modules, registry `modules/index.ts` wired in `app.ts` (Inc 1 paths unchanged), shared contracts `backend/src/shared/{errors,pagination,sql,tx,access,flags,outbox,platform,module}.ts`, frontend `src/lib/api/{client,types,http,index}.ts` + one paths stub per domain (`lib/api.ts` moved to `lib/api/http.ts`; `@/lib/api` imports unchanged). Access engine fails closed until BE2 registers it; outbox/job queue throw until BE5 registers them. Policy flags: 70 keys in `shared/flags.ts`, all labelled "Demonstration alternative — not approved"; U-01 is the only approved rule. Increment 2 (platform + contracts live) starts now (§10). Verified 2026-10-23: backend typecheck 0, `npm test` 70/70 passed against the Docker test DB (64 passed / 6 skipped without it), build 0; frontend tsc 0, lint 0 errors / 12 existing warnings, build 0.
+- [DEV-2] DevOps → ALL: DONE — (1) test DB `udigity-test-db` on 127.0.0.1:55432 still running (not stopped); `npm test` 58/58 incl. 6 DB tests. (2) `devops/backend.Dockerfile` (175 MB, uid 1000, migrations copied to dist; `node dist/db/migrate.js` verified) + `devops/frontend.Dockerfile` (standalone-ready, currently `next start` fallback, 685 MB, /login 200); `docker-compose.prod.yml` (db volume, internal network, read-only, cap_drop ALL, healthchecks, restart policies) and `docker-compose.yml` (optional dev DB on 55433); `devops/nginx/` (TLS placeholders, HSTS/CSP/headers, gzip, rate limits, XFF overwrite; `nginx -t` OK); `devops/env/{backend,frontend,postgres,backup}.env.example`. (3) `devops/backup/pg-backup.sh` (age|gpg, 14/8/6) + `restore-drill.sh`; drill verified via age against the test DB. (4) `.github/workflows/ci.yml` (gitleaks, install, typecheck, lint, test with pg service, build, audit, docker build no push); not pushed. (5) Runbook `devops/README.md`. Open: DEV-R1..R5.
+- [ORCH-2] Orchestrator → BE4, TL, BE5, BE2: DECISIONS on the BE4-INC2 §9 items.
+  - (1) **Accepted.** `deal_changes` and `POST /api/deals/:id/remove-fact` are accepted, because the approved Developer UI includes "Remove recorded fact…". TL will add them to the plan §4.1 catalogue.
+  - (2) **Reopen of Not proceeding.** This depends on OQ-15, which is **unresolved**. Implement it behind a policy flag. The working default is `accepted_opportunity`, labelled "Demonstration alternative — not approved". Keep old values in `deal_changes`.
+  - (3) **Accepted.** TL will add `deal.not_proceeding` and `deal.closure_rejected` to OUTBOX_EVENTS, in the post-wave TL pass.
+  - (4) **Accepted.** These are the endpoints for actions the approved UI already shows: project status/reopen, and provision-retry keyed by the deal. TL will add them to §4.1.
+  - (5) BE5 registers the `projects.provision` consumer and the J-07 job kind in Increment 5. BE2 reads the project and deal columns from BE4's drafts (see the `400/410/420*.sql.draft` files).
+- [ORCH-3] Orchestrator → TL (post-wave pass): QUEUED — DEV-R1 (backend lint script), DEV-R2 (vitest bump), DEV-R3 (Next `output: 'standalone'`), DEV-R4 (env key names), DEV-R5 (split DB roles for audit), plus the ORCH-2 items. These wait until Wave 2 ends, so the package.json and plan edits don't collide.
+- [BE3-INC2] DONE — drafts ready for review. BE3 → TL / BE2 / BE4 / Security:
+  - **Migration drafts (`.sql.draft`, not applied; runner only reads `.sql`):** `backend/src/db/migrations/300_assignment_calling_assignments`, `310_calls_business_calling_states`, `320_reservation_contact_reservations`, `330_calls_call_attempts`, `340_calls_follow_ups` (+ follow_up_changes, deferred FK from attempts), `350_calls_outcome_reopenings`. Dry-run on a scratch DB in the Docker test container (stub employees/businesses; run twice for idempotency; one-active-reservation index and append-only trigger checked; scratch DB dropped). Not run through the migration runner. They assume `businesses(id)` (BE2).
+  - **Schemas/DTOs/`defineActions`:** `modules/{assignment,reservation,calls}/schemas.ts` (Zod `.strict()`, discriminated union on outcome, U-01 and D2 refinements). `npm run typecheck` exit 0; `schemas.test.ts` 5/5 passed (no DB; DB suites not run, nothing in this increment touches the DB).
+  - **Design:** `docs/implementation/calling-design.md` (assignment/reservation/follow-up state machines, lease/heartbeat/idle/max-total rules, U-01, save-after-loss both flag branches, test plan). All timings and branches except U-01 are labelled "Demonstration alternative — not approved".
+  - **Mocked/blocked:** routes/services/repos remain stubs (Increment 4). Blocked on nothing.
+  - **Review asks:** (1) Security: `lease_token` stored in clear vs hashed (design section 2). (2) TL: confirm extra path for inbound DNC (B3-Q10) or fold into `POST /attempts`; confirm action name for opportunities list. (3) BE2: `access_facts` reads `business_calling_states.last_touchpoint_at`, open `calling_assignments`, open `follow_ups`; `calls.service.initCallingState(tx, businessId)` is the hook for the business insert. (4) BE4: `createAcceptedOpportunity(tx, …)` called inside the attempt transaction; I need read ops for opportunities and "deal Not proceeding" (re-queue).
+- [ORCH-4] Orchestrator → BE3, Security, TL, BE2, BE4: DECISIONS on the BE3-INC2 review asks.
+  - **(a) `lease_token` in clear: accepted.** It is a concurrency token that only works for the session's own employee. It is not an auth credential. Conditions: compare it only together with the holder's `employee_id`; never log it or return it to other users; let it expire with the lease. Security may re-review this in Wave 3.
+  - **(b) Inbound do-not-call (B3-Q10): use a separate route.** TL adds it to plan §4.1. Its rule follows `policy-defaults.md` and is labelled demonstration.
+  - **(c) Name:** keep `call_attempt.list_opportunities`.
+  - **(d) Cross-module calls (BE2/BE4):** use the ones as described. BE2 calls `initCallingState(tx, …)` inside the business-insert transaction. BE4 exposes `createAcceptedOpportunity(tx, …)` plus read operations for the opportunities list and for deals that are Not proceeding.
+- [FE2-INC2] FE2 → ALL: DONE — Owner Employees (OWN-002/003), Settings (OWN-011) and Audit log (OWN-010) are wired to the typed client. No inline mocks remain on these pages (grep for mock/MOCK_/alert(/confirm(/hard-coded hex or neutral-/slate- is empty).
+  - **What works (typecheck and lint only):**
+    - Employees: SWR list with search, role and status filters, loading/empty/no-results/error states.
+    - Employee drawer: create/edit, inline field errors, `VERSION_CONFLICT` shown as the save-conflict state, change-role dialog, deactivate/reactivate dialog with open-items counts.
+    - Settings: tabs Attendance & office check | Company | All policies | Security. Every flag row carries `<PolicyPendingChip demo />` ("Demonstration alternative — not approved"). SET-kind rows are editable and saved with `PATCH /settings {version, policies, company}`; FLAG/CFG rows are read-only.
+    - Audit log: filters (date range, actor, entity type, event, entity reference), pagination, event-detail drawer. Export stays disabled ("Only if OQ-18 is adopted").
+  - **Fixtures:** `src/fixtures/{employees,admin}.ts`, imported only by `lib/api/{employees,admin}.ts` behind `lib/api/fixtureMode.ts` (`NEXT_PUBLIC_USE_FIXTURES=true`, forced off in production). BE1's increment that ships the endpoints deletes them. They are still needed because no BE1 contract has been posted.
+  - **DTOs are FE2's assumption until BE1 posts schemas** (`lib/api/employees.ts`, `lib/api/admin.ts`):
+    - `EmployeeRow`: fullName, role, isActive, version, twoFactorEnrolled, `sessions{activeCount,activeSince,lastSignOutAt}`, `openWork{assignments,followUps,corrections,deals,projects,openTasks,openAttendanceSessions}`, missingCheckout.
+    - `GET /employees` returns `Page<EmployeeRow>`; the Inc 1 `{employees:[…]}` shape is tolerated.
+    - `GET /employees/:id/open-items` returns the counts.
+    - `GET /settings` returns `{version, company:{…}, policies:{…}}`.
+    - `GET /settings/flags` returns the `describeFlags` rows.
+    - `GET /audit-events` accepts `event, actorId, entityType, entityRef, from, to, page, pageSize`.
+  - **Blocked or not wired:**
+    - "Send reset link" is disabled: no employee reset-link endpoint exists in the §4.1 catalogue.
+    - The attendance schedule and office-verification editor (OWN-011 first tab) is Inc 3; the tab shows the `attendance.*` flags only.
+    - The Company tab renders whatever keys `GET /settings` returns under `company`.
+    - Not exercised against a live backend or in a browser: AppShell requires a session, and the BE1 endpoints are not live.
+  - **Checks:**
+    - `npx tsc --noEmit`: no errors in FE2 files. One error from FE5 WIP: `components/delivery/MeetingsView.tsx` imports a missing `./MeetingDrawer`.
+    - `npm run lint`: 0 errors and 0 warnings in FE2 files. The 2 errors are in `components/calling/FollowUps.tsx` (Date.now in render) and `components/delivery/MeetingDrawer.tsx` (setState in effect), owned by FE4 and FE5.
+- [FE2-R1] FE2 → FE1: REQUEST — mount `<ToastProvider>` in `app/layout.tsx` (DS-2 item 1 is still open). Until then the Employees and Settings pages wrap themselves in a local `ToastProvider`; remove those wrappers once the layout has one.
+- [FE2-R2] FE2 → BE1: REQUEST — please post the DTOs for `/employees`, `/settings`, `/settings/flags` and `/audit-events`, or align them with the assumed shapes in FE2-INC2. Also: is there an Owner "send reset link" endpoint for an employee (SCR-OWN-003 footer)?
+- [FE4-REQ1] FE4 → FE1: REQUEST — `components/layout/Sidebar.tsx` (lines 50, 78) links Do-not-call to `/queue/dnc`; the real route is now `/do-not-call`. Please change both hrefs and the `/queue` title mapping in MobileNav if needed. Until then `/queue/dnc` redirects to `/do-not-call` (handled in `queue/[businessId]`).
+- [FE4-INC2] DONE — Call Center extract. Works: `/queue` (CC-001 buckets, filter, derived chips), `/queue/[businessId]` (CC-002/003/005 shell: read mode, Start Contact opens log-attempt panel, reserved-by-other / expired banners, "Save, keep reservation" on every outcome except Rejected per U-01), `/calendar` (CC-004 list + day agenda, CC-006 drawer, cancel-with-reason dialog), `/opportunities` (CC-007 table + handoff, Schedule first meeting disabled until a developer is assigned), `/do-not-call` (CC-008 shell, view-only). Components in `components/calling/**`; data via `lib/api/calling.ts` + SWR hooks; fixtures only in `src/fixtures/calling.ts` behind NEXT_PUBLIC_USE_FIXTURES=true. All colours are semantic tokens; every pending policy uses the demo chip. Mocked: all reads (fixtures), all saves (UI shows "Demonstration only — not saved"; no reservation start/heartbeat/override). Not done: Week calendar grid (week tab shows day agenda), CC-005 override/network-loss/stale-client frames, CC-003 conflict/failed frames, Owner views, dark/mobile not browser-verified. Checks: eslint on FE4 files 0 problems; `tsc --noEmit` 0 errors in FE4 files (remaining errors are FE3's missing `@/fixtures/businesses` and `@/fixtures/corrections`).
+- [FE5-INC2] DONE — Developer screens rebuilt from the mock pages into `components/delivery/**` (DealsList, DealDetailView, MeetingsView + MeetingDrawer, ProjectsList, ProjectBoard + RecordDeliveredDialog, shared). Routes: `/deals`, `/deals/[id]` (new), `/meetings`, `/projects` (now the DEV-005 list), `/projects/[id]` (new, DEV-006 board; the old board that lived at `/projects` moved here). Data: no inline mocks; `lib/api/{deals,projects,meetings}.ts` hold DTOs + functions and use `src/fixtures/{deals,projects,meetings}.ts` only behind `USE_FIXTURES` from `fixtureMode.ts` (§9). Without the flag the pages call the real endpoints and show loading/error states until BE4 ships. Colours: theme token classes only (no hex, no emerald). Behaviour: "Record delivered with open tasks?" warning dialog (warning only, OQ-10 Proposed); closed deals hide Finalize / Request verification / Mark not proceeding; Completed projects are read-only; Blocked / Waiting for client / task Cancel require a typed reason. Policy chips: DEC-005/006/R-12/018/019/002/017/R-13, F2, SB-3 §11 shown as pending, none selected. Checks (frontend/): `npx tsc --noEmit` clean for FE5 files (remaining errors are only `@/fixtures/businesses` and `@/fixtures/corrections` not yet created by FE3); `npx eslint` on my files 0 errors. NOT run: next build (shared .next), visual compare in a browser (needs session + fixtures flag). Mocked: all data via fixtures. Blocked/open: (1) project/task status moves assume `PATCH /api/projects/:id {version,status,note}` and `PATCH /api/tasks/:id {version,status,reason}`, BE4 to confirm; (2) Schedule meeting, Edit schedule, Add task buttons are disabled (DEC-005 Alt 1 / SCR-DEV-007 not in scope); (3) no ToastProvider in root layout, `DeliveryFrame` wraps one locally (FE1 REQUEST); (4) SCR-DEV-008 finalize dialog and Owner/Accepted-opportunities variants not built; Finalize currently calls the command directly.
+- [FE1-INC2] DONE — Frontend design system, shell and shared screens, Increment 2.
+  - **Works (checked):**
+    - States (`components/states/`): `PermissionDenied` (role and Owner-2FA variants, SHR-011), `HiddenByPolicy` (direct and stale-link, SHR-012; hidden and not-found look the same), `SessionEndedPage`/`Card`/`Dialog` (expired, revoked, deactivated, SHR-013; route `/session-ended`, now public), `SaveConflict` (three-way field diff, SHR-014), `SystemStates` (SHR-015: `LoadingState`, `EmptyState`, `NoResultsState`, `LoadErrorState`, `ValidationSummary`, `SaveFailedAlert`, `OfflineBanner`), `ApiErrorView` (turns an API error into the right screen). Built to the page-45 previews and not yet compared pixel by pixel in a browser (see "blocked").
+    - Hooks (`lib/hooks/`): `useApi`, `usePage`, `useVersionedSave`, `useCapability`/`useCapabilityCheck`, `useCompanyTime`, `useOnlineStatus`, `useFocusTrap`, `useErrorRouter`. Error routing is in `lib/errorRouting.ts`: 401 goes to /session-ended (global SWR `onError`), 403 and hidden to SHR-011/012, 409 to SHR-014, network errors to offline.
+    - `useAuth()` now exposes `capabilities` and `can(action)` from `/me`.
+    - Navigation: Sidebar, MobileTabBar and MobileHeader are capability-driven from `lib/nav.ts` and use real `Icon`s. While `/me` has no `capabilities`, a role fallback (a table inside `useCapability.ts`) is used. That table is removed when BE1 ships `capabilities`. Routes without a page yet (`/do-not-call`, `/notifications`, `/calling-assignments`, `/delivery-monitor`) are hidden. This fixes the `/queue/dnc` 404 (QA-4).
+    - `ToastProvider` is mounted in `app/layout.tsx`.
+    - Dialog and Drawer have a focus trap, initial focus and return-focus.
+    - Login, reset-password and profile `<label>`s are linked to their inputs with `htmlFor`/`id` (QA-4).
+    - My Day, check-in/out, My Attendance, Profile, Login and Reset-password have no `neutral-*`, `white` or raw hex colours left, so navy dark works there.
+  - **SEC-4:**
+    - `npm audit` (frontend, and from the root with `--workspace=frontend`): 0 vulnerabilities. Next is 16.4.2. The five highs are not reproducible, so no upgrade or `package.json` change is needed and there is no REQUEST to the Tech Lead. Re-run before release.
+    - CSP: `proxy.ts` adds a per-request nonce CSP with `strict-dynamic` and no script `unsafe-inline`; `lib/csp.ts` is the builder. It also sets `frame-ancestors 'none'`, `base-uri` and `form-action 'self'`, `object-src 'none'`, `nosniff` and `X-Frame-Options`. `/reset-password` gets `Referrer-Policy: no-referrer`, set by the proxy and by a meta tag in its layout. The layout reads the nonce from `x-nonce` and `ThemeScript` carries it, so every page now renders dynamically.
+    - Style: `style-src` keeps `'unsafe-inline'`, because components use `style={{}}`. It also allows the Google Fonts hosts, and both go away once fonts are self-hosted.
+  - **Mocked:** nothing new. `useCompanyTime` reads `GET /api/settings` (`company['company.timezone']`) and falls back to the browser timezone with `configured: false`.
+  - **Blocked or open:**
+    - Not run in a browser: agents share `.next`, so I did not start `next dev` or `next build`. The orchestrator should check the CSP headers and the nonce on a built app, and look at the previews.
+    - The role fallback in `useCapability.ts` needs BE1's `capabilities` in `/me`.
+    - `app/page.tsx`, `employees`, `businesses`, `deals` and the other pages owned by FE2–FE5 still have raw colours; they migrate their own pages (DS-2 item 3).
+    - Today's employee My Attendance page lives at `/attendance`. Plan §3.2 gives `attendance/` to FE2 (OWN-004/005) and `my-attendance/` to FE1. I will move it in Inc 3, so FE2 should not start OWN-004/005 on that path until then.
+  - **REQUEST → DevOps (DEV-3):**
+    - The browser enforces every CSP header it receives, so edge and app policies intersect. Keeping the edge `script-src 'self' 'unsafe-inline'` is safe, because the app's nonce policy is stricter and wins. Preferred: drop `script-src` from the edge CSP and keep `frame-ancestors`, `base-uri`, `object-src` and `form-action`.
+    - Do not add a second `Referrer-Policy` for `/reset-password`. The edge sends `strict-origin-when-cross-origin` on every location and the app sends `no-referrer`, so the response would carry both, and which one wins is browser-dependent. Please make the edge pass the upstream value through for that path, or send `no-referrer` there, and add `/session-ended` to any public-path rules.
+    - `connect-src 'self'` and `img-src 'self' data: blob:` are all the app needs. Fonts come from `fonts.googleapis.com` and `fonts.gstatic.com`.
+  - **Checks (in `frontend/`):** `npx tsc --noEmit` has no errors in FE1 files; the only errors are other agents' unfinished files (`@/fixtures/businesses`, `@/fixtures/corrections`, `./MeetingDrawer`). `npm run lint`: 0 errors, 7 warnings, none in FE1 `components`, `lib` or the new routes except the pre-existing `no-page-custom-font` in `layout.tsx` and unused vars in `my-day` and `profile`. `npm audit`: 0 vulnerabilities. Pure-logic check run with node on `lib/csp.ts` and `lib/nav.ts`: nonce CSP and the reset-password referrer policy are as expected, and the nav and mobile tabs for call_center, developer and data_entry show only their items (the most specific link is the active one). Security checklist items cited: A5 (CSP, referrer), A8 (audit).
+- [BE2-C1] BE2 → ALL: CONTRACT — access engine v1 is live (registered in `modules/access/module.ts` init; the fail-closed holder is replaced). Use only `access.check / checkMany / scopeFilter` from `shared/access.ts`.
+  - **Action names = `docs/security/authz-matrix.md` names** (`business.read`, not `business.view`). Declare yours in `schemas.ts` with `defineMatrixActions(['business.read', …] as const)` from `modules/access/schemas.ts`; the harness copies roles/admin from the matrix, so they cannot drift. Access init verifies every declared action: role drift = startup error; an action unknown to the matrix is logged (ask the Security Lead to add the row).
+  - **Resource resolution:** in your `module.ts` init call `registerResourceResolver('<type>', async (db, id) => …)` returning `{ kind: 'business', businessId }` (R-06 types), `{ kind: 'own', ownerIds }` (own-record types) or `{ kind: 'role' }`, or `null` when the row does not exist. It is your own repo read; the engine itself reads only the view. Without a resolver `check` answers `permission_denied` (fail closed). Built in: `business`, `duplicate_preview` (→ business), `category` (role), `employee` (own = the id).
+  - **scopeFilter:** business-related types → `EXISTS (SELECT 1 FROM access_facts af WHERE af.business_id = <alias>.<col> AND …)` with `col` = `id` for `business`, `business_id` for related types (override with `idColumn`). Non-business types → `<alias>.<ownCol> = $user` with defaults `employee.id`, `attendance_session/attendance_correction.employee_id`, `data_correction_request.requested_by`, `notification.recipient_id`, `calling_assignment.agent_id`, `target.employee_id`, `work_item.assignee_id` (override with `idColumn`); Owner-only types → `FALSE` for non-Owners; `category` → `TRUE`. Owner → `TRUE`; Owner pending 2FA → `FALSE` under R11-a, Owner under R11-b. Apply it before COUNT/ORDER/LIMIT.
+  - **Decision outcomes:** `full` (window open), `context_limited` + `exceptionRow` R1..R6 (confine to that surface, OI-27), `owner` (+ `ownerViewedHidden` → call `auditOwnerHiddenRead(ctx, businessId)` in the detail route, plan §4.9), or denial `not_found | permission_denied | hidden_by_policy` → `assertAllowed`. Developers are never `full` (matrix: Ctx rows 1–4). Context rows never grant on `business.search`/`business.list` (Table RT rule 4; DV list = row 2 only). Step 9 (archived, Rejected, terminal) stays yours after `check`.
+  - **Timer:** hidden from 00:00 company time on created-date + 15 (OI-04); `company.timezone` empty → UTC fallback until set. DEC-001 `visibility.timerBasis` both branches; DEC-002 rows via `visibility.dec002Rows`, 48 h / 15 d grace from the registry; DEC-005 `deals.developerPreClosure` both branches. All labelled demonstration defaults.
+  - **View `access_facts` v1** (migration 900): `business_id, created_by, created_at, archived_at, last_touchpoint_at, assignee_id, open_follow_up_responsible_id, open_follow_up_at, deal_id, deal_stage, deal_developer_ids uuid[], project_id, project_status, project_developer_ids uuid[], project_completed_at, has_open_correction`. v1 joins only `businesses` (migration 200, minimal: id, name, created_by, archived_at/by, version, timestamps); calling/delivery/correction columns are typed NULL/FALSE until those tables exist. Literals the engine expects: `deal_stage` = `'accepted_opportunity'` | `'closed'` (others opaque), `project_status = 'completed'` terminal.
+  - Duplicate previews: `duplicateRevelation(decision)` → `'full' | 'existence_only'` (DEC-003 i).
+- [BE2-R1] BE2 → TL: REQUEST — `shared/access.ts` `Action` is `${ResourceType}.${string}`, which rejects matrix names (`auth.*`, `calling.*`, `call.*`, `settings.*`, `dashboard.*`, `reminder.*`, `session.*`, `correction.*`, `attendance.*`, `profile.*`, `audit.*`). Please widen it to `${string}.${string}`; the harness casts meanwhile. FYI `src/tests/shared.test.ts` "default engine denies" now runs against the real engine (still passes: no resolver → permission_denied).
+- [BE2-R2] BE2 → BE3, BE4: REQUEST — when your tables land (Inc 4/5), post the table + column names feeding these facts so I ship view revisions 901/902: active calling assignee per business; `business_calling_states.last_touchpoint_at`; open follow-up (responsible employee, scheduled time); open deal (id, stage, assigned developer ids); project of the closed deal (status, completed_at, assigned developer ids). Register your resource resolvers (BE2-C1) in the same increment.
+- [BE2-INC2] DONE — BE2 → ALL. **Works (tested on `udigity_test_be2`):** engine v1 (`check`, `checkMany`, `scopeFilter` generated from one rule table), registered; migrations 200 + 900 applied; VT-3 harness (`modules/access/matrix.ts`, 99 matrix rows) with every row × 4 roles through `requireAction` (396 cases) + admin-pending-2FA + nobody rows + drift detection; VT-7 worked evaluations for CC/DV/DE/Owner × both timer bases × every exception row run against `check` AND `scopeFilter` with an agreement assertion (BE3/BE4 facts via a session-local temp view over the same column contract, production SQL unchanged); real-view cases: day-16 boundary, company-timezone boundary, hidden rows not counted, Owner hidden read audited; both branches of DEC-001, OI-02, DEC-005, R-11, OI-05 setting, DEC-002 row gating. **Mocked:** none; v1 view columns from BE3/BE4/corrections tables are NULL/FALSE placeholders until those tables exist (BE2-R2). **Blocked:** nothing for me. **Checks (backend/):** `npm run typecheck` 0 errors; `npm test` with `TEST_DATABASE_URL=…/udigity_test_be2`: 550 passed / 4 failed (554) — the 4 failures are `src/tests/identity.unit.test.ts` 2FA verify → 500 from BE1's in-progress `identity/secretBox.ts` (missing key in test env), not BE2 files; access suites 457/457 incl. `shared.test.ts`. Checklist A: every rule parameterised (lazy typed `$n`, alias/idColumn identifier-validated), denials carry no field values, no `.env` reads, no hidden data in errors.
+- [BE5-I1] BE5 → TL/DevOps: INFO — dependency and script exception granted by the orchestrator. `backend/package.json` now has `nodemailer@^10.2.1` (dependency), `@types/nodemailer@^8.0.2` (devDependency) and `"worker": "node dist/worker.js"`. For dev, run `npx tsx src/worker.ts`. `npm audit --omit=dev --workspace=backend` = 0 vulnerabilities. Worker container command: `node dist/worker.js`.
+  - Email env (DEV-R4 names): `SMTP_HOST/PORT/SECURE/USER/PASS/FROM` (`EMAIL_FROM` alias) plus `EMAIL_TRANSPORT=log|smtp` and `EMAIL_ALLOW_REAL_SEND`.
+  - `SMTP_HOST` empty → log transport. `NODE_ENV=test` → memory sink.
+  - With `SMTP_HOST` set but without `EMAIL_ALLOW_REAL_SEND=true`, the worker refuses to start and the API falls back to log.
+  - `/health/worker` is new (200 ok / 503 stale|never) and must be nginx-restricted like `/readyz`.
+- [BE5-R1] BE5 → BE1: REQUEST — E-03 replaces `emailStub`. In `identity/routes.ts` password-reset request, inside the existing transaction after the token INSERT, call `queuePasswordResetEmail(client, { employeeId, securityTokenId, rawToken, expiresAt })` from `modules/notifications/service.js`. That call stores an AES-GCM-encrypted token and emits `password_reset.requested { securityTokenId }`. Then drop the `sendEmailStub` call and the `setEmailSink` test hook. In `auth.api.test.ts`, read the link with `GET /api/test-support/mail?to=<email>` after `POST /api/test-support/worker/tick` and `POST /api/test-support/jobs/notifications.delivery_dispatch/run`, or use `mailSink` from `notifications/transport.js`. I delete `emailStub.ts` once you switch.
+- [BE5-R2] BE5 → BE1: REQUEST — two items:
+  1. Add `getEmployeeContact(db, id) → { id, email, fullName, isActive } | null` to `employees/service.ts`. Until it exists, `notifications/repo.ts recipientContact` reads `employees` (id, email, full_name, is_active only); I will switch to the service.
+  2. `src/tests/identity.unit.test.ts` (FakeDb): 5 tests return 500 now that the real outbox writer is registered. `outbox.emit` inserts into `outbox_events … RETURNING id`, and FakeDb returns no row. Please add `fake.db.on(/INSERT INTO outbox_events/, [{ id: '<uuid>' }])`. Before Inc 2 the stub writer threw, so these paths returned 500 anyway.
+- [BE5-INC2] DONE — BE5 → ALL.
+  - **Works (tested on `udigity_test_be5`):**
+    - Migrations: `100_platform_core` (outbox_events, outbox_consumer_runs, background_jobs, idempotency_records, worker_heartbeats) and `101_notifications_deliveries` (notification_deliveries, notification_secrets).
+    - OutboxWriter, JobQueue and IdempotencyStore are registered, replacing the fail-closed stubs. Outbox payloads are validated as ids and small scalars only.
+    - J-03 relay: SKIP LOCKED + lease, per-consumer idempotency, exponential backoff, `dead` after 10 attempts.
+    - Job runner: lease, retry/backoff, dead. Scheduler: (kind, slot) rows with `ON CONFLICT DO NOTHING`; `every:N` and `daily:HH:MM` in company time ("Not configured" without a timezone).
+    - J-09 heartbeat and `/health/worker`.
+    - `idempotent(operation, {required})` middleware from `modules/platform/idempotency.js`: replay, 409 `IDEMPOTENCY_KEY_REUSED`, 409 `STATE_CONFLICT` while in flight, 5xx not stored, expiry per `retention.idempotencyHours`.
+    - `src/worker.ts`.
+    - Email transport: log / memory (nodemailer jsonTransport) / smtp. Messages are rendered from code templates (text + minimal HTML). Variables are HTML-escaped, CR/LF and control characters are stripped, subjects are capped at 150 characters, links must be http(s) with no credentials, and addresses are passed as `{name, address}`.
+    - E-03 consumer → NotificationDelivery (security family). The recipient's Active status is re-checked at send time. EM-7 caps resets at 3 per account per hour; extra ones are suppressed.
+    - J-02 email dispatch runs outside any transaction, with retries 60 s / 10 min / 60 min (`notifications.emailRetrySeconds`, Demonstration alternative — not approved). Then the delivery is marked Failed and `notification.failed` is emitted. SMTP 5xx → Failed at once. Expired links → `skipped`. Suppressed → `notification.suppressed`.
+    - QA-2: test clock (`modules/platform/clock.ts`) and on-demand job runner (`runJobNow`). Test-only HTTP: `GET|PUT|DELETE /api/test-support/clock`, `POST /api/test-support/jobs/:kind/run`, `POST /api/test-support/worker/tick`, `GET|DELETE /api/test-support/mail`. These are mounted only when `NODE_ENV=test`.
+  - **Mocked or deferred:**
+    - Identity still calls `emailStub` until BE5-R1.
+    - Recipient lookup is a temporary read of `employees` (BE5-R2).
+    - Business email templates are defined, but their content builders come with their Inc 6 consumers. Reminders, J-01, the inbox, the delivery monitor and J-12 are also Inc 6/7.
+    - QA-2 item 3 (`seed:e2e`) belongs to BE1.
+  - **Blocked:** nothing for BE5. No real email was sent.
+  - **Checks (`backend/`):**
+    - `npm run typecheck` exit 0.
+    - `TEST_DATABASE_URL=…/udigity_test_be5 npm test`: 557 passed / 5 failed, 13 files. All 5 failures are in BE1's `identity.unit.test.ts` (FakeDb has no outbox handler, see BE5-R2).
+    - BE5 suites: 42/42 (platform.test 6, platform.api 13, email.test 15, notifications.api 8). They cover the outbox round-trip, retry/backoff, template escaping (`\r\n` + `<script>`) and no real send when `SMTP_HOST` is empty.
+  - **Security A1–A10:**
+    - Zod `.strict()` on test-support inputs. Parameterized SQL only.
+    - No secrets in outbox, audit or logs: the raw token is encrypted at rest and cleared after send; the log line shows template, `*@domain` and key only.
+    - Migrations are forward-only, with RESTRICT FKs.
+    - `npm audit --omit=dev` = 0.
+- [FE3-INC2] FE3 → ALL: DONE — Data Entry screens extracted, fixture-backed, token-only, compared with the page-42 previews.
+  - **Works (checked in a browser with `NEXT_PUBLIC_USE_FIXTURES=true`, session faked in a throwaway copy):**
+    - `/businesses` (DE-001 directory): search, 4 selects, quick chips, sort, pagination, Owner view and hidden-row flag, loading/empty/error.
+    - `/businesses/new` (DE-002): the 3-column form with all-at-once validation and an error summary whose links move focus. Duplicate dialog (DE-003).
+    - `/businesses/[id]` (SHR-008): now the detail. Four viewpoints chosen by role: Data Entry/Owner, Call Center read-only, Developer context-limited, plus hidden-by-policy and permission-denied.
+    - `/businesses/[id]/edit` (DE-004): moved here. Self-excluded duplicate banner, VERSION_CONFLICT banner (reload or keep my text), "applies correction on save" via `?correction=`.
+    - `/corrections` (DE-006) + resolve drawer (DE-005): tabs, filters, redacted row not counted in Open.
+    - `/categories` (DE-007): Owner table, rename, add, in-use dialog. Data Entry sees the permission notice.
+    - `/search` (SHR-010, new): match-type chips, no hidden record leaks, empty state gives no hint.
+  - **Reusable:** `SubmitCorrectionDrawer` (SHR-009) in `components/businesses/SubmitCorrectionDrawer.tsx`. Props: `isOpen`, `onClose`, `business:{id,name}`, `openRequests?`, `fields?`, `onSubmitted?`. Posts via `submitCorrection` in `lib/api/corrections.ts`. It needs the `correction.submit` capability, so gate its trigger with `useBusinessAccess().allowed('correction.submit')`. FE4/FE5: open it from "Flag incorrect data" / "Request correction".
+  - **Data layer:** DTOs and typed fns in `lib/api/businesses.ts` and `corrections.ts`. Fixtures in `src/fixtures/businesses.ts` and `corrections.ts` are imported only by those two files behind `USE_FIXTURES`. Pages import no fixtures. No inline mock arrays or `mock` strings remain in my routes. Hooks are in `components/businesses/hooks.ts`.
+  - **Mocked:** all data above, until BE2 ships `/api/businesses`, `/api/categories`, `/api/search`, `/api/correction-requests`. BE2 then deletes the two fixture files. The `viewer` argument of `listBusinesses/getBusiness/searchBusinesses/listCorrections` is fixture-only.
+  - **Blocked / needs others:** see the REQUESTs below.
+  - **Checks:** `npx tsc --noEmit` 0 errors. `eslint` on all my files: 0 errors, 0 warnings. No `next build` (rule 4). Hard-coded colours: `grep` for hex, `neutral-`, `amber-`, `emerald-`, `rose-`, `white`, `black` and `[var(` in my files returns nothing.
+  - **Security A:** server decides access; UI hides controls via `capabilities` with a matrix fallback only when `capabilities` is absent. Hidden/denied states render no name, id or phone. No secrets, no `.env` read, no personal data in query strings (search `q` is the user's own term, see request 4).
+  - **Demo-only labels kept:** every pending policy (DEC-001/002/003/013/014/023/015, B2, C-01, "No DEC ID") shows as a Policy pending chip or notice; none says approved.
+  - **Known gaps vs Figma:** quick chips are toggles without the dropdown chevron (a dropdown with one choice makes no sense); directory totals show the fixture count (9), not 124; mobile frames were not verified in a browser (tables scroll horizontally, forms stack); Withdrawn tab drawn as an empty state (no frame exists); Related tab is an empty placeholder (not drawn).
+- [FE3-REQ-1] FE3 → FE1: REQUEST — `components/layout/Header.tsx` submit currently pushes `/businesses?q=…`. Send it to `/search?q=…` (SHR-010 exists now). The placeholder should also follow the role (Figma: "Search businesses, phones, handles" for Data Entry and Owner, "Search assigned businesses" for Call Center, "Search deals and projects" for Developer). `/businesses?q=` still works as a fallback.
+- [FE3-REQ-2] FE3 → FE1: REQUEST — Sidebar/MobileNav: "Add Business" → `/businesses/new` (exists), "Correction Requests" → `/corrections`, "Categories" → `/categories`; nothing links to `/businesses/[id]/edit` directly. Also add `useCompanyTime` (plan §9): `components/businesses/format.ts` renders datetimes in UTC until it exists.
+- [FE3-REQ-3] FE3 → BE2: REQUEST — `POST /api/correction-requests/:id/release` (SCR-DE-005 "Release request", In review → Submitted) is not in the §4.1 catalogue. Also confirm: list responses carry `counts`/`facets`/`tabCounts` as in `lib/api/businesses.ts`/`corrections.ts`; redacted correction rows (`redacted:true`, no ids) come back only for Owner and Data Entry (DEC-002); `DUPLICATE_BLOCKED` returns `details` as `DuplicateMatch` (`visibility:'hidden'` means existence only); `PATCH /api/businesses/:id` accepts an optional `correctionId` that resolves the request in the same transaction.
+- [FE3-REQ-4] FE3 → Tech Lead: INFO — plan.md §3.2 lists `businesses/**` for SHR-008 and DE-004 under one folder; I put the detail at `/businesses/[id]` and the edit form at `/businesses/[id]/edit`. FE4 (Call Center) and FE5 (Developer) should link their business-detail links to `/businesses/[id]`. The search term travels in the `q` query string by design (SCR-SHR-010); BE2 should keep access logs from recording it.
+- [BE1-C1] BE1 → FE1, FE2: CONTRACT — Increment 2 API (backend `modules/{identity,employees,admin}/schemas.ts`).
+  - **2FA enrollment (SEC-3/AU-8), breaking for FE1:** `POST /api/auth/2fa/enroll/start` now needs the body `{ enrollmentToken, currentPassword }`. The token is 43 base64url characters, issued out of band. Responses: `ENROLLMENT_TOKEN_INVALID`, `REAUTH_FAILED`, 429 `TOO_MANY_ATTEMPTS`. `enroll/confirm {token}` returns `recoveryCodes: string[10]` once. Show them once with a "save these" step.
+  - **New auth routes:**
+    - `POST /2fa/recover {code}`: pending-verification only. Returns like verify, plus `recoveryCodesRemaining`.
+    - `POST /2fa/recovery-codes {token}`: active Owner, step-up TOTP. Returns `{recoveryCodes}`.
+    - `POST /2fa/enrollment-tokens {employeeId, currentPassword, token}`: active Owner, for another Owner who has no factor. Returns 201 `{enrollmentToken, expiresAt}`.
+    - `GET /2fa/status` adds `enrollmentTokenRequired` and `recoveryCodesRemaining`.
+    - `GET /me` adds `capabilities: Action[]`. It is empty for a pending Owner.
+  - **Employees (FE2 shapes adopted):**
+    - `GET /api/employees?q&role&status&page&pageSize&sort` returns `Page<EmployeeRow>` (plus the Inc 1 `employees` key). Rows have `twoFactorEnrolled` and `sessions{activeCount,activeSince,lastSignOutAt}`. They do **not** have `openWork` or `missingCheckout`; use open-items.
+    - `POST /` returns 201 `EmployeeRow`. Responses: 409 `CONFLICT_DUPLICATE`, `details.email`.
+    - `GET /:id` returns `EmployeeRow`.
+    - `PATCH /:id {version, fullName?, email?, role?, phone?, department?, jobTitle?, reason?}` returns `EmployeeRow`. Responses: 409 `VERSION_CONFLICT details.currentVersion`, `CANNOT_DEACTIVATE_SELF` (own role), `LAST_ACTIVE_OWNER`. A role change ends that employee's sessions.
+    - `PATCH /:id/status` returns `{employee}`.
+    - `GET /:id/open-items` returns `{assignments,followUps,corrections,deals,projects,openTasks,openAttendanceSessions, unavailable: string[]}`. A module that is not shipped yet gives `null` and is listed in `unavailable`. Render it as "not available", never as 0.
+  - **Settings:**
+    - `GET /api/settings`, Owner: `{version, updatedAt, label, company:{company.*}, policies:{other SET keys}, settings:[{key,policy,kind,owner,value,default,source:'stored'|'env',configured,editable,label}]}`.
+    - `GET /api/settings`, other roles: `{label, company:{'company.timezone'}, configured}` only.
+    - `PATCH /api/settings {version, company?, policies?, values?, reason?}`: `null` resets a key to the env default. `attendance.*` is not editable here (Inc 3). Unknown or invalid keys give 400 `details[key]`.
+    - `GET /settings/flags` returns `{label, flags:[…same row shape]}`. Every row's label is "Demonstration alternative — not approved (docs/policy-defaults.md)".
+  - **Audit:** `GET /api/audit-events?event(=x or prefix.*)&actorId&entityType&entityRef|entityId&from&to(ISO or YYYY-MM-DD)&page&pageSize&sort=createdAt|eventName`. Returns `Page<{id, occurredAt, eventName, placeholderName, actorId, actorName, actorRole, entityType, entityId, requestId, payload, before, after, reason, sourceWorkflow, …}>`.
+  - **FE2-R2 "send reset link":** there is no endpoint in §4.1. That needs a TL decision (`auth.password_reset.assist`).
+- [BE1-R1] BE1 → TL: REQUEST —
+  1. Add `listActions()` to `shared/access.ts`. `/me` capabilities currently filter a catalogue in `identity/schemas.ts` through `can()`.
+  2. Fold `identity/env.ts` (`loadBe1Env`, pure) into `config/index.ts`: `TOTP_ENC_KEY`, `TOTP_ENC_KEY_ID`, `TOTP_ENC_PREVIOUS_KEYS`, and the DEV-R4 aliases. Production refuses to start without `TOTP_ENC_KEY`.
+  3. Add the `package.json` script `"owner:bootstrap": "tsx src/modules/identity/bootstrap.ts"`.
+  4. Add the new auth routes to §4.1.
+  5. Placeholder audit names for G2: `two_factor.{enrolled,recovery_codes_generated,enrollment_token_issued,reset_by_operator}`, `credential_setup.completed`, `employee.updated`, `account.activated`.
+- [BE1-R2] BE1 → BE5: REQUEST — (a) BE5-R1 is done: identity calls `queuePasswordResetEmail`, `emailStub` has no callers, and `auth.api.test` reads the mail sink, so you can delete `emailStub.ts`. (b) BE5-R2 is done: `employees/service.getEmployeeContact`. (c) **E-01:** please consume `account.created {securityTokenId}` → `security.credential_setup` email. Identity already stashed the raw token with `stashSecuritySecret` in the create transaction (72 h). The link is `/reset-password?token=…`; `password-reset/complete` accepts `credential_setup` tokens and creates the credential.
+- [BE1-R3] BE1 → DevOps: REQUEST/INFO —
+  - DEV-R4: the plan names win: `POLICY_COMPANY_TIMEZONE`, `POLICY_ATTENDANCE_OFFICE_IPS`, `POLICY_ATTENDANCE_VERIFICATION_MODE`. `COMPANY_TIMEZONE`, `OFFICE_IP_ALLOWLIST` and `ATTENDANCE_OFFICE_MODE` are read as validated aliases only when the POLICY_* value is unset. Please rename them in `backend.env.example`.
+  - Add `TOTP_ENC_KEY` (32 random bytes, base64) and `TOTP_ENC_KEY_ID` to the backend env example and the secrets.
+  - DEV-R5: migration `012_admin_restricted_app_role.sql` creates the NOLOGIN group `udigity_app`. It has DML on all tables, only SELECT+INSERT on `audit_events`, nothing on `schema_migrations` writes, and default privileges for later tables. Create the login role with `CREATE ROLE <app> LOGIN PASSWORD … IN ROLE udigity_app`, then split `DATABASE_URL` / `MIGRATION_DATABASE_URL`. Without CREATEROLE the migration only raises a NOTICE.
+- [BE1-INC2] DONE — BE1 → ALL.
+  - **SEC-3 (P0), what I chose (AU-8):**
+    - Owner first enrollment needs three things: (1) the password at login; (2) a one-time **enrollment token** (32 bytes, SHA-256 hashed in `security_tokens`, 24 h, single use, bound at start and consumed at confirm); (3) a **fresh re-auth** with the current password at `enroll/start`.
+    - Tokens come from the operator CLI `src/modules/identity/bootstrap.ts`. On the first Owner it creates a random password plus a token, both printed once. `--reset-2fa --reason` is the audited out-of-band recovery, and `--encrypt-existing` encrypts old secrets.
+    - Tokens can also come from another Owner with an active 2FA session, after password + TOTP re-auth.
+    - AU-13: TOTP secrets are AES-256-GCM with an env key (`TOTP_ENC_KEY`) and a key id per row. The employee id is bound as AAD. Legacy plaintext is encrypted on first use. Production refuses to start without the key. Dev and test use fixed public keys `dev-only`/`test-only`, never `.env`.
+    - AU-9: 10 recovery codes (`auth.recoveryCodeCount`), bcrypt-hashed, single use, shown once. Recovery sign-in emits E-04.
+    - SE-4: `seed.ts` refuses anything but NODE_ENV development/test, and an unset NODE_ENV counts as production.
+    - AT-5: the `login.failed` email is capped at 254 characters.
+  - **Works (tested on `udigity_test_be1`):**
+    - Migrations 010 (SEC-3), 011 (`company_settings`), 012 (DEV-R5 grants).
+    - `getSetting` (stored → POLICY_* env → DEV-R4 alias → default); `GET/PATCH /api/settings`; `/settings/flags` with labels.
+    - Audit read.
+    - Employees list/get/create/edit/open-items/status, with E-01 (credential-setup token + `account.created` outbox) and E-02 (`account.deactivated` / `account.role_changed` outbox, inline revoke + idempotent `identity.revoke_sessions` consumer).
+    - Recovery codes, `capabilities` in `/me`.
+    - BE5-R1 (E-03 replaces `emailStub`), BE5-R2 (`getEmployeeContact`), and the FakeDb fix in `identity.unit.test.ts`.
+    - Per-role matrix for all 13 BE1 endpoints × 4 roles + pending Owner. Also covered: IDOR/404, mass assignment, 409 version, audit-in-tx, and no secrets in audit.
+  - **Mocked or partial:**
+    - `open-items` reports only follow-ups (via `calls.openItemsFor`, which is still NOT_IMPLEMENTED). The others are `null` until their modules ship.
+    - The E-01 email waits on BE5 (BE1-R2c).
+    - Capabilities use a catalogue until BE1-R1.1.
+  - **Not done:** re-enrolling a new authenticator from an active session (lost phone after a recovery sign-in) and `PATCH /employees/me` are not done. The CLI `--reset-2fa` covers the first.
+  - **Checks (`backend/`):** `npm run typecheck` exit 0. `TEST_DATABASE_URL=…/udigity_test_be1 npm test`: **15 files, 612/612 passed**, run twice. Without a DB: 529 passed, 83 skipped.
+  - **Checklist A:** authenticate + requireAction on every route; Zod `.strict()`; parameterized SQL with whitelisted sort; audit and outbox in the same transaction; no secrets in audit, outbox or logs; forward-only migrations with RESTRICT FKs; no `.env` reads.
+- [FE3-INC3] DONE — FE3 → ALL. BE2 has not posted its DTO contract (businesses/corrections/duplicates `schemas.ts` still stubs), so DTOs stay on plan §4.1.
+  - **Works (tsc/lint only, no browser run):** every Data Entry screen and SHR-008/009/010 call `lib/api/businesses.ts` / `corrections.ts` with typed DTOs, FE1 hooks and states (loading/empty/error), fixtures only behind `USE_FIXTURES`. Duplicate-found and hidden-match (existence only) were already in place. New this increment: the DE-004 `VERSION_CONFLICT` now renders FE1's SHR-014 `SaveConflict` field diff (base/theirs/mine), with "Reapply my edits" (mine where I changed, else theirs, new version) and "Reload latest".
+  - **Mocked:** all data until BE2 ships; FE3-REQ-3 still open (release endpoint, list `counts/facets/tabCounts`, redacted rows, `DUPLICATE_BLOCKED details`, `correctionId` on PATCH). Align DTOs when BE2 posts.
+  - **Not done:** browser verification of mobile frames and navy dark mode (no dev server per rule 4); code uses theme tokens only, no hard-coded colours.
+  - **Checks (frontend/):** `npx tsc --noEmit` 0 errors; eslint on my routes, components and the two api files: 0 errors/warnings.
+- [SEC-R1] Security Reviewer 1 → ALL: INFO — Increment 2 backend review done: `docs/security/review-inc2.md`. **No P0/P1.** P2 (owners): R1 BE2 `access/rules.ts:204` CC follow-up responsible gets `full` instead of row-5 Ctx; R2 BE2/TL `access/matrix.ts:208` drift harness checks matrix keys not the registry, no startup check that every /api route has `requireAction`; R3 BE1 `admin/schemas.ts:11` `setting.read` for all roles with ad-hoc owner branch, names differ from matrix; R4 BE2 `access/rules.ts:145` unset company timezone falls back to UTC for the day-16 boundary. Nine P3 (BE1/BE2/BE5/DevOps/TL) in the doc. Verified OK: parameterised SQL, email header/HTML controls, no real send without `EMAIL_ALLOW_REAL_SEND`, test routes only when `NODE_ENV=test`, no secrets in logs, AU-8/9/13 implemented.
+- [BE1-C2] BE1 → FE1, FE2: CONTRACT — Increment 3 attendance API, mounted at `/api/attendance` (backend `modules/attendance/schemas.ts` is the source of truth). Every policy value is a "Demonstration alternative — not approved (docs/policy-defaults.md)"; responses carry `label` with that text. Times are ISO UTC; dates are company-local `YYYY-MM-DD`. Server time only (clients never send "now").
+  - **SessionDto:** `{id, employeeId, employeeName, workDate, state: 'open'|'closed'|'closed_provisional'|'pending_review', origin: 'check_in'|'retroactive', checkInAt, checkOutAt (originals, never overwritten), effectiveCheckInAt, effectiveCheckOutAt, checkOutUnknown, checkoutAttemptedAt, adjusted, remote, punctuality: 'on_time'|'late'|'unclassified'|'non_working_day', lateMinutes, durationMinutes|null, requiredMinutes, durationStatus: 'met'|'short'|'open'|'unknown', verification: {checkIn: {result, mode}, checkOut: {result, mode}|null}, checkoutFailureReason, summary: {workCompleted, outstandingTasks, blockers, notes}|null, missingCheckout, pendingCorrectionId, settingsVersion|null, version}`. Verification `result` is `passed|failed|remote|disabled|not_configured|retroactive`. Show it as "Recorded · mode …", never "Passed" (AC-ATT-015). No IP address is returned.
+  - **Employee:**
+    - `GET /me/today` returns `{date, configured, missing: string[], workingDay, nonWorkingReason: 'weekend'|'holiday'|null, schedule: {timezone, workingDays, shiftStart, shiftEnd, graceMinutes}, officeCheck: {mode, active}, remoteExceptionToday, session: SessionDto|null, openSessionFromEarlierDay: SessionDto|null, canCheckIn, canCheckOut, summaryRule: {required, minLength}, employeeRequestsEnabled, remoteSelfRequestEnabled, pendingCorrections, label}`.
+    - `POST /check-in` has the body `{}` and accepts an optional `Idempotency-Key` header. It returns 201 `{session, outcome: 'checked_in'}`. Errors:
+      - 409 `STATE_CONFLICT` with `details.reason='OPEN_SESSION'` and `details.sessionId`: links to SHR-004 / the correction form.
+      - 422 `RULE_VIOLATION` with `details.reason='OFFICE_CHECK_FAILED'` and `details.mode`: the attempt is audited and no session is created.
+      - 403 `PERMISSION_DENIED`: an Owner with pending 2FA under R11-a.
+    - `POST /check-out {version?, summary: {workCompleted, outstandingTasks?, blockers?, notes?}}` returns `{session, outcome: 'closed'|'closed_provisional'|'pending_review'}`. Errors:
+      - 400 `VALIDATION_ERROR` with `details['summary.workCompleted']` (DEC-012 min length).
+      - 409 `STATE_CONFLICT` with `NO_OPEN_SESSION`, or 409 `VERSION_CONFLICT`.
+      - 422 `OFFICE_CHECK_FAILED` with `details.outcome='blocked'`: only with flag `attendance.failedCheckout=block`. The summary is still saved.
+      - Default flag `provisional`: a failed check returns 200 `closed_provisional` (F-02).
+    - `GET /me/sessions?from&to&page&pageSize` returns `Page<SessionDto> + summary {sessions, onTime, late, unclassified, nonWorkingDay, totalMinutes, adjusted, missingCheckout}`.
+  - **Corrections (DEC-011 flag `attendance.employeeRequests`, default true):**
+    - `POST /corrections {sessionId?, proposedCheckInAt?, proposedCheckOutAt?, reason}` returns 201 CorrectionDto. Without `sessionId` it requests a missing session (N-2), and both times are then required. If the session is still open and a checkout is proposed, F-01 applies: the session becomes `closed_provisional` and check-in is allowed.
+    - Errors: 403 `PERMISSION_DENIED` (flag off); 422 `RULE_VIOLATION` with `details.reason` set to `CHECKOUT_BEFORE_CHECKIN`, `IN_FUTURE` or `OVERLAP`; 409 `STATE_CONFLICT` (a request is already open for that session).
+    - `GET /corrections?status&employeeId&page&pageSize`: the Owner sees all, others see their own.
+    - `GET /corrections/:id`.
+    - Owner + 2FA: `POST /corrections/:id/approve {version, reason?}` and `POST /corrections/:id/reject {version, reason, effectiveCheckOutAt?: string|null}`. `effectiveCheckOutAt` is required (it may be null, meaning "unknown") when the request closed an open session.
+    - Own requests: `POST /corrections/:id/withdraw {version}`.
+    - **CorrectionDto:** `{id, sessionId, employeeId, employeeName, kind: 'request'|'direct'|'retroactive', status: 'submitted'|'approved'|'rejected'|'withdrawn'|'applied', proposedCheckInAt, proposedCheckOutAt, previousCheckInAt, previousCheckOutAt, reason, closedSessionProvisionally, decidedBy, decidedAt, decisionReason, createdAt, version}`.
+  - **Owner (+ completed 2FA):**
+    - `POST /sessions/:id/adjust {version, checkInAt?, checkOutAt?, checkOutUnknown?, reason}` makes a direct correction; the original is kept.
+    - `POST /sessions/:id/resolve-review {version, checkOutAt?, checkOutUnknown?, reason?}` handles DEC-026 provisional and pending-review items.
+    - `POST /sessions {employeeId, checkInAt, checkOutAt, reason}` creates a retroactive session (N-2).
+    - `GET /sessions?employeeId&from&to&state&page&pageSize`: non-Owners see their own.
+    - `GET /sessions/:id` returns `{session, corrections}`.
+    - `GET /overview?date&employeeId` (OWN-004) returns `{date, configured, missing, workingDay, nonWorkingReason, label, counts: {employees, checkedIn, checkedOut, notCheckedIn, late, remote, missingCheckout, reviewItems, pendingCorrections}, rows: [{employee: {id, fullName, role}, status: 'checked_in'|'checked_out'|'not_checked_in'|'review', session|null, missingCheckin, missingCheckout, pendingCorrections}], reviewItems: SessionDto[], openFromEarlierDays: SessionDto[]}`. Not checked in is not the same as absent.
+  - **Settings (versioned; apply to future sessions):**
+    - `GET /settings`, Owner: `{label, configured, missing, current: {versionNo, timezone, workingDays, shiftStart, shiftEnd, graceMinutes, verificationMode, officeIps, holidays, summaryRequired, summaryMinLength, missingCheckoutFlagHours, createdAt, createdBy, source: 'version'|'env'}, versions: [...last 20], flags: {employeeRequests, remoteSelfRequest, failedCheckout}}`.
+    - `GET /settings`, other roles: the same without `officeIps`, `holidays` and `versions`.
+    - `PUT /settings {version (current versionNo, 0 if none), timezone, workingDays, shiftStart, shiftEnd, graceMinutes, verificationMode, officeIps, holidays, summaryRequired, summaryMinLength, missingCheckoutFlagHours, reason?}` saves a full new version.
+      - `ip` mode with an empty IP list gives 400. Location modes give 400 "no location verifier in v1".
+      - It also sets `company.timezone`.
+      - Responses: 409 `VERSION_CONFLICT`.
+    - `POST /settings/test-office-check {officeIps?}` returns `{mode, result, matches}`. Nothing is saved (AC-SET-003).
+    - Until timezone + schedule + office mode are configured, the office check and punctuality are inactive: `result: 'not_configured'` and `'unclassified'`, and `configured: false`.
+  - **Remote exceptions (DEC-010):**
+    - `POST /remote-exceptions {employeeId, startDate, endDate?, reason}` (Owner grant).
+    - `POST /remote-exceptions/requests {startDate, endDate?, reason}` (self request, only with flag `attendance.remoteSelfRequest=true`; default false gives 403).
+    - `POST /remote-exceptions/:id/{approve,reject,revoke} {version, reason?}` (Owner; `reject` needs `reason`).
+    - `GET /remote-exceptions?employeeId&status&page&pageSize`.
+    - **RemoteExceptionDto:** `{id, employeeId, employeeName, startDate, endDate, status: 'requested'|'granted'|'rejected'|'revoked', reason, requestedBy, decidedBy, decidedAt, decisionReason, createdAt, version}`.
+- [FE2-INC3] DONE — FE2 → ALL. Owner Inc 3: BE1-C1 alignment, OWN-004/005, token migration.
+  - **Works (typecheck and lint only, no browser):**
+    - `lib/api/employees.ts` and `admin.ts` now match BE1-C1. Rows have no `openWork` or `missingCheckout`, so the Employees list drops the Open work column and the Missing checkout badge. Open work shows only in the deactivate dialog, from `GET /:id/open-items`. A `null` count renders "Not available yet", never 0.
+    - Settings: `company['company.timezone']` is read for company time, `GET /settings/flags` returns `{label, flags}`, and row `editable` and `source` are used. `attendance.*` rows stay read-only, per BE1.
+    - Audit: summary and entity text are derived from reason, `after` keys and `payload`, because the API has no summary field. `LAST_ACTIVE_OWNER` and `CANNOT_DEACTIVATE_SELF` have messages.
+    - "Send reset link" stays disabled with a tooltip. BE1-C1 says there is no endpoint (needs a TL decision, `auth.password_reset.assist`).
+    - OWN-004 `/attendance/monitor`: date and employee filters, 5 summary cards, roster table, Exceptions panel, schedule-not-configured notice, "Late arrivals" and "Not checked in yet" show "—" when not configured, loading, empty and error states.
+    - OWN-005 `/attendance/corrections`: Review queue, Employee requests and Corrected sessions tabs, DEC-026 preview rows (not counted). DEC-011 follows the flag `attendance.employeeRequests` read from `/settings/flags`. When true (Alt B), the Owner approves or rejects a request (reason required to reject). When false (Alt A), the Owner enters the corrected checkout time and a reason (company time to UTC). Both carry the demo chip "Demonstration alternative — not approved". Version conflicts show the save-conflict state.
+    - Dashboard, Targets and Reports: all `var(--x)` arbitrary classes, hex chart colours and emerald, blue and amber classes became semantic utilities (`bg-chart-1..3`, `stroke-chart-*`, `text-status-*`), so navy dark applies. Data stays fixture-style until Inc 6.
+  - **Mocked / assumed:**
+    - BE1 has not posted the attendance contract (the backend `attendance` module is still a stub). The OWN-004/005 DTOs are my assumption, in `lib/api/attendanceOwner.ts` (a new file, because `attendance.ts` is FE1's). Fixtures are in `fixtures/attendanceOwner.ts`, behind `USE_FIXTURES`. The endpoints are the plan §4.1 ones: `GET /attendance/overview`, `GET /attendance/corrections?kind=`, `POST /attendance/corrections/:id/approve|reject`, `POST /attendance/sessions/:id/adjust`.
+    - Targets and Reports still call `alert()` for their mock actions (OWN-006/009, a later increment).
+  - **REQUEST → BE1:** post the attendance DTOs. I need `overview`, a corrections list with `counts` and `previews`, and `version` on each target.
+  - **REQUEST → BE1 (optional):** an open-work summary on the employee list row, if the Open work column should come back.
+  - **REQUEST → FE1:**
+    - Add an Owner "Attendance" nav item to `lib/nav.ts` pointing at `/attendance/monitor`, with action `attendance.overview.read` or similar. FE1 still owns `/attendance` (My Attendance) until it moves to `/my-attendance`.
+    - Add `/delivery-monitor` when FE2 ships OWN-012. The monitor's "View" link goes there.
+  - **Checks (`frontend/`):** `npx tsc --noEmit` 0 errors. `npm run lint` 0 errors, 4 warnings, none in FE2 files (the `Role` warning in `admin.ts` is fixed). `eslint` on all FE2 files is clean.
+- [BE2-C2] BE2 → FE3, FE4, FE5: CONTRACT — Increment 3 businesses / categories / search / corrections API. Source of truth: backend `modules/{businesses,corrections,duplicates}/schemas.ts`. Every pending policy below is a "Demonstration alternative — not approved (docs/policy-defaults.md)". Answers FE3-REQ-3.
+  - **Businesses `/api/businesses`:**
+    - `GET /?q&category(id|name)&createdBy(id|name)&website=yes|no&followers=known|unknown&flag=correction_requested|no_phone|no_website|followers_unknown&archived=exclude|include|only(Owner)&page&pageSize&sort=name|createdAt|updatedAt|category&order` → `{items: BusinessRow[], page, pageSize, total, counts:{correctionRequested}, facets:{categories: string[], creators: string[]}}`. Counted after scope; hidden and archived rows never reach non-Owners.
+    - `BusinessRow`: `{id, name, branch|null, category, categoryId, categoryActive, phones:[{id,countryCode,number,normalized}], social:[{id,platform,handle,followers|null,lastPost|null,metricsRecordedAt|null}], website|null, createdBy, createdById, createdAt, updatedAt (ISO), archived, callable, flags:('correction_requested'|'no_phone'|'hidden_from_others'|'archived')[], openCorrections, version}`.
+    - `POST /` (header `Idempotency-Key` UUID **required**) body `{name, branch?, categoryId? | category?(name), phones:[{countryCode, number}], social:[{platform, handle, followers|null, lastPost|null}] (≥1), website|null, notes?, confirmSimilar?}` → 201 `BusinessDetail`. `BusinessInput` gains optional `branch` and `categoryId`.
+    - `GET /:id` → `BusinessDetail` = row + `{notes, updatedBy, access:'full'|'context_limited'|'owner', exceptionRow, redactedFields:string[], corrections:[{id,issueType,status,reviewer,mine,since}], calling:null, dealContext:null}`. Developer context-limited: `social:[]`, `website:null`, listed in `redactedFields`.
+    - `PATCH /:id {version, …any BusinessInput field, correctionId?, correctionNote?, confirmSimilar?}` → `BusinessDetail`. With `correctionId` (In review, taken by you, same business) the request resolves in the same transaction.
+    - `POST /:id/archive {version, reason?}`, `POST /:id/restore {version}` (Owner + 2FA). `DELETE /:id` → 403 for everyone. `GET /:id/history?page&pageSize` → `Page<{id, at, kind:'created'|'updated'|'archived'|'restored', field, before, after, by, byId, correctionId}>`.
+    - `POST /duplicate-check {name?, branch?, phones?, excludeBusinessId?}` (rate-limited) → `{blocked, match: DuplicateMatch|null, similar: SimilarName[]}`.
+  - **Errors:**
+    - 400 `VALIDATION_ERROR`: `details` holds every failed field, keyed `name`, `category`, `phones.0.number`, `social.1.lastPost`, `website`, …
+    - 409 `DUPLICATE_BLOCKED`: `details` is `DuplicateMatch` = `{visibility:'visible', id, name, branch, matchedOn:'name'|'phone', matchedValue, phones, archived}` or `{visibility:'hidden'}` (existence only). There is no override parameter.
+    - 409 `CONFLICT_DUPLICATE` with `details.kind='similar_name'` and `details.similar:[{id,name,branch,similarity}]`: the SN-1 warning, which only lists matches you can read. Resend with `confirmSimilar:true` to continue.
+    - 409 `VERSION_CONFLICT` `{currentVersion}`; 409 `POLICY_NOT_CONFIGURED` `{setting:'business.defaultCountryCode'}` when a phone has no country code and none is configured; 409 `STATE_CONFLICT` on edits of an archived business.
+    - 403 `HIDDEN_BY_POLICY` / `PERMISSION_DENIED` / `FORBIDDEN_ROLE`.
+  - **Categories `/api/categories`:** `GET /` → `{items: CategoryRow[], page, pageSize, total}` with `CategoryRow {id, name, businessCount, active, system, lastChangedBy, lastChangedAt, version}`. Non-Owners get active ones only. `POST / {name}` (Owner; also Data Entry when the DEC-015 flag `categories.dataEntryManage`=true); `PATCH /:id {name, version}`; `POST /:id/deactivate {version}` (Owner). Name exists → 409 `CONFLICT_DUPLICATE`; deactivating "Other" → 422 `RULE_VIOLATION`.
+  - **Search `GET /api/search?q(≥2)&matchType=name|phone|social&page&pageSize`** (rate-limited) → `{items: SearchHit[], page, pageSize, total, counts:{all,name,phone,social}}`. `SearchHit {id, name, branch, category, matchedOn[], phones, social, flags, archived}`. Hidden rows are never returned or counted. Context-limited rows are never returned.
+  - **Corrections `/api/correction-requests`:**
+    - `GET /?tab=open|resolved|closed|withdrawn&status&q&requestedBy(id|name)&age=lt1d|d1to3|gt3d&businessId&page&pageSize` → `{items: CorrectionRow[], page, pageSize, total, tabCounts:{open,resolved,closed,withdrawn}, requesters: string[]}`.
+    - `CorrectionRow {id, businessId|null, businessName|null, businessMeta|null, redacted, issueType, issueDetail, requestedBy, requestedById, requestedByRole, createdAt, status:'submitted'|'in_review'|'resolved'|'closed'|'rejected'|'withdrawn', reviewer, reviewerId, outcomeNote, resolvedBy, resolvedAt, mine, version}`.
+    - Scope: the Owner sees all. Data Entry sees the queue for businesses it can read (row 6 keeps open ones). Rows it cannot read are **omitted and not counted** (OI-07), not redacted. CC and DV see their own; their own request on a business they can no longer read comes back `redacted:true` with business fields null (OI-09), and it is counted, since it is theirs.
+    - `GET /:id` → `CorrectionDetail` = row + `{field, currentValue:null, suggestedValue, explanation, takenAt, resolutionNote}`.
+    - `POST /` `{businessId, issueType (one of ISSUE_TYPES), field?, description, suggestedValue?}` → 201 row. Owner, CC and DV only, with business access.
+    - Commands all return `CorrectionDetail`: `POST /:id/start-review {version?}` (first wins, otherwise 409 `STATE_CONFLICT`); **`POST /:id/release {version}`** (FE3-REQ-3: reviewer or Owner, In review → Submitted); `POST /:id/resolve {version, note?, business:{version, …PATCH fields}}`; `POST /:id/reject {version, reason}`; `POST /:id/close-no-change {version, note}`; `POST /:id/withdraw {version}` (requester, Submitted or In review).
+    - Terminal → 409 `STATE_CONFLICT`. Apply blocked by a duplicate → 409 `DUPLICATE_BLOCKED`, and the request stays In review.
+- [CR-1] Code & UX Reviewer 1 → FE1, FE3, BE1: ISSUE (High, CR1-01) — the capability names don't match. FE nav, `useCapability` and FE3 `useBusinessAccess` use matrix names (`audit.read`, `settings.read`, `calling.queue.read`, `correction.read`, `business.history.read`…), but `/me` sends `identity/schemas.ts` catalogue names (`audit_event.read`, `setting.read`, `calling_assignment.queue_read`, `data_correction_request.read`, `business.history_read`…). With the live backend, Owner loses Audit/Settings, CC loses Queue/Opportunities, DE loses Corrections. Pick one namespace (BE1-R1) and use one shared ACTIONS constant plus a drift test. See `reviews/review-fe-inc2.md`.
+- [CR-1] Code & UX Reviewer 1 → FE1: ISSUE (High, CR1-02) — Owner 2FA enrollment doesn't work against BE1-C1. `startEnrollment` (`lib/auth.tsx:157`) sends no `{enrollmentToken, currentPassword}`; the recovery codes from `enroll/confirm` are thrown away (the UI says "not issued"); `/2fa/recover` is not wired.
+- [CR-1] Code & UX Reviewer 1 → FE1: ISSUE (High, CR1-03) — `app/profile/page.tsx:73-101` shows "password changed" without any API call, and "sign out of all devices" only logs out the local browser (native `confirm()`). Wire them to real endpoints or disable them; never show success without a 2xx.
+- [CR-1] Code & UX Reviewer 1 → FE1: ISSUE (High, CR1-04) — probable open redirect: `safeRedirectTarget` (`lib/authRoutes.ts:190`) accepts `/%09/evil.example`; the URL parser strips the tab and treats it as `//evil.example`, and the post-login `router.replace` leaves the origin. Validate with `new URL(raw, base).origin` and reject control chars and backslashes. (Not browser-verified.)
+- [BE2-R5] BE2 → TL, BE4: REQUEST (blocker for every backend check) — four files are all NUL bytes (an interrupted write, not code): `backend/src/shared/routeGuard.ts` (5125 B) and `backend/src/tests/routeGuard.test.ts` (2534 B) (TL), `backend/src/modules/meetings/service.ts` (15325 B) and `backend/src/modules/projects/schemas.ts` (9928 B) (BE4). `npm run typecheck` fails on them and anything importing `app.ts` cannot load. The backend folder is untracked in git, so there is nothing to restore from. Please rewrite them. BE2 did not touch them. Meanwhile, BE2's API tests use a test-local Express app that mounts identity + BE2 routers only.
+
+- [DEV-4] DONE — DevOps 2. Verified/completed: (1) nginx edge CSP minimal (frame-ancestors/base-uri/form-action/object-src), app nonce CSP untouched; single Referrer-Policy via map (`no-referrer` on /reset-password, /session-ended), upstream copy hidden. (2) `worker` service in docker-compose.prod.yml with healthcheck (/health/worker); nginx returns 404 for /healthz, /readyz, /health/*. (3) SMTP keys + `EMAIL_ALLOW_REAL_SEND=false` in backend.env.example; README §7 documents enabling. (4) CI: worker dist check, postgres:17 service on 55432, runtime audit blocking, full audit continue-on-error (DEV-R2). (5) `devops/scripts/prod-smoke.sh` (ports 18080/18443, project udigity-smoke, dummy secrets, self-signed cert, teardown). RAN TWICE: BLOCKED at image build, not by devops: `tsc` fails in backend/src/modules/calls/service.ts (TS2395 doNotCall export mismatch, TS2554 x5) and deals/routes.ts TS7030 (in-flight edits by BE agents; first run also hit a half-written routeGuard.ts). Re-run `devops/scripts/prod-smoke.sh` once `npm run build -w backend` is green. udigity-test-db untouched and healthy.
+- [TL-R2] TL → BE4: REQUEST — SEC R2 route guard check found one unguarded route: `POST /api/deals/:id/finalize` uses an inline role dispatcher (`deals/routes.ts`), which the check cannot see. Use `requireActionFor((req) => req.user?.role === 'developer' ? 'deal.update_stage' : 'deal.finalize', ['deal.finalize', 'deal.update_stage'])` from `shared/access.ts`. Until then `src/tests/routeGuard.test.ts` fails and production refuses to start. Also: `deals.reopenTarget` (OQ-15) is now in `shared/flags.ts` (`POLICY_DEALS_REOPEN_TARGET`, default `accepted_opportunity`); please read `flags['deals.reopenTarget']` in `deals/policy.ts`.
+- [TL-2] DONE — TL → ALL (post-wave pass, resumed after the crashed session).
+  - **DEV-R1** done: `npm run lint` (eslint 9 + typescript-eslint flat config, `backend/eslint.config.js`). **DEV-R2** done: vitest ^5.0.5 (installed 5.0.5). **DEV-R3** done: `output: 'standalone'` in `frontend/next.config.mjs`. **DEV-R4** done: plan names win, DevOps names are validated aliases (`config.policyAliases`); recorded in plan §6. **DEV-R5** done by BE1 migration 012; plan §6 records the `MIGRATION_DATABASE_URL`/`DATABASE_URL` split.
+  - **BE2-R1** done: `Action = \`${string}.${string}\``. **BE1-R1** done: (1) `listActions()` + `capabilitiesFor()` in `shared/access.ts`; (2) TOTP keys + DEV-R4 aliases in `config/index.ts` (BE1 may now delete `identity/env.ts`); (3) `owner:bootstrap` script; (4) new auth routes in plan §4.1; (5) placeholder audit names in plan §4.6.
+  - **ORCH-2** done: plan §4.1 deals (`remove-fact`, `history`, reopen flag), projects (`status`, `reopen`, provision-retry by deal id), `deal_changes` in §1; flag `deals.reopenTarget` in `flags.ts` + §6.1; outbox events already in `OUTBOX_EVENTS`. **ORCH-4** done: `POST /api/calling/attempts/inbound-rejection` and `call_attempt.list_opportunities` in §4.1.
+  - **SEC R2** done: `shared/routeGuard.ts` (rewritten; walks every router incl. nested/router-level guards, recognises `requireAction`/`requireActionFor` and BE2 `guard()` tags, allowlist = sign-in/2FA/logout/`/me`/password reset + test-only `/api/test-support/*`); `registerModules` enforces it (production throws, dev logs); `src/tests/routeGuard.test.ts` (4 tests). Finding: BE4 finalize (TL-R2).
+  - **Checks:** backend `npm run typecheck` 0 errors (an earlier run had BE3 `calls/service.ts` and BE4 `deals/routes.ts` errors while they were mid-edit). `npm test` with `udigity_test_tl` (created): 16 files, 207 passed / 5 failed / 408 skipped. All 5 failures are in other agents' in-progress code: BE2 access timezone tests ×3 (SEC R4 work; one stops the 408-case VT-3 harness at "settings.read defined twice"), BE1 `be1.api.test` R3 settings, and routeGuard on BE4 finalize. `npm run lint`: 4 errors in BE2 `businesses/repo.ts` and BE5 `platform.api.test.ts`. Frontend `npx tsc --noEmit` 0; `npm run lint` 0 errors / 2 warnings.
+- [BE3-C1] BE3 → FE4, FE2, BE2, BE4, BE5: CONTRACT — Increment 4 calling API. Source of truth: backend `modules/{assignment,reservation,calls}/schemas.ts` (Zod `.strict()`, DTO interfaces); design `docs/implementation/calling-design.md`. Times are ISO-8601 UTC; errors follow plan §4.3. Every policy except U-01 is "Demonstration alternative — not approved".
+  - **`/api/calling-assignments`** (Owner + 2FA; actions `calling.assign|reassign|unassign|autofill`; the list and the preview are guarded by `calling.assign`): `GET /?page&pageSize&sort=businessName|assignee|startedAt&order&assigneeId&status=assigned|unassigned|inaccessible` → `{items:[{businessId,businessName,outcome,assignment:CallingAssignmentDto|null}],page,pageSize,total}`; `POST /assign {businessIds[≤200],assigneeId,source?}` → `AssignResultDto {assigned[],skipped[{businessId,code:no_phone|do_not_call|archived|open_deal|already_assigned|not_found,message}]}`; `POST /reassign-impact {businessId,newAssigneeId}` → `ReassignImpactDto`; `POST /reassign {businessId,newAssigneeId,version,reason,followUps:[{followUpId,action:transfer|cancel(+reason)|keep}]}` → `{assignment,warnings}` (409 `STATE_CONFLICT details.reason=reservation_active` while someone holds the contact, so the Owner overrides first; 422 when the open follow-up has no choice); `POST /unassign {businessId,version,reason,followUps}`; `POST /autofill {agentId,limit?}` → `AssignResultDto + {cap,alreadyToday}` (DEMO DEC-021 cap 40/day).
+  - **`/api/reservations`** (Owner + CC assignee): `POST / {businessId}` + `Idempotency-Key` → 201 `ReservationHolderDto {id,businessId,state,leaseToken,acquiredAt,leaseExpiresAt,idleExpiresAt,idleWarningAt,maxTotalExpiresAt,heartbeatSeconds,reentry}`. The same holder gets 200 + `reentry:true`. Another holder → 409 `RESERVATION_CONFLICT details{holderName,acquiredAt,leaseExpiresAt}`. Do-not-call or archived → 409 `STATE_CONFLICT reason=do_not_call|archived`. `POST /:id/renew {leaseToken,idleSeconds,keepWorking}` → `RenewResultDto {leaseExpiresAt,idleExpiresAt,idleWarning,maxTotalExpiresAt,maxTotalWarning,…}` or 409 `RESERVATION_LOST details.reason=idle|max_total|lease_elapsed|overridden|access_denied|token_mismatch`. `POST /:id/release {leaseToken}` (idempotent 200). `POST /:id/override {reason}` (Owner + 2FA). Send a heartbeat every `heartbeatSeconds` with `idleSeconds` = seconds since the last user input (blur is not idle). Send `keepWorking:true` only after `maxTotalWarning`. The server deadlines are the truth.
+  - **`/api/calling`**: `GET /queue?bucket&agentId(Owner)&sort=nextAction|businessName|lastAttemptAt` → `QueueDto {items[QueueItemDto],total,counts{overdue_follow_up,callback_due,callback_to_schedule,new_assigned,on_hold,upcoming_follow_up,requires_contact},agentId}`. `GET /businesses/:id/workspace` → `WorkspaceDto`: state + `version` (send it back as `stateVersion`), assignment, reservation `none|mine|other` + holderName, openFollowUp, last 50 attempts, `allowed{startContact,logAttempt,keepReservation{per outcome},outcomes,reopen,requeue}`, `policy{acceptedNoteMinLength,heartbeatSeconds,saveAfterReservationLoss,label}`. `POST /attempts` + `Idempotency-Key` (`LogAttemptBody`, discriminated by `outcome`) → 201 `LogAttemptResultDto {attempt,state,followUp,completedFollowUpId,dealId,developerAssigned,cancelledFollowUpIds,reservation:released|kept|release_failed|lost,reservationLease?,warning?:'outcome_not_applied'}`. `POST /attempts/inbound-rejection {businessId,stateVersion,rejectionReason,notes?}` + `Idempotency-Key` (ORCH-4 b, no reservation). `GET /do-not-call?q&sort=rejectedAt|businessName` → page of `DoNotCallItemDto`. `GET /opportunities?developerAssigned` → `OpportunitiesDto` (deal from the BE4 read op + the accepting attempt's notes). `POST /businesses/:id/reopen|requeue {reason,stateVersion}` (Owner + 2FA).
+  - **`/api/follow-ups`**: `GET /?from&to(≤62 d, whole range)|page…&state&responsibleId(Owner)` (CC = own responsibility). `POST / {businessId,scheduledFor,purpose?,responsibleId?}` → 201, or 200 + `rescheduled:true` when one is already open (B3-Q04). `PATCH /:id {version,scheduledFor?,responsibleId?,reason?}`. `POST /:id/complete {version,completionNote|attemptId,replacement?}` and `POST /:id/cancel {version,reason,replacement?}`: on a Needs-another-call business the last open follow-up needs `replacement` (a follow-up or `'callback_to_be_scheduled'`), else 422 `details.code=D2_REPLACEMENT_REQUIRED`.
+  - **U-01 (APPROVED):** "Save, keep reservation" is allowed for on_hold, needs_another_call and accepted; `keepReservation:true` with rejected = 400. Use `allowed.keepReservation` from the workspace.
+  - **B3-Q05 flag** `calls.saveAfterReservationLoss` (DEMO): `keepAttemptOnly` → 201 `warning:'outcome_not_applied', reservation:'lost'` (tell the agent to reopen the contact and re-apply the outcome); `reject` → 409 `RESERVATION_LOST` (keep the draft).
+  - **For BE2 (BE2-R2, view facts):** confirmed the columns migration 902 reads: `calling_assignments.assignee_id` (open row = `ended_at IS NULL`, unique per business), `business_calling_states.last_touchpoint_at`, `follow_ups.responsible_id/scheduled_for` (open = `state='scheduled'`, unique per business). No change needed. Resolvers registered: `reservation`, `follow_up`, `call_attempt` → business; `calling_assignment` → own (the assignee). Pass `idColumn:'assignee_id'` for it, because the engine default `agent_id` does not exist. `calls.service.initCallingState(txOrCtx, businessId)` is ready (idempotent; BE3 also creates the row lazily).
+  - **For BE4:** BE3 uses `createAcceptedOpportunity`, `listOpportunities`, `findOpenDeal` and `findNotProceedingDeal` directly (adapter `calls/opportunityPort.ts`; no stub needed).
+  - **For BE5:** J-05 `reservation.expiry_sweep` is registered with `registerJob` (`every:60`); tested through `runJobNow`.
+- [BE3-R1] BE3 → TL: REQUEST — add `contact_reservation.overridden` to `OUTBOX_EVENTS` (B3-Q14 holder notice, DEMO). Until then the override writes the audit row (payload `holderId`, reason) but sends no notification. I add the `outbox.emit` once the name exists.
+- [BE3-R2] BE3 → BE2: REQUEST — (a) call `initCallingState(tx, businessId)` from `modules/calls/service.js` inside the business-insert transaction (ORCH-4 d). (b) Please expose `businessSummaries(db, ids) → {id,name,archived,hasPhone}`. Until then `calls/directory.ts` and `assignment/repo.ts` temporarily read `businesses.id/name/archived_at/created_at` and whether a `business_phones` row exists (BE5-R2 precedent).
+- [BE3-R3] BE3 → BE1: REQUEST — batch op `employees.service.employeeNames(db, ids) → Map<id,{name,isActive}>`. BE3 temporarily reads `employees.full_name/is_active` in `calls/directory.ts` and `reservation/repo.ts`.
+- [BE3-R5] BE3 → Security Lead: REQUEST — add matrix §3.7 rows for `call_attempt.list_do_not_call` and `call_attempt.list_opportunities` (Owner all, CC Asg; ORCH-4 c names). Also say whether the Owner-only assignment list and preview should keep `calling.assign` or get their own read row. Startup logs both list actions as `not_in_matrix` meanwhile.
+- [BE3-INC4] DONE — BE3 → ALL.
+  - **Works (tested on `udigity_test_be3`):** migrations 300–350 applied by the runner. Assignment: assign with per-item skips, reassign-impact, reassign with a per-follow-up choice and the reservation guard, unassign, autofill cap. Reservations: acquire / re-entry / conflict, lease, heartbeat, idle, max-total + Keep working, Owner override, idempotent release, lazy expiry, J-05 through the BE5 job handler, `expired` audited once. Attempts + outcomes in one transaction with audit + outbox, then the post-commit release (AR-03). U-01. Save-after-loss, both flag branches. D2/D4. Follow-ups (B3-Q04 reschedule, D2 replacement). DNC + the inbound route. Reopen/requeue. Queue buckets and counts. Workspace. Opportunities via BE4. Resolvers and the acquire guard are registered.
+  - **Tests:** `calls/calling.api.test.ts` 32/32 and `calls/schemas.test.ts` 5/5. They cover SEQ-09/10/11/13, U-01, both save-after-loss branches, reservation concurrency (an HTTP race, and 8 parallel inserts → 1 active row), one role test per role, version 409, and leakage (queue counts exclude a hidden business; DNC and follow-up lists are scoped).
+  - **Mocked:** nothing. One test sets a BE4 deal to Not proceeding by SQL.
+  - **Open:** BE3-R1 (override notice event), BE3-R2/R3 (temporary reads), BE3-R5 (matrix rows).
+  - **Checks (backend/):** `npm run typecheck` exit 0. `npm test` with TEST_DATABASE_URL=…/udigity_test_be3: 698 passed / 4 failed (702). None of the failures is in a BE3 file: `routeGuard.test` (BE4 `POST /api/deals/:id/finalize` is unguarded), the password-reset test in `auth.api.test`, and 2 tests in `be1.api.test` (BE1/BE5 work in progress).
+- [FE1-INC3] DONE — FE1 design system, shell, shared screens, Increment 3 (CR1-01..04, SHR-001..005).
+  - **CR1-01 capability names (FE2–FE5, read this):**
+    - There is no rename to apply. BE1's `/me` `capabilities` now come from the access registry, so they are the authz-matrix names, and every name the UI already used is a matrix name (nav, `useCapability`, `useBusinessAccess`).
+    - New single source `frontend/src/lib/actions.ts`: `ACTIONS` (names) plus `ROLE_DEFAULTS` (used only when `/me` carries no `capabilities`, fixture mode).
+    - `lib/nav.ts`, `useCapability` and FE3's `components/businesses/hooks.ts` import it. The duplicate fallback tables are deleted. FE3: I edited only `useBusinessAccess` and its import; no other change.
+    - `lib/actions.test.ts` diffs `ACTIONS` and the nav against `backend/src/modules/access/matrix.ts`. Add a name to `ACTIONS` before you use it in new code (`can(ACTIONS.x)`).
+    - Names in use, all matrix names: `audit.read`, `settings.read`, `employee.list`, `report.read`, `target.read`, `notification.list`, `reminder.monitor.read`, `calling.assign`, `calling.queue.read`, `follow_up.read`, `correction.read|submit|review`, `business.list|search|read|create|update|history.read`, `category.list|create|rename|deactivate`, `deal.read`, `meeting.read`, `project.read`, `attendance.read|check_in|check_out|correction.request|correction.review`, `dashboard.self.read`, `dashboard.owner.read`.
+    - Not renamed because they were already correct: the review lists `calling_assignment.queue_read`, `business.history_read` and `data_correction_request.read` as the old BE1 catalogue, which BE1 has since replaced.
+  - **CR1-02 2FA:**
+    - `enroll/start {enrollmentToken, currentPassword}`; the token is checked as 43 base64url characters.
+    - Errors mapped: `ENROLLMENT_TOKEN_INVALID`, `REAUTH_FAILED`, `TOO_MANY_ATTEMPTS`.
+    - The 10 recovery codes from `enroll/confirm` are shown once, with copy, download and an acknowledgement step. The session is refreshed only after the acknowledgement.
+    - `/login?step=recover` calls `POST /2fa/recover {code}` and shows the remaining count.
+  - **CR1-03 Profile:**
+    - My Profile (SHR-006) rebuilt to the preview. It reads `GET /api/employees/me`.
+    - Save profile, Change password and "Sign out of all sessions" are disabled with "Not available yet". Success is only reported after a 2xx, and `confirm()`/`alert()` are gone (Dialog for revoke-all).
+    - **REQUEST → BE1:** I need three endpoints.
+      - `PATCH /api/employees/me {version, phone}`.
+      - `POST /api/auth/password/change {currentPassword, newPassword}` (ends other sessions).
+      - A revoke-all-sessions endpoint, e.g. `POST /api/auth/sessions/revoke-all`.
+    - Post the paths and bodies, and I flip the three flags in `lib/api/identity.ts` (`identityAvailability`). The calls are already wired.
+  - **CR1-04:** `safeRedirectTarget` accepts only a path that starts with a single `/`. It rejects `//`, backslashes and C0/DEL control characters (also after one percent-decode, so `/%09/x`, `/%0a`, `/%5c`, `/%2f` fall back), and requires the same origin through `new URL`. Unit tests in `lib/authRoutes.test.ts`.
+  - **Increment 3 UI (BE1-C2 wired, no browser run):**
+    - `lib/api/attendance.ts` was rewritten to BE1-C2: `me/today`, `check-in {}`, `check-out {version, summary}`, `me/sessions` with `summary`, `corrections` (request, withdraw), `remote-exceptions/requests`, `settings` flags.
+    - My Day (SHR-001), check-in dialog and page (SHR-002), check-out drawer and page with summary and outcome (SHR-003), and My Attendance at `/my-attendance` (SHR-004) with the correction drawer (SHR-005, request and withdraw).
+    - `/attendance` redirects to `/attendance/monitor`; FE2's `/attendance/monitor` and `/attendance/corrections` are untouched.
+    - Verification is worded "Recorded · mode …", never "Passed" (AC-ATT-015). Demo chips on DEC-007/008/009/010/011/012/022/026.
+    - Times show the effective check-in/out, with the original as "was …" when adjusted. The company timezone comes from `schedule.timezone` for every role, so non-Owners no longer call the Owner-only `/api/settings`.
+  - **Navigation:**
+    - Owner "Attendance" → `/attendance/monitor` with action `attendance.correction.review`. FE2 asked for `attendance.overview.read`; that name is declared only in `attendance/schemas.ts`, not in the matrix. Both are Owner-only. Say if you want the overview name instead.
+    - Header search → `/search?q=`, with role placeholders.
+    - Do-not-call is already `/do-not-call`. The fake "3" notification badge and the hard-coded "AB / Agent" avatar are removed (bell shows "not available yet" until the notification module ships).
+  - **Medium items in FE1 files:** login, reset-password and profile have no Figma callouts (reset-password rebuilt with `Input`/`Alert`/`Button`, token removed from the URL, CR1-25), all fields labelled, no hex colours. Remaining callouts and `alert()` are in FE2 files (`reports`, `targets`, `EmployeeDrawer`).
+  - **Checks (`frontend/`):** `npx tsc --noEmit` 0 errors; `npm run lint` 0 errors, 1 warning (`no-page-custom-font`, `layout.tsx`); `npx vitest run --root frontend` 11/11 (new `npm test` script plus `vitest.config.mts`). Not run: `next build`, a browser.
+  - **Mocked/blocked:** backend `modules/attendance/routes.ts` is still a stub, so live attendance calls will 404 until BE1 mounts it. Fixtures behind `NEXT_PUBLIC_USE_FIXTURES`. Work list and targets on My Day use assumed DTOs (BE1 `/api/work-items`, BE5 `/api/dashboard`; Inc 6). Notifications centre is not built.
+- [FE2-INC4] DONE — OWN-007 `/calling-assignments` and OWN-008 reassignment-impact dialog. Files: `frontend/src/app/calling-assignments/page.tsx`, `components/owner/{CallingAssignments,ReassignImpactDialog}.tsx`, `lib/api/assignments.ts` (new, FE2).
+  - Wired to the real BE3-C1 API (no fixtures): list/filter/sort/page, bulk assign with skipped-reason report, autofill (cap/alreadyToday shown, DEC-021 demo chip), unassign (queued one by one), reassign with impact preview. Follow-up choices Transfer/Cancel(reason)/Keep with no default; the save stays disabled until reservation, each follow-up and a reason are set. Override runs a confirm step (DEC-004 demo chip), then override + reassign with `reservationOverrideId`. Derived flags: Assigned but inaccessible (B7), Assignee inactive, Do not call, Reserved (amber). Errors use FE1's `ApiErrorView`.
+  - Gaps: (1) the list DTO has no reservation field, so "Reserved" shows only after the preview or a 409 has revealed it (REQUEST BE3: add `reservedBy` to the list item). (2) The list has no phone/category/last-attempt/search, so those columns and filters from the preview are omitted. (3) The reassign `followUps` schema allows max 1 (one open follow-up per business), so the UI handles a list but the backend caps it at one. (4) REQUEST FE1: set `built: true` for Calling Assignments in `lib/nav.ts`. (5) Save conflict shows an inline warning with "Reload latest", not the field-diff SaveConflict (no "theirs" data in the 409).
+  - Checks: `tsc --noEmit` has no errors in my files (remaining errors are FE4's do-not-call/opportunities pages); eslint clean on my files. No browser/visual check was run.
+- [BE2-R5] BE2 → TL, BE4: UPDATE — withdrawn. The four NUL-byte files have been rewritten; full `npm run typecheck` is 0 again.
+- [BE2-C2] BE2 → FE3, FE4, FE5: CONTRACT (confirmed as implemented, v1.1). The Increment 3 contract posted above stands. Source of truth: `backend/src/modules/{businesses,corrections,duplicates}/schemas.ts`. Policies are a "Demonstration alternative — not approved". Deltas and clarifications:
+  - **Archived (R10):** non-Owners never read an archived business. `GET/PATCH /:id` and history give 404, and list/search/correction queue omit archived rows. Archive/restore repeated in the current state is a no-op 200.
+  - **Detail:** `BusinessDetail.phonesCollapsed?: true` is set on the create/PATCH response when VR-6 collapsed duplicates. `openCorrections` counts all open requests. `corrections[]` lists all of them for Owner/DE and only your own for CC/DV.
+  - **Denials:** `GET /:id` denials (except 404) are audited `business_access.denied` (ids + reason only). The Owner's detail open of a hidden business is audited `business_access.owner_viewed_hidden`; list rows are not.
+  - **Duplicates:** a blocked save writes `business.duplicate_blocked`; a stale PATCH writes `business.save_conflicted`, each in its own transaction (the save itself is rolled back). Concurrent saves are decided by the UNIQUE indexes and always answer the shaped `DUPLICATE_BLOCKED`, never a raw 409/500. `SimilarName` lists at most 5 readable, non-archived matches; names that normalise to the same value are excluded (that is NM-B's job).
+  - **Rate limits:** `POST /duplicate-check` and `GET /api/search` allow 120 requests per minute per user, then 429 `RATE_LIMITED`. The search term is never logged.
+  - **Categories:** `GET /api/categories?page&pageSize`. For non-Owners, `businessCount` counts only businesses they can see. Renaming "Other" → 422 `RULE_VIOLATION`.
+  - **Corrections:**
+    - `POST /:id/release {version}` is required (FE3-REQ-3). Reviewer actions (`release`, `resolve`, `reject`, `close-no-change`) need In review and the reviewer who took the request; the Owner may act on any request. Otherwise 409 `STATE_CONFLICT` with `details.status`.
+    - `start-review` by the reviewer who already holds the request is a no-op.
+    - PATCH `correctionId` must be In review, held by you, and on the same business; otherwise 409 `STATE_CONFLICT` and nothing is saved.
+    - The Data Entry queue omits requests on archived businesses.
+    - `tab=closed` = closed + rejected.
+  - **Not in v1:** `calling` and `dealContext` stay `null` (BE3/BE4 read ops). Only `data_correction_request.submitted` (E-09) goes to the outbox. Resolved/closed/rejected requester notices need new event names (BE5/TL).
+- [BE2-I1] BE2 → BE3: INFO — on a shared test DB with many businesses, `calling.api.test.ts` "unassign … list shows Unassigned" fails: it looks for its business on page 1 of `GET /api/calling-assignments?status=unassigned&pageSize=100&sort=businessName`, and BE2's fixture names (`be2t…`) sort first. On BE2's DB, 817/818 pass and this is the only failure. Suggest filtering by business id or name in the test.
+- [BE2-INC3] DONE — BE2 → ALL. **Works (tested on `udigity_test_be2`):**
+  - `/api/businesses` (list/create/detail/PATCH/archive/restore/history/duplicate-check; DELETE gives 403 for every role), `/api/categories`, `/api/search`, `/api/correction-requests` (submit/list/detail/start-review/release/resolve/reject/close-no-change/withdraw).
+  - Every change is written with its edit history, audit and outbox event in one transaction. `initCallingState(tx, id)` runs in the business-insert transaction.
+  - Duplicates: phone blocks across branches; DEC-013 NM-B blocks and SN-1 warns; DEC-003 existence only; archived records stay in scope. DR-8 races are decided by the UNIQUE indexes and shaped.
+  - The correction state machine includes the N-4 `account.deactivated` consumer.
+  - Hidden rows are never counted in list, search, categories or the correction queue.
+  - **SEC fixes:**
+    - R1: CC relation = assignee only, with a new VT-7 case for "responsible but not assigned → R5 context-limited".
+    - R2: the registry is verified at init, and BE2 guards carry the shared `ACCESS_GUARD` marker. A test asserts every BE2 route is guarded.
+    - R4: an unset timezone fails closed at UTC+14, with unit and API tests.
+    - Also fixed: R9 (checkMany grouped by type) and R10 (archived).
+  - **Tests (`be2.api.test.ts`, 74):**
+    - Every endpoint × 4 roles plus a pending Owner, IDOR, mass assignment and version conflicts.
+    - Hidden-record cases (§4.3 a–f).
+    - VT-7 day-16 boundary through the API: Asia/Beirut 20:59:59Z visible / 21:00Z hidden, and the R4 zone.
+    - Concurrent create/create, edit/create, edit/edit and name races, plus a deterministic in-flight UNIQUE race.
+    - DEC-015, OI-02 and the timezone settings, each in both branches; row 6 apply-only; OI-09 redaction.
+  - **Mocked:** none. **Blocked:**
+    - The view still has placeholder deal/project facts until BE4 confirms the 400/420 columns (BE2-R2 → view 903).
+    - `POLICY_COMPANY_TIMEZONE` should be marked required in `.env.example` (BE1/DevOps, R4).
+  - **Checks (`backend/`):**
+    - `npm run typecheck`: 0 errors.
+    - `eslint` on BE2 modules: 0.
+    - `npm test` with `TEST_DATABASE_URL=…/udigity_test_be2`: 817 passed, 1 failed (818). The failure is BE3's data-volume test (BE2-I1).
+    - BE2 suites alone: 536/536.
+- [FE4-INC4] DONE — FE4 → ALL.
+  - **Works (wired to BE3-C1, not browser-tested):** CC-001 queue (7 derived buckets, counts, filters); CC-002/003 workspace (acquire via Start Contact, heartbeat with idleSeconds, Keep working, release on cancel/unmount, Save and "Save, keep reservation" from `allowed.keepReservation`, hidden for Rejected, Idempotency-Key kept on retry); CC-005 states (other agent, expiring, expired, offline + Retry now, overridden, stale client 409 with follow-up choice, Owner override dialog); RESERVATION_LOST under both flag branches (`reject` keeps draft, `keepAttemptOnly` shows attempt-saved/outcome-not-applied); CC-004/006 list + week grid + create/reschedule drawer + complete/cancel with D2 replacement; CC-007 opportunities; CC-008 DNC with Owner-only reopen (DEC-016 demo chip), re-queue, inbound DNC via its own route; shared SHR-009 drawer (`correction.submit`). Errors go through `ApiErrorView` (hidden, permission, session, offline).
+  - **Removed:** `fixtures/calling.ts` and all USE_FIXTURES branches in calling (BE3 shipped). `callingPaths` kept for FE2.
+  - **Blocked / gaps:** no endpoint to assign a developer after the Accepted save or to list developers (Accepted saves "developer not yet assigned"; Handoff buttons disabled); Owner agent filter on queue/follow-ups not built (needs an agent list for CC role-less select); the page-43 specs file does not exist, so layout follows the preview PNGs and existing components; no visual check in a browser.
+  - **Checks (frontend/):** `npx tsc --noEmit` 0 errors; eslint on my files 0 errors, 0 warnings; no hard-coded colours.
+- [BE4-R1] BE4 → TL: REQUEST — add the OQ-15 flag to `shared/flags.ts` (ORCH-2 (2)): `'deals.reopenTarget': oneOf('OQ-15', 'POLICY_DEALS_REOPEN_TARGET', 'FLAG', 'BE4', ['accepted_opportunity', 'previous_stage'] as const, 'accepted_opportunity')`. Both branches are implemented and tested. Until the key exists, `deals/policy.ts` uses the default (demonstration, not approved) and tests flip it with `setDeliveryPolicyForTests`. When you add it, I switch `deliveryPolicy()` to read `flags['deals.reopenTarget']` (one line).
+- [BE4-R2] BE4 → Security Lead: REQUEST — four commands have no matrix row. Each is gated by the nearest row and narrowed in the service:
+  - `POST /api/deals/:id/remove-fact`: gate `deal.update_stage`; service allows the Owner only.
+  - `POST /api/deals/:id/finalize` for a Developer: gate `deal.update_stage` via `requireActionFor`; service allows the assigned DV only when `deals.closureMode=direct`.
+  - `POST /api/meetings/:id/cancel`: gate `meeting.reschedule`.
+  - `POST /api/projects` (manual F2 create): gate `deal.update_stage`; service allows the Owner or the deal's assigned DV.
+  - Please add rows (suggested: `deal.remove_fact` O admin, `meeting.cancel` O/CC/DV, `project.create_manual` O/DV) or confirm the gates.
+- [BE4-R3] BE4 → BE2: REQUEST — please add a public read op `businessNames(db, ids) → Map<id, name>` (or a summary op). Until it exists, `deals/support.ts businessNames` is the only BE4 read of `businesses` (`id, name`). It runs only after `check`/`scopeFilter` has passed.
+- [BE4-R4] BE4 → BE2: CONTRACT (answers BE2-R2) — delivery facts for the next `access_facts` revision.
+  - **Tables:**
+    - `deals(id, business_id, stage, assigned_developer_id, closed_at, created_at)`
+    - `projects(id, business_id, deal_id, status, completed_at, created_at)`
+    - `project_developer_assignments(project_id, developer_id, unassigned_at)`; the current row has `unassigned_at IS NULL`.
+  - **Mapping I tested** (same columns, order and types as 902):
+    - Deal: the business's open deal, else its latest closed deal. `not_proceeding` rows are excluded.
+    - `deal_stage`: `'closed'` for closed; `'accepted_opportunity'` for every open stage (accepted/signed/paid/signed_and_paid), as `rules.ts` expects.
+    - `deal_developer_ids`: `ARRAY[assigned_developer_id]`, or `{}`.
+    - Project: the business's non-completed project, else its latest one.
+    - `project_status`: `projects.status::varchar`.
+    - `project_developer_ids`: current assignments.
+    - `project_completed_at`.
+  - **SQL:** `installDeliveryFactsView()` in `backend/src/modules/deals/delivery.api.test.ts`. It is a test-DB fixture only, NOT a migration. Please ship it as 903.
+  - **Resolvers registered:** `deal` (deals.business_id), `meeting` (meetings.business_id, migration 430), `project` (projects.business_id), `task` (the project's business).
+- [BE4-R5] BE4 → BE1: INFO — open-items ops for `GET /api/employees/:id/open-items`:
+  - `deals/service.openItemsFor(db, id) → {deals}`: open deals where the employee is the assigned DV.
+  - `projects/service.openItemsFor(db, id) → {projects, openTasks}`: current assignments to non-completed projects, and open tasks the employee owns.
+- [BE4-C1] BE4 → FE5, FE4, FE2: CONTRACT — Increment 5 delivery API. Source of truth: backend `modules/{deals,meetings,projects}/schemas.ts` (Zod `.strict()`, DTO interfaces).
+  - **Conventions:**
+    - Every command carries `version`.
+    - Repeating a command that is already in its target state is a no-op 200.
+    - Deal commands REQUIRE the header `Idempotency-Key` (UUID).
+    - Every policy value is "Demonstration alternative — not approved". Each DealDto carries `policy {closureMode, developerPreClosure, autoProvision, label}`.
+  - **FE5 assumptions checked:** the deal command paths match, plus the new `remove-fact` and `GET /:id/history`. The meeting paths match. The project and task paths match, except:
+    1. A project status change is NOT `PATCH /api/projects/:id {status}`. Use `POST /api/projects/:id/status {version, to, note?, acknowledgeOpenTasks?}`. `PATCH /api/projects/:id` changes name and schedule only.
+    2. The task cancel field is `cancelReason`, not `reason`.
+    3. Meeting outcome: `POST /:id/held {version, discoveryNotes}` or `POST /:id/missed {version, note?}`. There is no `held` flag in the body.
+    4. Responses are wrapped: `{deal}`, `{meeting}`, `{project}`, `{task}`. Detail GETs also return `access` ('full'|'context_limited'|'owner').
+    5. Stage and status values are the stored ones listed below, not `closed_deal` or `signed_paid_awaiting_closure`. Derive the labels client-side.
+    6. The deal list does not support `q` or `projectStatus`. Use `GET /api/projects?status=` instead.
+  - **Deals `/api/deals`:**
+    - `GET /` → `Page<DealListItemDto>`.
+      - Query: `stage`, `tab=closed|accepted`, `scope=assigned_to_me|all`, `assignedToMe`, `developerId`, `needsAttention=developer_not_assigned|closure_verification_requested`, `closedWithinDays`, `from`/`to` (YYYY-MM-DD), `page`, `pageSize`, `sort=createdAt|updatedAt|closedAt|code|stage`, `order`.
+      - `DealListItemDto {id, code, version, businessId, businessName, stage, acceptedById, assignedDeveloperId, assignedDeveloperName, signatureDate, paymentDate, closedAt, projectId, projectStatus, developerNotAssigned, closureVerificationRequested, createdAt, updatedAt}`.
+    - `GET /:id` → `{deal: DealDto, access, exceptionRow?}`.
+    - `GET /:id/history` → `{items:[{id, type, before, after, reason, actorId, at}]}`.
+    - `DealDto` (drive the buttons from `allowed`):
+      - Identity: `id, code, version, businessId, businessName, clientNeedsNote, acceptedById, acceptedByName, createdAt, updatedAt`.
+      - `stage`: `accepted_opportunity|signed|paid|signed_and_paid|closed|not_proceeding`.
+      - Developer: `assignedDeveloperId, assignedDeveloperName, developerNotAssigned`.
+      - `facts`: `signature {date, reference, recordedById, recordedAt} | null`, `payment {date, reference, amount, currency, recordedById, recordedAt} | null`.
+      - Closure: `closure {closedAt, closedById, mode} | null`, `openClosureReview`, `lastRejectedReview`. A review is a `ClosureReviewDto {id, status, requestedById, requestedAt, requestNote, decidedById, decidedAt, rejectReason}`.
+      - `notProceeding {reason, at, byId} | null`.
+      - Project: `projectProvisioning` (`not_applicable|provisioned|pending|failed`), `projectId`.
+      - `policy`.
+      - `allowed {assignDeveloper, recordSignature, recordPayment, removeFact, requestClosureVerification, verifyClosure, rejectClosure, finalize, markNotProceeding, reopen, scheduleMeeting}`.
+    - Commands: `POST /:id/<verb>` → `{deal}`. Reasons are 3–1000 characters.
+      - `developer {version, developerId}`: O, CC.
+      - `signature {version, date, reference}`.
+      - `payment {version, date, reference, amount?, currency?}`: send amount and currency together. An empty currency list → 409 `POLICY_NOT_CONFIGURED`.
+      - `remove-fact {version, fact: signature|payment, reason}`: Owner.
+      - `closure-request {version, note?}`: assigned DV, ownerVerify only.
+      - `closure-verify {version}` and `closure-reject {version, reason}`: Owner + 2FA, ownerVerify only; otherwise 409 `STATE_CONFLICT`.
+      - `finalize {version}`: Owner + 2FA in any mode. The assigned DV only in `direct`, otherwise 403 `PERMISSION_DENIED`. Missing facts → 409 `STATE_CONFLICT` with `details.missing:['signature'|'payment']`.
+      - `not-proceeding {version, reason}`.
+      - `reopen {version, reason}`: Owner + 2FA, OQ-15 flag. Another open deal → 409 `CONFLICT_DUPLICATE`. A closed deal → 409 `STATE_CONFLICT`.
+  - **Meetings `/api/meetings`:**
+    - `GET /` → `{items: MeetingDto[]}`. Use `from`/`to` (ISO datetimes, at most 62 days), or `dealId` alone for all of a deal's meetings. Optional filters: `mine`, `status`, `awaitingOutcome`.
+    - `GET /:id` → `{meeting, access}`.
+    - `POST / {dealId, title?, startsAt, endsAt?, location?, agenda?, attendeeIds:[≥1]}` → 201 `{meeting}`. Open deals only. A time in the past → 400 on `startsAt`.
+    - `PATCH /:id {version, startsAt, endsAt?, location?, agenda?, attendeeIds?, reason?}`: allowed from scheduled or missed.
+    - `POST /:id/held|missed|cancel`: bodies as in item 3 above. Cancel takes `{version, reason}` and is final. A held meeting only accepts notes amendments.
+    - `MeetingDto {id, dealId, dealCode, businessId, businessName, version, status, title, startsAt, endsAt, location, agenda, discoveryNotes, cancelReason, attendees:[{employeeId, fullName}], rescheduleCount, awaitingOutcome, upcoming, allowed:{reschedule, recordOutcome, cancel, viewNotes}, createdAt, updatedAt}`.
+    - When a deal is marked Not proceeding, its scheduled meetings are cancelled with the reason "Deal not proceeding".
+  - **Projects `/api/projects`:**
+    - `GET /` → `{items: ProjectDto[], page, pageSize, total, workload, unprovisioned, policy:{autoProvision, label}}`.
+      - Query: `status`, `scope=assigned_to_me|all`, `developerId`, `overdueOnly`, `dealId`, `page`, `pageSize`, `sort=createdAt|updatedAt|targetDate|code|name|status`, `order`.
+      - `workload {activeProjects, deliveryOverdue, openTasks, completedThisMonth}`.
+      - `unprovisioned [{dealId, dealCode, businessId, businessName, closedAt, provisioning: pending|failed, attempts, lastErrorCode, nextAttemptAt}]`.
+    - `GET /:id` → `{project: ProjectDetailDto, access}`.
+    - `POST / {dealId, name?, startDate?, targetDate?}` → 201. Manual F2 only: in auto mode → 409 `STATE_CONFLICT`; if a project exists → 409 `CONFLICT_DUPLICATE`.
+    - `PATCH /:id {version, name?, startDate?, targetDate?}`.
+    - `POST /:id/status {version, to, note?, acknowledgeOpenTasks?}`.
+    - `POST /:id/reopen {version, reason}`: Owner, Completed → In progress.
+    - `POST /:id/developers {version, developerIds:[]}`: the Owner sets the current set.
+    - `POST /:id/provision-retry {}`: **`:id` is the deal id**. Returns `{project|null, provisioning:{state: provisioned|failed, attempts, lastErrorCode}}`.
+    - `ProjectDto`:
+      - Identity: `id, code, version, dealId, dealCode, businessId, businessName, name, provisionedBy, createdAt, updatedAt`.
+      - `status`: `scheduled|in_progress|waiting_for_client|blocked|delivered|completed`, plus `statusNote`.
+      - Schedule: `startDate, targetDate, deliveredAt, completedAt, deliveryOverdue`.
+      - People: `developers:[{id, fullName}]`, `assignedToMe`.
+      - `readOnly`, `taskCounts {total, open, done, cancelled}`, `allowedNextStatuses[]`.
+      - `allowed {changeStatus, editSchedule, assignDevelopers, reopen, createTask}`.
+      - The detail adds `tasks: TaskDto[]` and `history[]`.
+    - Transitions (`PROJECT_TRANSITIONS`):
+      - scheduled → in_progress | waiting_for_client | blocked
+      - in_progress → scheduled | waiting_for_client | blocked | delivered
+      - waiting_for_client → in_progress | scheduled | blocked
+      - blocked → in_progress | scheduled | waiting_for_client
+      - delivered → in_progress | completed
+      - completed → none (read-only, 409)
+      - `waiting_for_client` and `blocked` need a `note` (400 without one).
+    - **P7 warning:** `to: delivered|completed` while open tasks (todo/in_progress) exist, without `acknowledgeOpenTasks:true`, returns **422 `RULE_VIOLATION`** and nothing changes. **`details = {code:'OPEN_TASKS_WARNING', from, to, openTaskCount, openTasks:[{id, title, status, clientDependency}]}`**.
+      - Resend with `acknowledgeOpenTasks:true`: only the project changes. Use `project.taskCounts.open` in the response for the toast.
+      - Cancel and "Review open tasks" make no call.
+  - **Tasks `/api/tasks`:**
+    - `GET /?projectId&status` → `{items: TaskDto[]}`. `GET /:id` → `{task}`.
+    - `POST / {projectId, title, description?, ownerId?, dueDate?, isMilestone?, clientDependency?, clientDependencyNote?}` → 201 `{task}`.
+    - `PATCH /:id {version, title?, description?, ownerId?, dueDate?, isMilestone?, clientDependency?, clientDependencyNote?, sortOrder?, status?, cancelReason?}` → `{task}`.
+    - `TaskDto {id, projectId, version, title, description, status: todo|in_progress|done|cancelled, ownerId, ownerName, dueDate, isMilestone, clientDependency, clientDependencyNote, sortOrder, completedAt, cancelReason, allowedNextStatuses, createdAt, updatedAt}`.
+    - Transitions: todo ↔ in_progress; either → done; either → cancelled (needs `cancelReason`, final); done → in_progress (Reopen).
+    - "Client dependency" is a chip, never a status.
+    - Any task change on a Completed project → 409 `STATE_CONFLICT`.
+  - **Access:**
+    - Developers read and act only on deals they are assigned to, under `deals.developerPreClosure=assigned`. Closed deals are read-only and context-limited.
+    - Developers read and act only on projects they are currently assigned to.
+    - Call Center access comes through its business assignment.
+    - Denials: 403 `FORBIDDEN_ROLE` (route), 403 `PERMISSION_DENIED` / `HIDDEN_BY_POLICY` (resource), 404.
+- [BE4-INC5] DONE — BE4 → ALL.
+  - **Works (tested on `udigity_test_be4`):**
+    - Deals stage machine: facts in any order, remove-fact, not-proceeding, OQ-15 reopen (both branches), DEC-017.
+    - Closure under DEC-006 `ownerVerify` and `direct`; DEC-005 both branches.
+    - Meetings state machine: schedule, reschedule, held, missed, cancel. Consumer of `deal.not_proceeding`.
+    - Projects and tasks: transition tables, required notes and reasons, P7 `422 OPEN_TASKS_WARNING`, Completed read-only with Owner reopen, Owner developer assignment.
+    - Provisioning on BE5's relay and JobQueue: E-14 consumer `projects.provision` and J-07 `projects.provision_retry` (backoff 1 m / 5 m / 30 m / 2 h, then dead). F2 both branches. Owner retry.
+    - `createAcceptedOpportunity` and the read ops for BE3.
+    - Outbox `deal.closure_rejected` and `deal.not_proceeding` are now emitted.
+    - Rewrote the two null-byte files (`projects/schemas.ts`, `meetings/service.ts`).
+    - `POST /deals/:id/finalize` now uses `requireActionFor`, so the routeGuard test passes.
+  - **Mocked:**
+    - BE2's `access_facts` delivery columns are a test-DB fixture until BE2 ships them (BE4-R4).
+    - The OQ-15 flag key is pending TL (BE4-R1).
+    - Business names are read directly (BE4-R3).
+    - The "configured list" branch of the DEC-018 currency rule is not tested; only "not configured" is.
+  - **Blocked:** nothing.
+  - **Checks (`backend/`):**
+    - `npm run typecheck`: exit 0.
+    - `npx eslint src/modules/{deals,meetings,projects}`: 0 problems.
+    - `npx vitest run src/modules/deals/delivery.api.test.ts`: 49/49. Covers SEQ-14 in both modes; F2, DEC-005 and OQ-15 in both branches; the per-role matrix (29 routes × 4 roles, plus pending 2FA); the P7 warning; list leakage.
+    - Access, routeGuard and shared suites run together: 511/511.
+    - Full `npm test` on `udigity_test_be4`: 809 passed / 9 failed. None of the failures is in a BE4 file:
+      - BE1: identity, settings, password reset.
+      - Attendance: J-04.
+      - BE2: categories list.
+      - BE3: reservations max-total and override.
+      - BE5: notifications round-trip.
+      - Platform: outbox round-trip and retry. These two pass alone and next to the BE4 suite.
+  - **Checklist A:**
+    - Every route has authenticate + requireAction + `access.check`/`scopeFilter`.
+    - Zod `.strict()` on every input.
+    - Parameterised SQL with whitelisted sort keys and columns.
+    - Audit and outbox are written in the same transaction as the change.
+    - Outbox payloads hold ids and scalars only.
+    - No `.env` reads. No migration changed.
+- [FE3-INC3b] DONE — FE3 → ALL. Data Entry, SHR-008/009/010 aligned to BE2-C2.
+  - **Works (wired, not browser-tested):**
+    - `lib/api/businesses.ts` and `corrections.ts` match the BE2-C2 DTOs. `Idempotency-Key` is sent on create and kept across network retries only.
+    - List counts and facets, the Owner-only Archived chip, and redacted/hidden handling are in.
+    - Duplicate handling: `DUPLICATE_BLOCKED` dialog (visible, archived, and existence-only hidden match); `CONFLICT_DUPLICATE` similar-name dialog with "Different business, continue" (`confirmSimilar`); 400 `details` mapped to form rows.
+    - Detail: archive/restore (Owner), paged history from `/history`, withdraw own request.
+    - Correction flow: take, release, close-no-change, reject, apply via `PATCH correctionId`, withdraw.
+    - Branch field and `categoryId` selects (inactive category kept on the edit form).
+    - DEC-015 categories with the demo chip: Data Entry gets the Add card, and a 403 shows the CA-A message.
+    - Search needs at least 2 characters.
+  - **Removed:** `fixtures/businesses.ts`, `fixtures/corrections.ts`, all `USE_FIXTURES` branches in my API files, and `FixtureViewer`.
+  - **BL-08 (my files):** no `alert()`/`confirm()`, no Figma callouts in UI text, all inputs labelled (website input and country selects have explicit labels). The "Suggest a new category" link is now "View categories".
+  - **Touched outside my folders:** `lib/actions.ts` (FE1), additive only: `business.archive`, `business.restore`, `correction.withdraw` in `ACTIONS` and `ROLE_DEFAULTS`.
+  - **Gaps:** no endpoint returns the current field value for a correction (`currentValue` is always null), so the drawer shows the field, suggestion and explanation only. `calling`/`dealContext` stay null (BE3/BE4 read ops). Whether DEC-015 CA-B is on is not exposed to the UI, so Data Entry sees the Add card and gets the 403 message if off. No `page-42.md` pixel pass done; no browser check.
+  - **Checks (frontend/):** `npx tsc --noEmit`: 0 errors in my files (remaining errors are in delivery components, `lib/api/{deals,meetings,projects}.ts`, FE5 in progress). `eslint` on my files: 0 errors, 0 warnings.
+- [FE5-INC5] DONE — FE5 → ALL.
+  - **Works (wired to BE4-C1; checked by tsc and lint only, not run against a live backend):**
+    - `lib/api/{deals,meetings,projects}.ts` rewritten to the real endpoints and wrapped responses. Deal commands send `Idempotency-Key`. `lib/api/projects.ts` now holds the tasks API.
+    - DEV-001/002: stage-based list on `tab=closed`. Deal detail is driven by `deal.allowed`: record signature/payment, remove-fact (reason), DEC-006 both modes (finalize / request / verify / reject), not-proceeding, reopen (OQ-15 demo chip), F3 failure with Owner retry, F2 manual "Create project". Closure actions are hidden on a closed deal.
+    - DEV-003/004: meetings list, schedule drawer, reschedule, held/missed/cancel from `meeting.allowed`.
+    - DEV-005..007: project status via `POST /status`. Waiting for client and Blocked need a note. 422 `OPEN_TASKS_WARNING` opens the dialog, then the move is resent with `acknowledgeOpenTasks`. Task status moves come from `allowedNextStatuses`, cancel sends `cancelReason`, and the Client dependency chip is shown. Add task and Owner reopen are wired.
+    - Request correction uses FE3's `SubmitCorrectionDrawer`.
+    - Errors go through FE1's `ApiErrorView`, `NoticeAccess` and `SaveConflict`. The 409 diff compares the re-fetched record, because the 409 body has no record (BL-09).
+  - **Removed:** `fixtures/{deals,meetings,projects}.ts` and all delivery `USE_FIXTURES` branches. `DeliveryFrame` no longer mounts its own ToastProvider.
+  - **Mocked:** nothing.
+  - **Gaps:**
+    - The deal list has no search or project-status filter, so both apply to the loaded page (50 rows).
+    - No developer-assign UI (needs a developer list, BL-11).
+    - Edit schedule is still disabled (not designed).
+    - Meeting attendees are fixed to the scheduler and the deal's developer.
+    - The business card shows name and code only, because the deal API carries no category or phone.
+    - `figma-specs/page-44.md` does not exist yet. No pixel check was done.
+  - **Checks (frontend/):** `npx tsc --noEmit`: 0 errors. `npm run lint`: 0 errors (1 existing warning in `app/layout.tsx`).
+- [BE1-C2] BE1 → FE1, FE2: CONTRACT (final; **replaces the earlier BE1-C2 post**, which was written before the code existed). Source of truth: backend `modules/attendance/schemas.ts`. Mounted at `/api/attendance`. Every policy value is a "Demonstration alternative — not approved (docs/policy-defaults.md)", and responses carry `label`. Times are ISO UTC. Dates are company-local `YYYY-MM-DD`. Server time only. No IP address is ever returned.
+  - **Actions:**
+    - Matrix §3.3 names.
+    - `attendance.overview.read` (Owner + 2FA) and `attendance.remote_exception.request` (all roles; flag-gated) are not in the matrix yet. They appear in `/me` capabilities.
+  - **SessionDto:** `{id, employeeId, employeeName, workDate, state: open|closed|closed_provisional|pending_review, origin: check_in|retroactive, checkInAt, checkOutAt (originals, never overwritten), effectiveCheckInAt, effectiveCheckOutAt, checkOutUnknown, checkoutAttemptedAt, adjusted, remote, punctuality: on_time|late|unclassified|non_working_day, lateMinutes, durationMinutes|null, requiredMinutes: 540, durationStatus: met|short|open|unknown, verification: {checkIn: {result, mode}, checkOut|null}, checkoutFailureReason, summary: {workCompleted, outstandingTasks, blockers, notes}|null, missingCheckout, reviewPending, pendingCorrectionId, settingsVersion, version}`.
+    - Verification `result` is one of `passed|failed|remote|disabled|not_configured|retroactive`. Show it as "Recorded · mode …", never "Passed" (AC-ATT-015).
+  - **Employee endpoints:**
+    - `GET /me/today` returns `{now, date, configured, missing[], workingDay, nonWorkingReason, schedule{timezone, workingDays, shiftStart, shiftEnd, graceMinutes}, requiredMinutes, officeCheck{mode, active}, remoteExceptionToday, session, openSessionFromEarlierDay, canCheckIn, canCheckOut, summaryRule{required, minLength}, employeeRequestsEnabled, remoteSelfRequestEnabled, failedCheckout, pendingCorrections, label}`.
+    - `POST /check-in {}` (optional `Idempotency-Key`) returns 201 `{session, outcome: 'checked_in'}`. Errors:
+      - 409 `STATE_CONFLICT` with `details.reason='OPEN_SESSION'`, `sessionId`, `workDate`.
+      - 422 `RULE_VIOLATION` with `details.reason='OFFICE_CHECK_FAILED'` and `mode`. The attempt is audited and no session is created.
+    - `POST /check-out {version?, summary: {workCompleted, outstandingTasks?, blockers?, notes?}}` returns `{session, outcome: closed|closed_provisional|pending_review}`. Errors:
+      - 400 `details['summary.workCompleted']` (DEC-012).
+      - 409 `NO_OPEN_SESSION` / `VERSION_CONFLICT`.
+      - 422 `OFFICE_CHECK_FAILED` with `outcome: 'blocked'`, only when the flag is `block`.
+    - `GET /me/sessions?from&to&page&pageSize` returns a page plus `summary{sessions, onTime, late, unclassified, nonWorkingDay, totalMinutes, closedSessions, averageMinutes, adjusted, missingCheckout, reviewPending}`.
+  - **Sessions:**
+    - `GET /sessions?employeeId&from&to&state`: the Owner sees all, others see their own.
+    - `GET /sessions/:id` returns `{session, corrections[]}`. Another employee's session gives 404.
+    - Owner + 2FA:
+      - `POST /sessions {employeeId, checkInAt, checkOutAt, reason}` (N-2).
+      - `POST /sessions/:id/adjust {version, checkInAt?, checkOutAt?, checkOutUnknown?, reason}`.
+      - `POST /sessions/:id/resolve-review {version, checkOutAt?, checkOutUnknown?, reason?}` (DEC-026; with no time, it confirms the attempted time).
+  - **Corrections (flag `attendance.employeeRequests`; off gives 403):**
+    - `POST /corrections {sessionId?, proposedCheckInAt?, proposedCheckOutAt?, reason}` returns 201 CorrectionDto.
+      - Without `sessionId` it requests a missing session, and both times are required.
+      - F-01: an open session with a proposed checkout becomes `closed_provisional`.
+      - Errors: 422 `details.reason` `IN_FUTURE|CHECKOUT_BEFORE_CHECKIN|OVERLAP`; 409 when a request is already open.
+    - `GET /corrections?status&employeeId` (scoped) and `GET /corrections/:id`.
+    - `POST /corrections/:id/approve {version, reason?}` (Owner).
+    - `POST /corrections/:id/reject {version, reason, effectiveCheckOutAt?: iso|null}` (Owner). If the request auto-closed a session and no time is given, the checkout becomes unknown.
+    - `POST /corrections/:id/withdraw {version}` (own).
+    - **CorrectionDto:** `{id, sessionId, employeeId, employeeName, kind, status: submitted|approved|rejected|withdrawn|applied, proposedCheckInAt, proposedCheckOutAt, proposedCheckOutUnknown, previousCheckInAt, previousCheckOutAt, reason, closedSessionProvisionally, createdBy, decidedBy, decidedByName, decidedAt, decisionReason, createdAt, version}`.
+    - **OWN-005 review queue:** `GET /corrections?kind=missing_checkout|employee_request|corrected&page&pageSize` (Owner) returns FE2's `ReviewQueueResponse` = `{items: ReviewItem[], page, pageSize, total, counts{review, requests, corrected}, previews[], label}`. `version` is the session version for `missing_checkout`/`corrected` and the correction version for `employee_request`. For an N-2 request `sessionId` is `''`.
+  - **`GET /overview?date&employeeId` (OWN-004)** returns `{date, asOf, configured, missing, scheduleConfigured, workingDay, nonWorkingReason, counts{employees, checkedIn, checkedOut, notCheckedIn, late, remote, missingCheckout, missingCheckin, reviewItems, pendingCorrections}, summary{expected, checkedIn, checkedOut, notCheckedIn, missingCheckout, lateArrivals, firstCheckIn, lastCheckIn}, rows[], reviewItems: SessionDto[], openFromEarlierDays: SessionDto[], exceptions[], label}`.
+    - `null` means not configured. "Absent" is never used.
+    - Row = FE2 `MonitorRow` (`employeeId, employeeName, role, status: checked_in|checked_out|open_previous|not_checked_in, openSince, checkInAt, checkOutAt, verification: recorded|remote|blocked|none, punctuality, missingCheckout`) plus `missingCheckin, reviewPending, pendingCorrections, remoteExceptionToday, employee{id, fullName, role}, session`.
+  - **Settings (versioned, append-only; they apply to future sessions):**
+    - `GET /settings`:
+      - Owner: `{configured, missing, requiredMinutes, current{versionNo, timezone, workingDays, shiftStart, shiftEnd, graceMinutes, verificationMode, officeIps, holidays, summaryRequired, summaryMinLength, missingCheckoutFlagHours, reason, createdAt, createdBy, createdByName, source: version|env}, versions[≤20], flags{employeeRequests, remoteSelfRequest, failedCheckout}}`.
+      - Other roles: the same without `officeIps`, `holidays` and `versions`.
+    - `PUT /settings {version: current versionNo (0 if none), …all fields, reason?}`.
+      - 400 when: IP mode has an empty list, a location mode is chosen ("no verifier in v1"), `officeIps.N` is not an IP/CIDR, the timezone is invalid, or shift end is not after shift start.
+      - 409 `VERSION_CONFLICT`.
+      - It also sets `company.timezone`.
+    - `POST /settings/test-office-check {officeIps?}` returns `{mode, result, matches}`. Nothing is saved.
+    - Until the timezone and an office verifier are set, the check returns `not_configured` and punctuality is `unclassified`.
+  - **Remote exceptions:**
+    - `POST /remote-exceptions {employeeId, startDate, endDate?, reason}` (Owner grant).
+    - `POST /remote-exceptions/requests {startDate, endDate?, reason}` (flag `remoteSelfRequest`; default false gives 403).
+    - `POST /remote-exceptions/:id/{approve,reject,revoke} {version, reason?}`. Reject needs a reason.
+    - `GET /remote-exceptions?employeeId&status` (scoped).
+  - **Employees (OWN-002):** `EmployeeRow` adds `openWork{assignments, followUps, corrections, deals, projects, openTasks, openAttendanceSessions, unavailable[]}` (null = not available), `missingCheckout`, and `openAttendanceSince`.
+  - **Identity:** `POST /api/auth/sessions/revoke-all {keepCurrent?}` returns `{revoked, currentSessionEnded}`. It is audited as `session.revoked`, and cookies are cleared unless `keepCurrent`.
+  - **Differences from FE2 `lib/api/attendanceOwner.ts`:**
+    - `MonitorStatus` has no `review`; use `reviewPending`.
+    - Verification never returns `verified`.
+    - Punctuality is never `absent` (`non_working_day` exists).
+    - Overview adds `counts`, `configured`, `missing`, `workingDay`, `reviewItems`, `openFromEarlierDays`, plus `missingCheckin` per row.
+    - `exceptions[].kind` is only `missing_checkout | checkin_alerts_off`; `alert_delivery_failed` is not produced.
+    - `adjustSession` and `approve/reject` bodies match (`reject` may add `effectiveCheckOutAt`).
+    - FE2 picks the DEC-011 branch from `/settings/flags`; `GET /attendance/settings` returns `flags` directly.
+    - FE2 can restore the Employees "Open work" column and the "Missing checkout" badge.
+  - **Differences from FE1 `lib/api/attendance.ts`:**
+    - `AttendanceTodayDto.policy`, `workDate` and `openEarlierSession` become `schedule`/`summaryRule`/`officeCheck`/`*Enabled`/`failedCheckout`, `date` and `openSessionFromEarlierDay`.
+    - Session `state` uses `closed_provisional`, not `provisional`.
+    - `checkInMethod`/`checkOutVerified` become `verification` and `remote`.
+    - `workSummary: string` becomes `summary{…}`.
+    - `correctedBy`/`originalCheckOutAt`/`correction` become `adjusted`, the original `checkInAt`/`checkOutAt` beside the effective times, and `pendingCorrectionId`.
+    - Check-in takes no `remote` input; check-out has no `sessionId`, uses an optional `version`, and the result `outcome` is a string.
+    - Error codes are `STATE_CONFLICT`/`RULE_VIOLATION` with `details.reason` (`OPEN_SESSION`, `NO_OPEN_SESSION`, `OFFICE_CHECK_FAILED`) and 400 `summary.workCompleted`. `ALREADY_CHECKED_IN` and `SUMMARY_REQUIRED` are not codes.
+    - Correction status `pending` is now `submitted`.
+    - The `MySessionsSummary` keys `closedSessions`, `averageMinutes` and `totalMinutes` (replacing `closedMinutes`) exist; `openProblems` is `missingCheckout + reviewPending`.
+    - CR1-03 can now wire "Sign out of all devices" to `/api/auth/sessions/revoke-all`.
+- [BE1-R4] BE1 → Security Lead: REQUEST — please add these matrix rows (they are declared and work, and are reported as `not_in_matrix` at startup):
+  - `attendance.overview.read` (O, admin).
+  - `attendance.remote_exception.request` (Own, all roles, DEMO DEC-010 flag).
+  - `auth.session.revoke_all` (Own, all roles).
+  - `settings.read_public` (all roles; R3).
+  - `employee.read_open_items` (O, admin).
+- [BE1-R5] BE1 → BE3, BE5: INFO — your tests fail when the shared DB already holds data, so the second full-suite run fails:
+  - `calls/calling.api.test.ts` "unassign … list shows Unassigned" looks for its business in `pageSize=100`. Filter by the business id.
+  - `platform.api.test.ts` "outbox round-trip" and "retry with backoff" relay one batch. Other suites' queued events push the test event out of it.
+  - The attendance suite and `auth.api.test` now drain the relay after themselves.
+- [BE1-INC3] DONE — BE1 → ALL.
+  - **Works (tested on `udigity_test_be1`):**
+    - **Attendance module (it was a stub; migration 020 unchanged, no new migration):**
+      - Check-in/out with the DEC-009 office IP check. It uses `req.ip` only, so proxy trust is the app's 1-hop `trust proxy` and X-Forwarded-For is never read. IPv4, IPv6 and CIDR are supported, and the check works through `OFFICE_IP_ALLOWLIST` via `getSetting`.
+      - Punctuality from `COMPANY_TIMEZONE`/version, the DEC-008 grace period at minute granularity, and DEC-022 working days and holidays.
+      - DEC-010 remote exceptions.
+      - DEC-012 summary.
+      - DEC-026: all 3 branches.
+      - DEC-011 corrections with F-01, N-2 and F-03. Originals are kept, the audit is written in the same tx, and E-10/E-11/E-12 outbox events are emitted.
+      - Versioned settings.
+      - J-04: flags missing checkout and missing check-in and never auto-closes; registered in the job registry, idempotent.
+      - OWN-004 overview and the OWN-005 queue.
+      - My Day / My Attendance reads.
+      - Resolvers for `attendance_session`/`attendance_correction`.
+    - Employee rows have the open-work summary (attendance + BE4-R5 deals/projects/tasks wired) and `missingCheckout`.
+    - **SEC R3:** settings and employee actions are declared from the matrix (`settings.read` Owner admin, `settings.read_public` separate, `profile.read`). `/me` capabilities now come from the registry (`listActions`), which fixes CR1-01 on the backend.
+    - Revoke-all sessions endpoint.
+  - **Tests:**
+    - `attendance.api.test.ts`: 29 tests. They cover 26 routes × 4 roles plus a pending Owner, IDOR, the timezone midnight and grace boundaries, X-Forwarded-For spoofing with and without proxy trust, both branches of every flag, J-04, version conflicts, and audit/outbox.
+    - `time.test.ts`: 13 unit tests, including DST.
+  - **Mocked:** none.
+  - **Not done:** location verification modes are rejected (no verifier in v1).
+  - **Changed others' expectations:** in `be1.api.test`, a pending Owner now gets 403 on `/settings/public` (R11-a).
+  - **Checks (`backend/`):**
+    - `npm run typecheck`: exit 0.
+    - eslint on attendance/employees/identity/admin: 0 problems.
+    - `npm test` on a freshly recreated `udigity_test_be1`: **818/818 passed (21 files)**.
+    - Second run in the same DB: 815/818. The only failures are the BE3 and BE5 tests in BE1-R5.
+
+- **[FIG-1] DONE** (2026-10-26). Figma fidelity specs, read-only, file `GNrhb3DWa6mIhEX6F4Nmvw`.
+  - **Output:** `docs/implementation/figma-specs/`
+    - `tokens-diff.md`
+    - `page-40.md`, `page-41.md`, `page-42.md`, `page-43.md`, `page-44.md`, `page-45.md`
+    - `index.md`: 84 frames done.
+  - **Blocked:** DE-003 (101:5214) was not extracted.
+  - **Variant frames not extracted:** CC-005 expired, CC-006 past-time, DEV-002 dialogs, DEV-004 record-outcome, DEV-007 conflict, OWN-005 DEC-011 Alt A/B.
+  - **Tokens:** all 52 Light colours match `globals.css`. Radius, elevation and type also match. Two non-visual notes only:
+    - `radius/full` is 999 in Figma vs 9999px in code.
+    - There are no `--space-*` CSS variables; the Tailwind scale aligns.
+  - Navy dark mode is intentional and was not flagged.
+- [INT-FE] DONE — FE → ALL. Attendance aligned to BE1-C2; all fixtures removed; OWN-002 Open work and Missing checkout restored; revoke-all enabled (`PATCH /employees/me` and password change do not exist in the backend, so they stay disabled); nav BL-02 done. Checks: tsc 0 errors, lint 0 errors, vitest 11/11, `next build` OK, smoke (login 200, CSP present, /healthz 200). Left over: dashboard, reports and targets pages are static scaffolds; the myDay DTOs are unverified. See `integration-report.md` §Frontend.
+
+- **[INT-BE] DONE** — INT-BE → ALL (backend integration pass; details in `docs/implementation/integration-report.md` §Backend).
+  - **Fresh DB `udigity_test_orch`:** typecheck 0; lint 0; `npm test` run 1 **854/854**, run 2 (same DB) **854/854**; `npm run build` exit 0; startup `not_in_matrix` warnings 0.
+  - **Done:**
+    - Test isolation: BL-14 and the BE1-R5 platform relay tests.
+    - BL-15: migration `903_access_facts_v4.sql` with the BE4-R4 delivery facts. The test fixture is removed.
+    - BL-03: outbox event `contact_reservation.overridden`, emitted.
+    - BL-17: outbox events `data_correction_request.resolved|rejected|closed`, emitted. They have no consumers and stay in the log.
+    - BL-06: 9 matrix rows in code and in the doc, with roles exactly as declared.
+    - BL-07: lint.
+    - BL-09: `details.current` on business, category and settings 409s.
+  - **Smoke test: FAILED at build.** The backend image builds. The frontend `next build` type-checks `src/lib/*.test.ts`, which import `vitest`, and `vitest` is not available in the frontend image. → FE1/DevOps: add `vitest` to the frontend devDependencies, or exclude `**/*.test.ts` in `frontend/tsconfig.json`.
+  - **→ Security Lead:** review the 9 BL-06 rows. BE4-R2 (remove-fact, meeting cancel, manual project, DV finalize) still uses the nearest-row gates.
+
+- **[DEVOPS-F] DONE** — DevOps → ALL.
+  - **Env examples:** `devops/env/backend.env.example` rewritten from the code (config/index.ts, identity/env.ts, emailConfig.ts and all 70 `POLICY_*`/`SESSION_*`/`LOCKOUT_*` keys in shared/flags.ts): each key marked [REQUIRED]/[OPTIONAL] with its default and a generation command for secrets. `POLICY_COMPANY_TIMEZONE` is required (BL-16). The Increment 6 keys (`POLICY_RETENTION_*`, `POLICY_NOTIFICATIONS_*`) are included. The old names the code never read (`VISIBILITY_TIMER_BASIS`, `WORKDAY_START` and similar) are replaced by their `POLICY_*` names.
+  - **`devops/scripts/check-env.sh`:** validates backend, postgres, frontend and (when present) backup env files without printing values. Tested: valid set gives 0 errors, the unedited examples give 6 errors.
+  - **CI:** `.github/workflows/ci.yml` has separate backend/frontend typecheck, lint, test and build steps, a postgres:17 service, a blocking `npm audit --audit-level=high`, a shell-script syntax check and gitleaks. YAML parses. Not pushed.
+  - **BLOCKED: audit.** `npm audit --audit-level=high` currently fails on 2 runtime advisories: body-parser < 1.20.9 (`npm audit fix`) and zod < 4.6.6 (needs a major bump) → Tech Lead.
+  - **`devops/DEPLOY.md`:** single-VPS runbook. First Owner: `docker compose -f docker-compose.prod.yml run --rm backend node dist/modules/identity/bootstrap.js --email ... --name "..."`.
+  - **Backup drill (test DB, gpg since age is not installed here):** backup 4 s; restore 86 s; 28 migrations, 51 tables, 201 employees, 178 businesses; throwaway container removed. `udigity-test-db` untouched (read-only dump). Logged in DEPLOY.md.
+
+- **[SEC-R2] ISSUE** (2026-10-26) → BE5: **R2-01 P1** `backend/src/modules/reports/service.ts:199-214` CSV formula injection: `escapeCsvField` never neutralises cells starting with `= + - @ \t \r`; a Data Entry/CC-written business name such as `=HYPERLINK(...)` executes on the Owner's workstation (EX-4). Fix: prefix with `'` then quote; add the CSV-injection test; restrict `report` to `[a-z0-9-]`. Full doc: `docs/security/review-inc3-7.md`.
+- **[SEC-R2] ISSUE** (2026-10-26) → BE5 (BE1 for step-up route): **R2-02 P1** `backend/src/modules/reports/routes.ts:37-63` export has no step-up TOTP (≤ 10 min), no `report.export_denied`/`export_failed` audit, no rate limit, no 30 s time cap (EX-2, matrix §3.10). A hijacked Owner session dumps timesheets with e-mails, call logs and the directory. Fix: `requireRecentTotp` middleware + `POST /api/auth/2fa/step-up`, denial/failure audits, 5 exports per 10 min, `statement_timeout`.
+- **[SEC-R2] ISSUE** (2026-10-26) → BE5 (Security Lead: matrix row): **R2-03 P1** `backend/src/modules/work/routes.ts:85` + `work/service.ts:288-300` IDOR on `PATCH /api/work-items/:id`: gated by `target.read` (all roles) and `updateWorkItem` never checks `assigneeId`, so any employee can rename/complete/cancel any colleague's work item by UUID; no audit. Fix: own-or-Owner check, `work_item.update` matrix row, `work_item.updated` audit, IDOR test.
+- **[SEC-R2] INFO** (2026-10-26) → ALL: review of Increments 3–7 done, `docs/security/review-inc3-7.md`. No P0. 3 P1 (above), 14 P2, 22 P3. P2 owners: BE1 R2-06 (check-in proceeds when office check is not configured, OR-7), R2-17 (password change has no per-account lockout / failure audit / Owner TOTP); BE2 R2-07 (rate limits below §5.9, no limiter on list routes), R2-08 (duplicate preview not audited `match_hidden`), R2-09 (corrections `q` filter is a name oracle on hidden businesses); BE3 R2-10 (reservation timers client-controlled), R2-11 (no far-future cap on follow-ups extends R5 access), R2-12 (save-after-loss accepts attempts from a non-holder); BE5 R2-04 (GET export changes state), R2-05 (export PII/unsafe default branch), R2-13 (removed attendees still reminded), R2-14 (no send-time re-check for in-app reminders), R2-15 (`send_again` unbounded/unaudited), R2-16 (AR-14 not implemented). Verified OK: route guards incl. V-01 fix, R1/R2/R4/R9/R10 fixed, parameterised SQL, strict bodies, lease/idempotency/unique-index races, e-mail controls, frontend XSS/redirect/CSV handling.
+
+- **[FX-FE-B] DONE** (2026-10-28). tsc 0, eslint 0 on my slice, vitest 17/17.
+  - **P1:**
+    - SCR-DEV-007 `TaskDrawer` (title, status, owner, due, description, client dependency, "Cancel task…", conflict keeps edits).
+    - Reservation release on `pagehide` via `fetch keepalive`. `visibilitychange` is NOT used because it would drop the reservation on a plain tab switch.
+    - Stable Idempotency-Keys: inbound rejection, business create (rotated only on a definitive 4xx), correction submit, follow-up create, task create/update, meeting schedule, project create.
+  - **P2:**
+    - CC-005 Retry, Back to queue and reservation details.
+    - Follow-up state chips, callback group, Responsible and Note.
+    - 409 retry uses the live version.
+    - Schedule drawer: server search plus an optional staff picker.
+    - Assign developer and first meeting wired (`GET /api/deals/developers`, `POST /api/deals/:id/developer`).
+    - Enum labels, `!closed` guards, "keep reservation" hidden after loss.
+  - **Open, waiting on F-BE:**
+    - Deal list `q`/`projectStatus` params (the schema is strict, so not sent).
+    - A staff-picker endpoint for CC/Dev (`/api/employees` is Owner-only; the picker degrades to "you host").
+    - Task start date (not in the API).
+
+- **[FX-BE] CONTRACTS** (2026-10-28) → F-FE-A, F-FE-B. Backend contract changes from the production-fix wave. Each is live in `backend/src` now.
+  - **FX-BE-C1 `company.name` setting** (F-FE-A). `company.name` is now a registered, editable SET key (default `Udigity`, env `POLICY_COMPANY_NAME`). `PATCH /api/settings {version, company:{'company.name': '<1..120 chars, no control chars>'}}` → 200 settings view (400 `VALIDATION_ERROR` with `details['company.name']` otherwise). `GET /api/settings/public` now also returns `company['company.name']` for every role. → F-OPS: add `POLICY_COMPANY_NAME` [OPTIONAL, default Udigity] to `devops/env/backend.env.example`.
+  - **FX-BE-C2 attendance settings save** (F-FE-A). `PUT /api/attendance/settings`: `workingDays` accepts any case and full names (`mon`, `Monday`, `MON`) and is stored/returned uppercase (`["MON",…]`). **Every field except `version` is now optional**: an omitted field keeps the current version's value, so do not send `holidays`, `summaryRequired`, `summaryMinLength`, `missingCheckoutFlagHours` or `officeIps` unless the form edits them (sending hard-coded values still overwrites). `version` = the `versionNo` you loaded (0 if none). Errors unchanged (400 field map, 409 `VERSION_CONFLICT`).
+  - **FX-BE-C3 meeting staff picker** (F-FE-B). `GET /api/meetings/attendee-options?q=&role=&pageSize=` (guard `meeting.create`: Owner, Call Center, Developer) → `{items:[{id, fullName, role}], total}`: active staff only, no e-mail/phone/security data, `pageSize` ≤ 100 (default 100), `q` = name contains. Use it instead of `/api/employees` in ScheduleMeetingDrawer.
+  - **FX-BE-C3b meeting create from a business (P0 fix)** (F-FE-B). `POST /api/meetings` no longer creates call attempts or deals. With `businessId` only: the caller must be able to read the business and it must already have an open deal, else **422 `RULE_VIOLATION`, `details.code = 'NO_OPEN_DEAL'`** ("Log an Accepted call first"). Prefer sending `dealId`. A `businessId` that does not match `dealId` → 400. A Developer attendee is auto-assigned to a deal with no Developer only when the scheduler is Owner/Call Center (through the audited `deal.assign_developer` command, so the deal `version` increases). Reschedule of a meeting whose deal is no longer open → 409. Developers no longer see meetings only because they attend (OI-29).
+  - **FX-BE-C4 My Day work list** (F-FE-A). `GET /api/work-items` honours `limit` (alias of `pageSize`) and `state=open` (open + in_progress), query is strict (unknown keys → 400). Each item keeps the old fields and adds: `businessId` (null unless a readable business), `businessName` (business name when readable, else the item title; never blank), `kind` (`follow_up|new_assignment|retry|next`), `detail` (server-composed line), `statusLabel` (`Overdue|Due today|In progress|To do|Done|Cancelled`), `dueAt` (YYYY-MM-DD or null). My Day: `GET /api/work-items?limit=5&state=open`. `GET /api/targets` is strict too: `employeeId` must be a UUID (Owner only), `scope=self|all` accepted.
+  - **FX-BE-C5 deal list filters** (F-FE-B). `GET /api/deals` accepts `q` (2..80 chars; deal code or business name contains, case-insensitive, applied before paging and counting, inside the access scope) and `projectStatus` (`scheduled|in_progress|waiting_for_client|blocked|delivered|completed|none`; `none` = no project yet).
+  - **FX-BE-C6 task start date** (F-FE-B). The SCR-DEV-007 design (figma-specs/page-44.md, Task drawer "Start date" / "Due date") has a start date, so migration `970_tasks_start_date.sql` adds `tasks.start_date`. `TaskDto.startDate` (YYYY-MM-DD|null); `POST /api/tasks` and `PATCH /api/tasks/:id` accept `startDate` (nullable on PATCH). Start after due → 400 `details.startDate`.
+  - **Already present (no change), for wiring:** Owner 2FA enrollment token `POST /api/auth/2fa/enrollment-tokens {employeeId, currentPassword, token(6 digits)}` → 201 `{enrollmentToken, expiresAt}`; 400 `REAUTH_FAILED`, 429 `TOO_MANY_ATTEMPTS`, 409 `STATE_CONFLICT` (target is not an active, un-enrolled Owner, or is yourself). Recovery codes `POST /api/auth/2fa/recovery-codes {token}` → `{recoveryCodes}`. Developer assign (BL-11): `GET /api/deals/developers` → `{items:[{id,name}],total}` (Owner, Call Center) and `POST /api/deals/:id/developer {version, developerId}` → `{deal}`.
+
+- **[FX-OPS] REQUEST** (2026-10-28) → F-BE (`backend/src/**`):
+  1. **Runtime role guard (review F-04).** Prod now runs as `udigity_api` (member of `udigity_app`); migrations run through the compose `migrate` job as the owner (`MIGRATION_DATABASE_URL` is only in `migrate.env`). Please add a production startup/readiness check: `SELECT rolsuper, rolcreaterole FROM pg_roles WHERE rolname = current_user` must be false, and `has_table_privilege(current_user,'audit_events','UPDATE'|'DELETE')` must be false; refuse to start (or `/readyz` 503) otherwise. Optionally make migration 012 (new number in 970-989, forward-only) raise when `udigity_app` is a superuser or `rolcanlogin`. Also fix `runtimeRole.test.ts` as in review 01 §1.1. No config change is needed: `DATABASE_URL` / `MIGRATION_DATABASE_URL` already behave this way (verified in a compose run: migrate as owner, API + worker healthy as `udigity_api`).
+  2. **`/readyz` ignores `POLICY_COMPANY_TIMEZONE`.** `backend/src/app.ts:44-47` reads the DB value or `config.policyAliases.companyTimezone` (env `COMPANY_TIMEZONE`) only, so a deploy that follows the env example with just `POLICY_COMPANY_TIMEZONE` stays 503 forever (and the Owner cannot reach the settings page to save it). Ops workaround: the env example, check-env and DEPLOY.md now require both keys. Please make `/readyz` use the same resolution as `getSetting('company.timezone')`.
+  3. **e2e seed personas.** `backend/src/db/e2e-seed.ts` creates the Owner as `udigity@gmail.com` ("Udigity Admin"); the e2e personas expect `rana.haddad@udigity.demo` / "Rana Haddad". F-OPS aligns it after seeding (`e2e/scripts/db.mjs align`). Preferred: have `seedE2e()` create the Owner persona directly (rename in `seed.ts` for the e2e path), then the align step becomes a no-op.
+
+- **[FX-FE-A] DONE** (2026-10-28). Checks in `frontend/`: `tsc --noEmit` 0 errors; `npm run lint` 0 errors, 1 warning (layout font); `npm test` 17/17 (4 files). No `next build` run.
+  - **P0:** `NoticePolicy`/`PolicyPendingChip` restored (+ render test). Reports and Targets have no fake data; Dashboard uses real data, period filter, loading and error states, Owner-only (others go to /my-day). Dead role/employee/compare controls and invented charts removed.
+  - **P1:** Settings saves send only edited fields, uppercase weekdays, `company.name`, 409 handling. Export asks for the step-up code (`StepUpDialog`). Owner enrollment-token UI in Settings > Security. Nav hides Owner pages (Dashboard `dashboard.owner.read`, Targets `target.set`). SWR key clash fixed. My Day work list maps `/api/work-items?state=open`. Shell a11y label mismatch fixed (account button, sidebar brand link). Roles page rebuilt (unsaved guard, stale check, rename, confirm, a11y). BreakTimer fixed (double count, tokens, error states).
+  - **Open for F-BE:** roles API has no `version`; the page compares `updatedAt` before saving. If F-ACCESS adds step-up for role changes, the Roles page needs the contract.
+
+- **[FX-ACCESS-C1] CONTRACT** (2026-10-28) F-ACCESS → F-FE-A (Roles page, SCR-OWN-012), F-BE:
+  - **Mount:** `/api/access/*` only. The duplicate `/api/roles` mount is removed (review 02 A-11).
+  - **`version` (IC-16, migration 960):** `RoleSummary` and `RoleDetail` now carry `version: number` (created = 1; every committed PATCH bumps it, including permission-only saves). `PATCH /api/access/roles/:id` accepts `version` in the body (optional until the page is wired; send it). Stale → **409 `VERSION_CONFLICT`** with `details.currentVersion`. Reload the role and retry with the fresh version. Stop comparing `updatedAt`.
+  - **Step-up 2FA: none per request.** `role.list/read/create/update/delete` and `permission.list` are admin rows: the Owner's session must be `active` (2FA completed at login). There is no TOTP header or body field. A pending-2FA Owner gets **403 `OWNER_2FA_REQUIRED`**; a non-Owner **403 `FORBIDDEN_ROLE`**; no session **401 `UNAUTHENTICATED`**.
+  - **Other codes:** **400 `VALIDATION_ERROR`** with `details.grants: string[]` (one message per refused action: not in the matrix, a nobody row, or an Owner-only admin row that is not grantable), and for shape errors (bad action name, duplicate action, unknown `dataScope`); **400 `BAD_REQUEST`** (system role id on create; any PATCH/DELETE of `owner|data_entry|call_center|developer`); **409 `CONFLICT_DUPLICATE`** (id exists); **409 `STATE_CONFLICT`** (delete while employees hold the role; message carries the count); **404 `NOT_FOUND`**. `Idempotency-Key` optional on POST/PATCH.
+  - **Catalog (`GET /api/access/permissions`):** each item has `grantable: boolean` and `allowedScopes` (`[]` when not grantable; `['global']` for the grantable admin rows; all four scopes otherwise). Render non-grantable rows disabled. The grantable admin rows are listed in `docs/security/authz-matrix.md` §3.11.
+  - **Effect of a permissions save:** every session of the role's holders is ended (they sign in again). System roles show their matrix permissions read-only (`isSystem: true`).
+- **[FX-ACCESS-R1] REQUEST** (2026-10-28) F-ACCESS → F-BE: (a) a custom role may now hold a *grantable* admin row (§3.11), but executing it requires the holder's verified second factor: identity should call `registerSecondFactorVerifier((user) => …)` from `shared/access.ts` once non-Owner TOTP enrolment exists; until then those routes answer 403 `OWNER_2FA_REQUIRED` for custom-role holders (fail closed, tested). (b) Migration `960_custom_roles_version.sql` adds one file: `src/tests/runtimeRole.test.ts` must derive the migration count from the directory (review 01 F-01), it is 32 now.
+- **[FX-ACCESS] DONE** (2026-10-28) — F-ACCESS → ALL. DB `udigity_test_fx_access`. Backend typecheck ✅, `npm run lint` 0 errors, full `npm test` **974 / 975** (the one red is `attendance/breaks.api.test.ts` "caps the number of breaks": passes alone; order-dependent on the stored `attendance.maxBreaksPerSession` setting → F-BE). All 14 target tests green (access.api 21/21, access.test 523/523, be2.api 74/74, delivery.api 51/51); `runtimeRole` passes here.
+  - **P0 A-01 `rules.ts`:** Developer = DEC-002 rows 1–4 only, no window (never `full`); `business.list` keeps row 2 for DV only, `business.search` no rows; Owner branch explicit; `default` (custom/unknown role) = `(FALSE AND FALSE AND FALSE)` unless a validated grant exists, then base scope per `data_scope` with the 15-day window and no context rows.
+  - **P1 A-02/F-03:** grants validated against the matrix on write and on load (`grantRefusal`): nobody rows never; admin/Owner-only rows only when the matrix marks them `grantable` (§3.11 list: employee read rows, attendance review/adjust/overview); executing those needs the holder's second factor (`registerSecondFactorVerifier`, fail closed). System roles are never widened by `role_permissions`.
+  - **P1 A-03/F-06:** `DynamicRoleCache` loaded at startup (`attach(pool)`), `requireAction` awaits readiness, reload only after commit (routes), 30 s TTL for other processes; rolled-back commands leave no grant (tested).
+  - **P2 A-04:** `data_scope` enforced in `check`/`checkMany`/`scopeFilter` (business types: global / assigned_only / self; own-record types: global / department / self). **A-05:** explicit deny default in the rule table and the route gate. **A-11:** `/api/roles` mount removed. **A-19:** matrix rows added (`role.*`, `permission.*`, `attendance.break.*`) plus new §3.11.
+  - Contract changes: see [FX-ACCESS-C1]; request to F-BE: [FX-ACCESS-R1]. Migration 960 (`custom_roles.version`).
+
+- **[QA-BUG]** (2026-10-28, F-OPS e2e run) → **F-FE-A** (`frontend/src/components/attendance/CheckInFlow.tsx:63-67`): `perform()` treats **every** `409 STATE_CONFLICT` as the open-session block. When the office check is not configured the API returns `409 {code:"STATE_CONFLICT", details:{reason:"POLICY_NOT_CONFIGURED", mode:"ip"}}`, and the user sees "Can't check in yet / Open session from an earlier day" with no such session. Show the not-configured message ("Attendance verification is not configured, ask the Owner") for `POLICY_NOT_CONFIGURED`; keep the open-session dialog only for the open-session reason. Repro: fresh DB, no `POLICY_ATTENDANCE_OFFICE_IPS`, sign in as any employee, click Check in.
+- **[FX-OPS] DONE** (2026-10-28) → ALL. See details in the F-OPS report; e2e: 69 passed / 0 failed / 1 skipped on `udigity_test_fx_ops` (desktop-light), steps in `docs/implementation/qa/e2e-run.md`.
+- **[FX-BE] CONTRACTS (2)** (2026-10-28) → F-FE-A, F-FE-B, F-ACCESS.
+  - **FX-BE-C7 custom-role second factor ([FX-ACCESS-R1] done).** `registerSecondFactorVerifier` is registered by identity: a grantable admin row runs only in an `active` session that was rotated by a TOTP verify and whose account has an enrolled factor. Sign-in: any account with an enrolled TOTP now goes to `pending_2fa_verification` (same `/api/auth/2fa/verify` step as Owners); a custom-role account with an open enrollment token goes to `pending_2fa_enrollment`. `POST /api/auth/2fa/enrollment-tokens` now also accepts custom-role targets (never data_entry/call_center/developer). `/api/auth/2fa/status.required` is still Owner-only (FE: show the 2FA steps whenever `sessionState` is pending, regardless of role).
+  - **FX-BE-C8 rate limits (R2-07).** 429 `RATE_LIMITED` (+ `RateLimit` draft-7 headers): every authenticated `GET /api/*` shares 600 per 5 min per session (except `/api/auth/me`, `/api/auth/2fa/status`); duplicate-check 30 per 10 min; search 300 per 5 min; reservation renew 6 per 30 s per reservation. FE: treat 429 as "slow down, retry later", never as session end.
+  - **FX-BE-C9 send again (R2-15).** `POST /api/delivery-monitor/reminders/:id/send-again` → `{ok, kind, message}`; 409 `STATE_CONFLICT` unless the row is a failed/suppressed/skipped e-mail delivery or a failed/suppressed reminder, and after 3 re-sends of the same row. Each re-send is audited.
+  - **FX-BE-C10 breaks.** `POST /api/attendance/breaks/start` → 409 `details.reason = BREAK_LIMIT_REACHED` (`details.limit`, default 10 per session); allowance from `attendance.breakAllowanceMinutes` (default 60). Reads are own-record (another employee's session → 404). Migration 971: `attendance_breaks` FK → RESTRICT, `version`, `updated_at`.
+  - **FX-BE-C11 calling/export.** Follow-up `scheduledFor` more than 90 days ahead → 400 (`followUps.maxScheduleDays`). Save-after-loss from a caller who never held the reservation → 409 `RESERVATION_LOST`. Reservation "keep working" extends at most 2 times (absolute cap 3 × maxTotal). `POST /api/reports/export`: `report` must be `rep-1..rep-4` (or the 4 aliases), and `from`/`to` now filter the rows.
+  - **Notifications:** consumers now exist for every emitted event (or a documented `NO_CONSUMER_EVENTS` reason); new in-app templates `business.attendance_review`, `business.deal_closure_rejected`, `business.provisioning_failed`, `business.delivery_failure`, `security.recovery_code_used` (titles/links are server-formatted). The inbox and unread count re-check access (hidden items are omitted and not counted).
+  - → F-OPS: new optional env keys `POLICY_COMPANY_NAME`, `POLICY_FOLLOWUPS_MAX_SCHEDULE_DAYS`, `POLICY_ATTENDANCE_BREAK_ALLOWANCE_MINUTES`, `POLICY_ATTENDANCE_MAX_BREAKS_PER_SESSION` for `devops/env/backend.env.example`. New jobs: J-06 `identity.session_cleanup` (hourly), J-12 `platform.retention_purge` (every 6 h).
+- **[FX-BE] REQUEST** → F-ACCESS: `src/modules/access/rbac.api.test.ts:227` ("data_scope is enforced… `global`") fails on a **second** run in the same DB (`expected 3 to be 2`): the `q` filter also matches an `rbac…` business left by the first run. Make the tag/name unique per run (e.g. a UUID) or count only the two inserted ids.
+- **[FX-BE] ALERT** → orchestrator/all: the C: drive is at **0 bytes free**; npm/vitest/bash output fails with ENOSPC unless TMP/TEMP and `npm_config_cache` point to D:. I ran with `TMP=TEMP=D:\fxbe-tmp`.
+- **[FX-BE] DONE** (2026-10-28) — DB `udigity_test_fx_be` (recreated fresh). `npm run typecheck` 0 errors; `npm run lint` **0 problems**; `npm test` run 1 **993/993** (28 files); run 2 same DB **992/993** (only F-ACCESS `rbac.api.test.ts:227` re-run isolation, see REQUEST); `npm run build` exit 0. Migrations 970 (task start_date), 971 (breaks hardening). Tests added: `src/tests/fxbe.api.test.ts` (17), 3 break tests; `runtimeRole.test.ts` rewritten (DB name from URL, count from the folder, nothing committed).
+- **[LEAD] DONE** (2026-10-28) → ALL. Closed two small open items: (1) [QA-BUG] CheckInFlow: `POLICY_NOT_CONFIGURED` now shows "Attendance verification is not configured" (new `not-configured` phase); the open-session dialog only shows for `OPEN_SESSION` (`ATTENDANCE_REASONS.policyNotConfigured` added). FE tsc 0, eslint 0, vitest 17/17. (2) F-OPS env keys from FX-BE: `POLICY_COMPANY_NAME`, `POLICY_FOLLOWUPS_MAX_SCHEDULE_DAYS`, `POLICY_ATTENDANCE_BREAK_ALLOWANCE_MINUTES`, `POLICY_ATTENDANCE_MAX_BREAKS_PER_SESSION` added to `devops/env/backend.env.example` with flag-registry defaults. [FX-BE] REQUEST rbac:227: the test already uses a random per-run tag; re-verify on the next double run.
+- **[LEAD] DONE B1–B9** (2026-10-28, approved by the user; Linear UDI-14..22) → ALL. Figma-QA functional bugs:
+  - B1 `app/page.tsx` waits for `/me` before redirecting non-Owners (Owner hard refresh stays on the dashboard).
+  - B2 `listOpportunities({openOnly})` excludes `closed`/`not_proceeding`; CC-007 (`listOpportunityItems`) passes `openOnly: true`; "— not a closed deal" suffix removed. Test added in `deals/delivery.api.test.ts`.
+  - B3 `EmployeeDrawer` create: no default role, "Select one role" placeholder, required.
+  - B4 new `lib/sessionEndedSignal.ts`: inside `AppShell` a 401 opens `SessionEndedDialog` over the page (guard redirect suppressed, banner after dismiss); no shell → `/session-ended` as before. `login()` clears the signal.
+  - B5 `OfflineBanner` mounted at the top of `<main>` in `AppShell` (Save-disable while offline not done).
+  - B6 "SCR-OWN-012" badge removed from the delivery monitor.
+  - B7 `/employees`, `/reports`, `/audit`: no capability or 403 → only `<PermissionDenied>` (audit: `owner-2fa` variant on `OWNER_2FA_REQUIRED`).
+  - B8 `businesses/AsyncState` `ErrorState` uses the shared `HiddenByPolicy` (Back, default `/businesses`) and `PermissionDenied`.
+  - B9 audit filters `min-w-0`, Time/Actor/Entity no-wrap, Summary truncated with title.
+  - Checks: FE tsc 0, eslint 0 errors, vitest 17/17; BE typecheck 0, lint 0, `npm test` **993/993** on fresh `udigity_test_bfix`; browser check 11/11 PASS on the QA stack; screenshots `qa/figma-diff/shots/b-fixes/`.
+- **[LEAD] Launch blockers** (2026-10-28, user-approved; Linear UDI-5/6/7/10/18/21 + email gap) → ALL.
+  - UDI-5: only GHSA-mrhx-c7xc-m3w5 (zod < 4.6.6) remained; frontend `zod` ^3.24.2 → ^4.6.7 (frontend imports none; eslint-plugin-react-hooks accepts ^4 and dedupes). `npm audit --audit-level=high`: 0.
+  - UDI-6: `shared/runtimeRole.ts` (`runtimeRoleProblems`/`assertRuntimeRole`): production API and worker refuse to start, and `/readyz` returns 503, on a superuser/createrole/createdb/bypassrls/table-owning role or audit write access. Verified on a throwaway postgres:17-alpine with the real `devops/postgres/init/10-app-role.sh` + all migrations as owner: `udigity_api` SAFE (UPDATE/DELETE/TRUNCATE audit, DISABLE TRIGGER, CREATE/DROP TABLE, schema_migrations writes, CREATE ROLE all denied); owner flagged on 7 counts and refused at start. Manual probe: `backend/src/scripts/probe-runtime-role.ts`.
+  - UDI-7: `/readyz` uses `getSetting('company.timezone')` (Owner value, else POLICY_COMPANY_TIMEZONE, else the alias); production with only POLICY_COMPANY_TIMEZONE gives 200, with none 503. The alias is no longer required in env example, check-env or DEPLOY.
+  - UDI-10: rbac flake was the `q` phone-digit match on a base36 tag; the tag is now letters only. Full suite 1012/1012 twice on one DB.
+  - UDI-18/21 (F-UI agent) and FX-MAIL (mail agent, migration 972 `accepted`/`captured`, no-SMTP production records `failed`), see their reports.

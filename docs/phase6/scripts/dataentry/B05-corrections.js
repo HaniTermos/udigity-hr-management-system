@@ -188,7 +188,7 @@ function shell(frame, role, active, query) {
   } else W.push('TopBar not found');
   const sb = nested(sh, 'Sidebar');
   if (sb) {
-    for (const l of NAVS[role][1]) { const it = nested(sb, 'Nav/Item · ' + l); if (it) props(it, { Label: l, State: l === active ? 'Active' : 'Default' }); else W.push('nav item missing: ' + l); }
+    for (const l of NAVS[role][1]) { const it = nested(sb, 'Nav/Item · ' + l); if (it) props(it, { Label: l.replace(/ \[DEC-\d+\]$/, ''), State: l === active ? 'Active' : 'Default' }); else W.push('nav item missing: ' + l); }
     const secs = sb.findAll(n => n.type === 'INSTANCE' && n.name === 'Nav/SectionLabel');
     NAVS[role][0].forEach((l, i) => { if (secs[i]) props(secs[i], { Label: l }); });
     if (role === 'Call Center') props(nested(nested(sb, 'Nav/Item · Calling Queue'), 'Badge'), { Count: '7' });
@@ -316,14 +316,32 @@ function table(parent, cols, rows, o) {
     rw.c.forEach((v, j) => r.appendChild(cell(v, cols[j].w, cols[j].r)));
   });
   if (o.body) for (const n of o.body) put(tb, n, true);
-  if (o.pager) { const pg = I('Table/Pagination', null, { Range: o.pager }); put(tb, pg, true); tx(pg, 'Per page', '10 per page'); }
+  if (o.pager) { const pg = I('Table/Pagination', null, { Range: o.pager }); put(tb, pg, true); pagerProps(pg, o.pages, o.per); }
   return tb;
 }
 
 // ---------- fit / overflow / placeholder checks ----------
 const DEFAULTS = ['Dialog title', 'Short description of what happens next.', 'Drawer title', 'Section title', 'Banner title', 'Explain what happened and what to do next.', 'Column', 'Cell text', 'Meta line', 'Toast title', 'Toast body', 'DEC-000', 'Helper text', 'Schedule follow-up', 'Olive & Thyme Café moved to Follow-ups.', 'Confirm', 'Dialog content', 'Drawer content', 'Section content', 'Inset content', 'Card content'];
 function shown(n, root) { let p = n; while (p && p !== root) { if (p.visible === false) return false; p = p.parent; } return true; }
+function pagerProps(pg, pages, per) {
+  const p = { 'Per page': per || '10 per page' };
+  if (!pages || pages <= 1) p['Show page controls'] = false;
+  else Object.assign(p, { 'Show page controls': true, 'Show page 2': true, 'Show page 3': pages >= 3, 'Show gap': pages > 4, 'Show last page': pages > 3, 'Last page': String(pages) });
+  props(pg, p);
+}
+// DE-6 canvas patch mirrored: Touch Close = Icon/x 44:53, Back = Icon/chevron-left 44:38; DS-13d: Notice/Access FIXED→FILL re-lay-out.
+function touchFix(root) {
+  const ib = n => n.type === 'INSTANCE' && n.mainComponent && n.mainComponent.parent && n.mainComponent.parent.name === 'IconButton';
+  for (const b of root.findAll(n => (n.name === 'Close' || n.name === 'Back') && ib(n))) {
+    const k = Object.keys(b.componentProperties).find(x => x.split('#')[0] === 'Icon');
+    if (k) { try { b.setProperties({ [k]: b.name === 'Close' ? '44:53' : '44:38' }); } catch (e) { W.push('icon ' + b.name + ': ' + e.message); } }
+  }
+  for (const n of root.findAll(n => n.type === 'INSTANCE' && n.mainComponent && (n.mainComponent.name === 'Notice/Access' || (n.mainComponent.parent && n.mainComponent.parent.name === 'Notice/Access')) && n.layoutSizingHorizontal === 'FILL')) {
+    try { n.layoutSizingHorizontal = 'FIXED'; n.layoutSizingHorizontal = 'FILL'; } catch (e) { W.push('relayout ' + n.name + ': ' + e.message); }
+  }
+}
 function fit(frame) {
+  touchFix(frame);
   const key = frame.name.replace(/^SCR-[A-Z]+-\d+ — [^—]+ — /, '');
   const fb = frame.absoluteBoundingBox, rec = {};
   const ct = frame.children.find(n => n.name === 'Content');
@@ -354,6 +372,19 @@ function slotFit(label, slot, inner) {
   if (free < 0) W.push(label + ': content taller than its slot by ' + (-free) + ' px');
   if (spillR > 0) W.push(label + ': content wider than its slot by ' + spillR + ' px');
 }
+// N42-02: stage() from C02 (X-10): build the slot body at the slot's inner width, attach, FILL, text HEIGHT, kick.
+function lockedIn(p, root) { for (let a = p.parent; a && a !== root; a = a.parent) if (a.type === 'INSTANCE') return true; return false; }
+function hugK(n) { return n.type === 'INSTANCE' && (/^(Badge|Flag|Tag) · /.test(n.name) || (n.name.startsWith('Policy · ') && n.variantProperties && n.variantProperties.Size === 'Chip')) ? 'HUG' : 'FILL'; }
+function kick(b) { if (!b || b.removed) return; try { const w = b.width, fl = b.layoutSizingHorizontal === 'FILL'; b.layoutSizingHorizontal = 'FIXED'; b.resize(w - 1, b.height); if (fl) b.layoutSizingHorizontal = 'FILL'; else b.resize(w, b.height); b.layoutSizingVertical = 'HUG'; } catch (e) { W.push('relayout ' + b.name + ': ' + e.message); } }
+function stage(host, s, name, g, nodes) {
+  const w = Math.max(200, Math.round(s.width - (s.paddingLeft || 0) - (s.paddingRight || 0)));
+  const b = AL(name, 'VERTICAL', g); host.appendChild(b); b.resize(w, 10); b.counterAxisSizingMode = 'FIXED'; b.primaryAxisSizingMode = 'AUTO';
+  for (const n of nodes) if (n) put(b, n, hugK(n) === 'FILL');
+  s.appendChild(b); try { b.layoutSizingHorizontal = 'FILL'; } catch (e) { b.layoutSizingHorizontal = 'FIXED'; } b.layoutSizingVertical = 'HUG';
+  for (const n of b.children) if (hugK(n) === 'FILL') { try { n.layoutSizingHorizontal = 'FILL'; } catch (e) { } }
+  for (const t of b.findAll(n => n.type === 'TEXT' && !lockedIn(n, b))) if (t.parent === b || t.layoutSizingHorizontal === 'FILL') { try { t.layoutSizingHorizontal = 'FILL'; t.textAutoResize = 'HEIGHT'; } catch (e) { } }
+  kick(b); return b;
+}
 function center(frame, node, w, h) { node.x = Math.round(((w || frame.width) - node.width) / 2); node.y = Math.max(40, Math.round(((h || frame.height) - node.height) / 2)); }
 function scrimOn(frame, mobile) { const s = I('Overlay/Scrim', { Size: mobile ? 'Mobile' : 'Desktop' }); s.name = 'Scrim'; frame.appendChild(s); s.x = 0; s.y = 0; return s; }
 function toastOn(frame, t, mobile) { frame.appendChild(t); if (mobile) { t.resize(358, t.height); t.x = 16; t.y = 780 - 16 - t.height; } else { t.x = 1440 - 24 - t.width; t.y = 900 - 104 - t.height; } return t; }
@@ -366,6 +397,16 @@ const REQS = [
   ['glow', 'Glow Beauty Salon', 'Downtown branch · Salon', 'Missing website information', 'Booking page not listed', 'Lina Aoun', 'Developer', '3 h', '21 Oct, 08:10', ['Info', 'Submitted'], null],
   ['lumen', 'Lumen Yoga Studio', 'Gym', 'Wrong category', 'Suggested: Yoga studio (DEC-015)', 'Sami Fares', 'Developer', '4 days', '17 Oct, 16:45', ['Info', 'Submitted'], null],
 ];
+// R42-08: terminal-state tabs. [business, meta, issue, outcome note, requester, role, closed at, badge, resolver, resolver meta]
+const DONE = {
+  resolved: { tab: 2, filter: 'Status: Resolved', range: 'Showing 1–2 of 2 resolved', rows: [
+    ['Peak Fitness Gym', 'Gym', 'Incorrect phone', 'Applied: Phone 2 → +000 70 000 113', 'Maya Khoury', 'Call Center', '21 Oct, 10:52', ['Success', 'Resolved'], 'Rana Haddad', 'Owner/Admin'],
+    ['Urban Cuts Barbershop', 'Salon', 'Outdated social link', 'Applied: TikTok handle → @urbancuts.demo', 'Omar Nassar', 'Call Center', '18 Oct, 15:30', ['Success', 'Resolved'], 'Karim Saleh', 'Data Entry']] },
+  closed: { tab: 3, filter: 'Status: Closed + Rejected', range: 'Showing 1–2 of 2 closed or rejected', rows: [
+    ['Bloom Florist', 'Shop', 'Incorrect phone', 'No change needed: number verified by call', 'Maya Khoury', 'Call Center', '16 Oct, 12:10', ['Neutral', 'Closed · no change'], 'Karim Saleh', 'Data Entry'],
+    ['Sunrise Bakery', 'Shop', 'Wrong category', 'Rejected: request refers to another bakery', 'Lina Aoun', 'Developer', '15 Oct, 09:40', ['Danger', 'Rejected'], 'Karim Saleh', 'Data Entry']] },
+};
+const DCOLS = [{ l: 'Business', w: 230 }, { l: 'Issue · outcome', w: 300 }, { l: 'Requested by', w: 160 }, { l: 'Closed', w: 130, sort: 'Descending' }, { l: 'Status', w: 160 }, { l: 'Resolved by', w: 140 }, { l: '', w: 32 }];
 async function queue(frame, o) {
   o = o || {};
   shell(frame, 'Data Entry', 'Correction Requests');
@@ -378,11 +419,17 @@ async function queue(frame, o) {
   sub.appendChild(chip('DEC-002'));
   const rows = REQS.filter(r => !(o.without || []).includes(r[0]));
   const open = o.empty ? 0 : rows.length;
-  put(ct, tabsI(['Open (' + open + ')', 'Resolved', 'Closed / rejected', 'Withdrawn'], 1), true);
+  const dn = o.done ? DONE[o.done] : null;
+  put(ct, tabsI(['Open (' + open + ')', 'Resolved', 'Closed / rejected', 'Withdrawn'], dn ? dn.tab : 1), true);
   const f = put(ct, row('Filters', 12), true);
   put(f, searchF(null, 'Search business or requester'), true);
-  for (const v of ['Status: Submitted + In review', 'Requested by: Anyone', 'Age: Any']) { const s = selectF(null, v); f.appendChild(s); s.resize(v.length > 22 ? 240 : 190, s.height); }
-  if (o.empty) {
+  for (const v of [dn ? dn.filter : 'Status: Submitted + In review', 'Requested by: Anyone', dn ? 'Closed: Last 30 days' : 'Age: Any']) { const s = selectF(null, v); f.appendChild(s); s.resize(v.length > 22 ? 240 : 190, s.height); }
+  if (dn) {
+    table(ct, DCOLS, dn.rows.map(r => ({ name: 'Row · ' + r[0], c: [{ t: r[0], m: r[1] }, { t: r[2], m: r[3] }, { t: r[4], m: r[5] }, r[6], { n: [badge(r[7][0], r[7][1])] }, { t: r[8], m: r[9] }, ' '] })), { pager: dn.range });
+    const nr = row('Terminal note', 8); put(ct, nr, true);
+    nr.appendChild(chip('No DEC ID'));
+    nr.appendChild(await T('Terminal requests are read-only and never reopen. A new problem needs a new request. Who is notified is not decided.', 'ds/Caption', 'text/muted', null, 'Terminal caption'));
+  } else if (o.empty) {
     const b = AL('State area', 'VERTICAL', 0, 'CENTER'); b.primaryAxisAlignItems = 'CENTER'; pad(b, 48, 0, 48, 0);
     b.appendChild(stateI('Empty', 'Page', 'No open correction requests', 'When someone flags incorrect business data, the request appears here for Data Entry or the Owner to review.', null));
     table(ct, QCOLS, [], { body: [b] });
@@ -407,21 +454,26 @@ async function drawerOn(frame, o) {
   scrimOn(frame);
   const d = I('Drawer', null, { Title: 'Correction request · Peak Fitness Gym', Subtitle: 'Incorrect phone · Maya Khoury · 19 Oct, 14:20' }, { 'Show subtitle': true });
   d.name = 'Drawer · Resolve correction'; frame.appendChild(d); d.x = 960; d.y = 0;
-  const slot = slotOf(d, 'Content'); const body = AL('Drawer body', 'VERTICAL', 12); slot.appendChild(body); body.layoutSizingHorizontal = 'FILL';
-  const st = row('Status row', 8); put(body, st, true);
+  // N42-02 / R42-07: the body (and the Request inset rows) are staged at the slot's inner width (stage(), X-10 / C02),
+  // so KeyValue values, the Notice/Banner body and the RadioCard descriptions wrap at the real width, not the 320 default.
+  const st = row('Status row', 8);
   st.appendChild(badge(o.status[0], o.status[1], 'Large'));
-  st.appendChild(await T(o.statusNote, 'ds/Body Small', 'text/secondary', null, 'Status note'));
-  if (o.banner) put(body, banner(o.banner[0], 'Inline', o.banner[1], o.banner[2]), true);
-  if (o.chipAfterBanner) put(body, chip(o.chipAfterBanner));
-  const X = inset(body, 'Request');
-  for (const [k, v] of [['Phone 2 now', '+000 70 000 112'], ['Suggested', '+000 70 000 113'], ['Explanation', 'Shop sign shows a new number.']]) put(X.slot, kv(k, v), true);
-  put(X.slot, linkI('Open business detail'));
-  const oh = row('Outcome heading', 8); put(body, oh, true);
+  const sn = await T(o.statusNote, 'ds/Body Small', 'text/secondary', null, 'Status note'); st.appendChild(sn);
+  const X = I('Card/Inset'); X.name = 'Request';
+  const oh = row('Outcome heading', 8);
   oh.appendChild(await T('Outcome', 'ds/H4', 'text/primary', null, 'Outcome'));
-  for (const [ti, de, k] of [['Apply changes', 'Fix it in Edit business; resolves on save.', 'apply'], ['No change needed', 'Already correct. Note required.', 'close'], ['Reject request', 'Request is wrong. Reason required.', 'reject']])
-    put(body, radioCard(ti, de, o.locked ? 'Disabled' : o.pick === k ? 'Selected' : 'Default'), true);
-  if (!o.locked && !o.noNote) put(body, textareaF('Resolution note', o.note || '', { placeholder: 'What did you verify?', max: 500, helper: 'Shown to the requester.' }), true);
-  put(body, notice('Inline', 'No DEC ID', 'Who resolves (Data Entry and/or Owner) and who is notified are not decided.'), true);
+  oh.appendChild(chip('No DEC ID')); const ohs = spacer(oh); ohs.resize(ohs.width, 1); ohs.layoutGrow = 1; oh.appendChild(linkI('Open business detail'));
+  const cards = [['Apply changes', 'Fix it in Edit business; resolves on save.', 'apply'], ['No change needed', 'Already correct. Note required.', 'close'], ['Reject request', 'Request is wrong. Reason required.', 'reject']]
+    .map(([ti, de, k]) => radioCard(ti, de, o.locked ? 'Disabled' : o.pick === k ? 'Selected' : 'Default'));
+  const slot = slotOf(d, 'Content');
+  const body = stage(frame, slot, 'Drawer body', 8, [st,
+    o.banner ? banner(o.banner[0], 'Inline', o.banner[1], o.banner[2]) : null,
+    o.chipAfterBanner ? chip(o.chipAfterBanner) : null,
+    X, oh, ...cards,
+    (!o.locked && !o.noNote) ? textareaF('Resolution note', o.note || '', { placeholder: 'What did you verify?', max: 500, helper: 'Shown to the requester.' }) : null]);
+  stage(frame, slotOf(X), 'Request rows', 4, [['Phone 2 now', o.phoneNow || '+000 70 000 112'], ['Suggested', '+000 70 000 113'], ['Explanation', 'Shop sign shows a new number.']].map(([k, v]) => kv(k, v)));
+  try { sn.layoutSizingHorizontal = 'FILL'; sn.textAutoResize = 'HEIGHT'; st.layoutSizingVertical = 'HUG'; } catch (e) { W.push('status note: ' + e.message); }
+  kick(body);
   const foot = slotOf(d, 'Footer'); const fr = row('Drawer actions', 8); foot.appendChild(fr); fr.layoutSizingHorizontal = 'FILL';
   if (o.release) fr.appendChild(btn('Ghost', 'Release request'));
   spacer(fr);
@@ -431,10 +483,10 @@ async function drawerOn(frame, o) {
   return d;
 }
 const Q = screen(S5, 'Desktop — Light — In review'); await queue(Q, { sel: 'peak' });
-await drawerOn(Q, { status: ['Warning', 'In review'], statusNote: 'Taken by you · 21 Oct, 09:12', pick: 'apply', release: true, actions: [['Secondary', 'Close'], ['Primary', 'Continue to Edit business']] });
+await drawerOn(Q, { status: ['Warning', 'In review'], statusNote: 'Taken by you · 21 Oct, 09:12', pick: 'apply', release: true, actions: [['Secondary', 'Close'], ['Primary', 'Edit business']] });
 const Q2 = cloneScreen(S5, Q, 'Desktop — Dark — In review', true);
 const Q3 = screen(S5, 'Desktop — Light — Already resolved'); await queue(Q3, { sel: 'peak' });
-await drawerOn(Q3, { status: ['Success', 'Resolved'], statusNote: 'By Rana Haddad · 21 Oct, 10:52', locked: true, banner: ['Warning', 'Already resolved by Rana Haddad', 'Nothing you entered was saved. The request is now Resolved and the phone was updated.'], actions: [['Primary', 'Close']] });
+await drawerOn(Q3, { status: ['Success', 'Resolved'], statusNote: 'By Rana Haddad · 21 Oct, 10:52', locked: true, phoneNow: '+000 70 000 113', banner: ['Warning', 'Already resolved by Rana Haddad', 'Nothing you entered was saved. The request is now Resolved and the phone was updated.'], actions: [['Primary', 'Close']] });
 const Q4 = screen(S5, 'Desktop — Light — Duplicate blocked on apply'); await queue(Q4, { sel: 'peak' });
 await drawerOn(Q4, { status: ['Warning', 'In review'], statusNote: 'Taken by you · 21 Oct, 09:12', pick: 'apply', release: true, noNote: true, banner: ['Error', 'The corrected phone matches another business', 'A matching business exists, so saving is blocked. The request stays In review. Change the value, close it, or reject it as matching an existing business.'], chipAfterBanner: 'DEC-003', actions: [['Secondary', 'Close'], ['Primary', 'Back to Edit business']] });
 const Q5 = screen(S5, 'Desktop — Light — Success'); await queue(Q5, { without: ['peak'], toast: ['Request resolved', 'Peak Fitness Gym: Phone 2 updated. Maya Khoury will be informed (channel pending).'] });
@@ -449,15 +501,17 @@ finishSection(S5);
 // =============== SCR-DE-006 — Correction-request queue ===============
 const S6 = await sectionFor('SCR-DE-006 — Correction-request queue', [
   'Preserved ID. Roles: Data Entry, Owner. UC-BIZ-005, UC-BIZ-006 · WF-BIZ-002 Part B. Desktop P1 · no mobile frame required.',
-  'Frames: Light (primary, incl. redacted row for a hidden business — not counted) · Dark · Empty. Policy: DEC-002 row 6 / OI-08 (redacted row vs omitted).',
+  'Frames: Light (primary, incl. redacted row for a hidden business — not counted) · Dark · Empty · Resolved tab · Closed / rejected tab (with outcome note and resolver). Policy: DEC-002 row 6 / OI-08 (redacted row vs omitted).',
 ]);
 const D1 = screen(S6, 'Desktop — Light'); await queue(D1, {});
 const D2 = cloneScreen(S6, D1, 'Desktop — Dark', true);
 const D3 = screen(S6, 'Desktop — Light — Empty'); await queue(D3, { empty: true });
+const D4 = screen(S6, 'Desktop — Light — Resolved'); await queue(D4, { done: 'resolved' });
+const D5 = screen(S6, 'Desktop — Light — Closed and rejected'); await queue(D5, { done: 'closed' });
 await notesColumn(S6, [
   ['Interaction', 'Queue', 'Tabs filter by state; Open = Submitted + In review (derived). Filters: status, requester, age. Default sort: oldest first. Open → Resolve correction drawer (SCR-DE-005).'],
   ['Note', 'Hidden business', 'A request on a business hidden from the viewer shows only “Business hidden by policy” and “Owner review only”; issue, requester and age are removed. It is not counted in Open (4).'],
 ], [['DEC-002', 'Row 6: whether an open correction request keeps the business visible to Data Entry, and whether a hidden request is a redacted row or omitted, are not decided.']]);
-for (const f of [D1, D2, D3]) fit(f);
+for (const f of [D1, D2, D3, D4, D5]) fit(f);
 finishSection(S6);
 return R;

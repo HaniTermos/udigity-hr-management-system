@@ -38,7 +38,7 @@ function AL(name, dir, o) {
   return f;
 }
 function put(p, c, w, h) { p.appendChild(c); if (w) c.layoutSizingHorizontal = w; if (h) c.layoutSizingVertical = h; return c; }
-function puts(p, arr, w) { for (const c of arr) if (c) put(p, c, w); return p; }
+function puts(p, arr, w) { for (const c of arr) if (c) put(p, c, w === 'FILL' ? hugK(c) : w); return p; }
 function spacer(p) { const s = figma.createFrame(); s.name = 'Spacer'; s.fills = []; s.resize(1, 1); p.appendChild(s); s.layoutGrow = 1; return s; }
 async function T(chars, style, color, o) {
   o = o || {}; const t = figma.createText(); t.fontName = { family: 'Inter', style: 'Regular' }; t.characters = String(chars);
@@ -66,7 +66,9 @@ function nested(root, name) { return root.findOne(n => n.type === 'INSTANCE' && 
 function layerText(root, name, txt, quiet) { const t = root.findOne(n => n.type === 'TEXT' && n.name === name); if (!t) { if (!quiet) warn(`no text layer ${name} in ${root.name}`); return; } try { t.characters = txt; } catch (e) { warn(`text ${name}: ${e.message}`); } }
 function slotOf(i, name) { const s = i.findAll(n => n.type === 'SLOT'); return s.find(x => x.name === name) || s[0] || null; }
 function clearSlot(s) { if (!s) return; for (const ch of [...s.children]) { try { ch.remove(); } catch (e) { ch.visible = false; } } }
-function fillSlot(i, nodes, name, gap) { const s = slotOf(i, name || 'Content'); if (!s) { warn('no slot in ' + i.name); return null; } clearSlot(s); if (gap != null) num(s, 'itemSpacing', gap); for (const n of nodes) if (n) put(s, n, 'FILL'); return s; }
+function fillSlot(i, nodes, name, gap) { const s = slotOf(i, name || 'Content'); if (!s) { warn('no slot in ' + i.name); return null; } clearSlot(s); if (gap != null) num(s, 'itemSpacing', gap); for (const n of nodes) if (n) put(s, n, hugK(n)); return s; }
+// M-6: badges, chips and policy chips HUG inside slots; everything else FILL
+function hugK(n) { return n.type === 'INSTANCE' && (/^(Badge|Badge\/Flag|Chip\/Derived) · /.test(n.name) || (n.name.startsWith('Policy · ') && n.variantProperties && n.variantProperties.Size === 'Chip')) ? 'HUG' : 'FILL'; }
 // ---- DS builders (every visible text set explicitly)
 async function badge(tone, label, size, dot) { const b = await inst('Badge', { Tone: tone, Size: size || 'Small' }, 'Badge · ' + label); setP(b, { Label: label, 'Show dot': dot !== false }); return b; }
 async function chip(tone, label) { const c = await inst('Chip', { Tone: tone }, 'Chip/Derived · ' + label); setP(c, { Label: label }); return c; }
@@ -86,6 +88,7 @@ async function field(kind, vp, label, value, o) {
   if (kind === 'Search') { setP(f, { Placeholder: o.ph || 'Search', Value: value || '' }); return f; }
   setP(f, p); if (o.ini) setP(nested(f, 'Avatar'), { Initials: o.ini }); return f;
 }
+async function link(label, size) { const l = await inst('Link', { Size: size || 'Small', State: 'Default' }, 'Link · ' + label); setP(l, { Label: label, 'Show icon': false }); return l; }
 async function radioCard(sel, title, desc) { const r = await inst('RadioCard', { State: sel ? 'Selected' : 'Default' }, 'RadioCard · ' + title); setP(r, { Title: title, Description: desc, 'Show status dot': false }); return r; }
 async function ann(type, title, body) { const a = await inst('Annotation', { Type: type }, 'Annotation · ' + title); setP(a, { Title: title, Body: body }); return a; }
 async function row(name, nodes, gap, wrap) { const r = AL(name, 'HORIZONTAL', { gap: gap == null ? 8 : gap, align: 'CENTER', wrap: !!wrap }); for (const n of nodes) if (n) r.appendChild(n); return r; }
@@ -121,7 +124,7 @@ async function desk(S, name, who, nav, search) {
   if (GS['ds/Grid/Desktop content 12-col']) await c.setGridStyleIdAsync(GS['ds/Grid/Desktop content 12-col'].id);
   rec(name, f); return { f, c };
 }
-const MTABS = [['My Day', 'clock'], ['Tasks', 'board'], ['Meetings', 'calendar'], ['More', 'menu']];
+const MTABS = [['My Day', 'clock'], ['Projects', 'board'], ['Meetings', 'calendar'], ['More', 'menu']];
 async function mob(S, name, o) {
   const f = figma.createFrame(); f.name = name; S.s.appendChild(f); f.resize(390, 844); f.x = S.X; S.X += 510; f.y = 200; f.fills = [P('surface/page')]; f.clipsContent = true;
   f.setExplicitVariableModeForCollection(SEMC, '40:1');
@@ -141,10 +144,7 @@ async function scrim(f, mobile) { const s = await inst('Scrim', { Size: mobile ?
 async function drawer(f, title, sub, nodes, footer) {
   await scrim(f); const dr = await inst('Drawer', null, 'Drawer · ' + title); f.appendChild(dr); dr.x = 960; dr.y = 0;
   setP(dr, { Title: title, Subtitle: sub || ' ', 'Show subtitle': !!sub });
-  const bs = slotOf(dr, 'Content'); clearSlot(bs); num(bs, 'itemSpacing', 0);
-  const body = AL('Drawer body', 'VERTICAL', { gap: 16 }); bs.appendChild(body);
-  try { body.layoutSizingHorizontal = 'FILL'; } catch (e) { body.resize(Math.max(1, bs.width - (bs.paddingLeft || 0) - (bs.paddingRight || 0)), 10); body.layoutSizingHorizontal = 'FIXED'; } body.layoutSizingVertical = 'HUG';
-  for (const n of nodes) if (n) put(body, n, 'FILL');
+  const bs = slotOf(dr, 'Content'), body = stage(f, bs, 'Drawer body', 16, nodes);
   const fs = dr.findAll(n => n.type === 'SLOT').find(s => s.name === 'Footer');
   if (fs) { clearSlot(fs); const fr = AL('Drawer actions', 'HORIZONTAL', { gap: 8, align: 'CENTER' }); fs.appendChild(fr); try { fr.layoutSizingHorizontal = 'FILL'; } catch (e) { fr.resize(Math.max(1, fs.width - 48), 40); } fr.layoutSizingVertical = 'HUG'; for (const b of footer) { if (b === 'spacer') spacer(fr); else fr.appendChild(b); } } else warn('drawer footer slot not found');
   meta(f).drawer = { dr, bs, body }; return dr;
@@ -153,14 +153,43 @@ async function dialog(f, title, desc, nodes, sec, pri, o) {
   o = o || {}; await scrim(f, o.mobile); const d = await inst('Dialog', null, 'Dialog · ' + title); f.appendChild(d);
   setP(d, { Title: title, Description: desc || ' ', 'Show description': !!desc, 'Show footer': !!(sec || pri), 'Show close': true });
   if (o.w) d.resize(o.w, d.height);
-  fillSlot(d, nodes, 'Content', 12);
+  meta(f).dbody = stage(f, slotOf(d, 'Content'), 'Dialog body', 12, nodes);
   const sb = nested(d, 'Secondary action'), pb = nested(d, 'Primary action');
   if (sb) { if (sec) setP(sb, { Label: sec, 'Show icon': false }); else sb.visible = false; }
   if (pb) { if (pri) { setP(pb, { Label: pri, 'Show icon': false }); if (o.destructive) setP(pb, { Variant: 'Destructive' }); if (o.disabled) setP(pb, { State: 'Disabled' }); } else pb.visible = false; }
   const W = o.mobile ? 390 : 1440, H = o.mobile ? 844 : 900; d.x = Math.round((W - d.width) / 2); d.y = Math.max(o.mobile ? 16 : 40, Math.round((H - d.height) / 2));
   meta(f).dialog = d; return d;
 }
-function relayout(f) { for (const i of f.findAll(n => n.type === 'INSTANCE' && n.name.startsWith('Field · '))) { try { if (i.layoutSizingHorizontal === 'FILL') { i.layoutSizingHorizontal = 'FIXED'; i.layoutSizingHorizontal = 'FILL'; } } catch (e) { } } }
+const _META = {}; function meta(f) { return _META[f.id] || (_META[f.id] = {}); }
+function relayout(f) { for (const i of f.findAll(n => n.type === 'INSTANCE' && n.name.startsWith('Field · '))) { try { if (i.layoutSizingHorizontal === 'FILL') { i.layoutSizingHorizontal = 'FIXED'; i.layoutSizingHorizontal = 'FILL'; } } catch (e) { } } const M = meta(f); kick(M.drawer && M.drawer.body); kick(M.dbody); }
+// N44-1/2: nested instances moved into another instance's slot keep the layout of their old (320 default) width. So the
+// slot body is built detached, at the slot's inner width, in a plain frame (layout runs there, as on mobile), then:
+// 1 append to slot, 2 wrapper FILL, 3 children FILL, 4 own text HEIGHT+FILL, 5 relayout (wrapper width really changes).
+function stage(f, s, name, gap, nodes) {
+  if (!s) { warn('no Content slot in ' + f.name); return null; }
+  const W = Math.max(200, Math.round(s.width - (s.paddingLeft || 0) - (s.paddingRight || 0))); clearSlot(s); num(s, 'itemSpacing', 0);
+  const b = AL(name, 'VERTICAL', { gap }); f.appendChild(b); b.resize(W, 10); b.counterAxisSizingMode = 'FIXED'; b.primaryAxisSizingMode = 'AUTO';
+  for (const n of nodes) if (n) put(b, n, hugK(n));
+  s.appendChild(b); try { b.layoutSizingHorizontal = 'FILL'; } catch (e) { b.layoutSizingHorizontal = 'FIXED'; } b.layoutSizingVertical = 'HUG';
+  for (const n of b.children) if (hugK(n) === 'FILL') { try { n.layoutSizingHorizontal = 'FILL'; } catch (e) { } }
+  for (const t of b.findAll(n => n.type === 'TEXT' && !lockedIn(n, b))) if (t.parent === b || t.layoutSizingHorizontal === 'FILL') { try { t.layoutSizingHorizontal = 'FILL'; t.textAutoResize = 'HEIGHT'; } catch (e) { } }
+  kick(b); return b;
+}
+function kick(b) { if (!b || b.removed) return; try { const w = b.width, fill = b.layoutSizingHorizontal === 'FILL'; b.layoutSizingHorizontal = 'FIXED'; b.resize(w - 1, b.height); if (fill) b.layoutSizingHorizontal = 'FILL'; else b.resize(w, b.height); b.layoutSizingVertical = 'HUG'; } catch (e) { warn('relayout ' + b.name + ': ' + e.message); } }
+// fit: FILL layers inside slot instances that kept an old width, or that render past their instance box
+function stale(b) {
+  const o = []; if (!b || b.removed) return o; const inner = p => p.width - (p.paddingLeft || 0) - (p.paddingRight || 0);
+  for (const i of b.findAll(n => n.type === 'INSTANCE' && !lockedIn(n, b) && shown(n, b))) {
+    const ib = i.absoluteBoundingBox; if (!ib) continue; let m = null;
+    for (const k of i.findAll(x => shown(x, i))) {
+      const p = k.parent; if (p && p.layoutMode === 'VERTICAL' && k.layoutSizingHorizontal === 'FILL' && Math.abs(k.width - inner(p)) > 1.5) { m = k.name + ' ' + Math.round(k.width) + '/' + Math.round(inner(p)); break; }
+      const kb = k.absoluteRenderBounds; if (kb && kb.x + kb.width > ib.x + ib.width + 1.5) { m = k.name + ' +' + Math.round(kb.x + kb.width - ib.x - ib.width) + 'w'; break; }
+    }
+    if (m) o.push(i.name + ' › ' + m);
+  }
+  return o;
+}
+function lockedIn(p, root) { for (let a = p.parent; a && a !== root; a = a.parent) if (a.type === 'INSTANCE') return true; return false; } // D-5: p sits inside another instance, so scripts cannot resize it
 function shown(n, root) { for (let p = n; p && p !== root; p = p.parent) if (p.visible === false) return false; return true; }
 function fit(f, o) {
   o = o || {}; relayout(f); const r = { size: [Math.round(f.width), Math.round(f.height)] }, over = [];
@@ -171,12 +200,13 @@ function fit(f, o) {
     const pb = p.absoluteBoundingBox, b = n.absoluteBoundingBox; if (!pb || !b || b.width < 1) continue;
     const dx = b.x + b.width - (pb.x + pb.width - (p.paddingRight || 0)); if (dx > 1.5) over.push(`${n.name} ⊄ ${p.name} +${Math.round(dx)}w`);
     const fixedH = p.layoutMode === 'VERTICAL' ? p.primaryAxisSizingMode === 'FIXED' : p.counterAxisSizingMode === 'FIXED';
-    if (fixedH && p.clipsContent && !(o.scroll && p === c)) { const dy = b.y + b.height - (pb.y + pb.height - (p.paddingBottom || 0)); if (dy > 1.5) over.push(`${n.name} ⊄ ${p.name} +${Math.round(dy)}h`); }
+    if (fixedH && p.clipsContent && !(o.scroll && p === c)) { const dy = b.y + b.height - (pb.y + pb.height - (p.paddingBottom || 0)); if (dy > 1.5) { const m = `${n.name} ⊄ ${p.name} +${Math.round(dy)}h`; if (p.type === 'INSTANCE' && lockedIn(p, f) && dy <= (p.paddingBottom || 0) + 0.5) (r.padOnly = r.padOnly || []).push(m + ' (bottom padding only, not clipped; component geometry)'); else over.push(m); } }
   }
   const M = meta(f);
-  for (const k of ['dialog', 'drawer']) if (M[k]) { const d = M[k].dr || M[k]; r[k] = [Math.round(d.width), Math.round(d.height)]; if (d.y + d.height > f.height - 8) warn(`${f.name}: ${k} taller than the frame`); }
+  for (const k of ['dialog', 'drawer']) if (M[k]) { const d = k === 'drawer' ? M[k].dr : M[k]; r[k] = [Math.round(d.width), Math.round(d.height)]; if (d.y + d.height > f.height - (k === 'drawer' ? 0 : 8) + 0.5) warn(`${f.name}: ${k} taller than the frame`); }
   if (M.drawer) { const { bs, body } = M.drawer; const free = Math.round(bs.absoluteBoundingBox.y + bs.height - (bs.paddingBottom || 0) - (body.absoluteBoundingBox.y + body.height)); r.drawerBodyFree = free; if (free < 0) warn(`${f.name}: drawer body taller than its slot by ${-free} px`); }
   if (o.mobile) { const small = []; for (const n of f.findAll(x => x.type === 'INSTANCE' && /^(Button|IconButton|Link|Chip\/Filter) · /.test(x.name) && shown(x, f))) if (n.height < 44) small.push(`${n.name} ${Math.round(n.height)}px`); const bk = f.findOne(x => x.type === 'INSTANCE' && x.name === 'Back'); if (bk && shown(bk, f)) r.backButton = Math.round(bk.height); if (bk && shown(bk, f) && bk.height < 44) small.push('Header Back ' + Math.round(bk.height) + 'px (Component request: Shell/Mobile/Header)'); r.tapTargetsUnder44 = small; if (small.length) warn(`${f.name}: ${small.length} tap target(s) < 44 px`); }
+  { const M = meta(f), st = stale(M.drawer && M.drawer.body).concat(stale(M.dbody)); r.stale = st.slice(0, 8); if (st.length) warn(`${f.name}: ${st.length} stale/overrunning layer(s) in the overlay, e.g. ${st[0]}`); }
   r.overflow = over.slice(0, 12); if (over.length) warn(`${f.name}: ${over.length} overflow(s), e.g. ${over[0]}`);
   OUT.fit[f.name] = r; return r;
 }
@@ -193,7 +223,13 @@ async function base(name) {
 const D = (l, v, o) => field('Date', { Type: 'Date', State: o && o.err ? 'Error' : 'Filled' }, l, v, o);
 const TM = (l, v, o) => field('Date', { Type: 'Time', State: o && o.err ? 'Error' : 'Filled' }, l, v, o);
 async function pair(a, b) { const r = AL('Field pair', 'HORIZONTAL', { gap: 16 }); put(r, a, 'FILL'); put(r, b, 'FILL'); return r; }
-async function rescheduleBody(err) {
+// M-1: business master data is read-only here; "Request correction" opens the shared data-correction drawer SCR-SHR-009 (page 42, pending DE-2)
+async function corrRow(mobile) {
+  const r = AL('Correction entry', mobile ? 'VERTICAL' : 'HORIZONTAL', { gap: mobile ? 4 : 8, align: mobile ? 'MIN' : 'CENTER' });
+  r.appendChild(await T('Business name, phone or address wrong? You cannot edit business details here.', 'ds/Caption', 'text/muted', { w: mobile ? 326 : 280 }));
+  r.appendChild(mobile ? await button('Ghost', 'Large', 'Request correction', 'flag') : await link('Request correction')); return r;
+}
+async function rescheduleBody(err, mobile) {
   const n = [];
   if (err) { const es = await inst('ErrSum', null, 'Banner/ErrorSummary'); setP(es, { Title: 'Fix 2 problems before saving' }); fillSlot(es, [await T('• Date and start time are in the past', 'ds/Body Small', 'status/danger/fg'), await T('• Add at least one attendee', 'ds/Body Small', 'status/danger/fg')], 'Errors', 4); n.push(es); }
   else n.push(await banner('Info', null, 'Previous time: Tue 20 Oct, 15:00–16:00 · Lina Aoun, Maya Khoury. It stays in the meeting history.', null, 'Inline'));
@@ -202,6 +238,7 @@ async function rescheduleBody(err) {
   n.push(await field('Select', { Type: 'Combobox', State: err ? 'Error' : 'Filled' }, 'Attendees', err ? '' : 'Lina Aoun, Maya Khoury', { req: true, ph: 'Add attendees', err: err ? 'Add at least one attendee.' : null, help: err ? null : 'At least one attendee (Proposed).' }));
   n.push(await field('Textarea', { State: 'Filled' }, 'Notes', 'Kickoff: confirm member app scope, membership tiers and launch date.', { counter: '68 / 500' }));
   n.push(await ninline('DEC-005', 'Who may schedule: Call Center and Owner; you only if DEC-005 Alt 1 is adopted.'));
+  if (!err) n.push(await corrRow(mobile));
   n.push(await T('Reminder timing has no DEC ID yet. A failed reminder never changes the meeting.', 'ds/Caption', 'text/muted', { w: 400 }));
   return n;
 }
@@ -238,18 +275,33 @@ dark(S, R, N + 'Desktop — Dark — Reschedule');
   fit(f); }
 // 5 Mobile reschedule (full-screen sheet, sticky footer, no tab bar)
 { const { f, c } = await mob(S, N + 'Mobile — Light — Reschedule', { title: 'Reschedule meeting', sub: 'Peak Fitness Gym · DL-0040', back: true, ini: 'LA', foot: [await button('Primary', 'Large', 'Save new time')] });
-  const b = await rescheduleBody(false); b.pop(); puts(c, b, 'FILL');
+  const b = await rescheduleBody(false, true); b.pop().remove(); puts(c, b, 'FILL');
+  put(c, await button('Ghost', 'Large', 'Cancel meeting…'), 'FILL'); // minor 6: same entry as desktop
   fit(f, { mobile: true, scroll: true }); }
-// 6 Mobile record outcome + success toast
-{ const { f, c } = await mob(S, N + 'Mobile — Light — Record outcome + success', { title: 'Record outcome', sub: 'Sunrise Bakery · Mon 19 Oct, 11:00', back: true, ini: 'LA', foot: [await button('Primary', 'Large', 'Save outcome')] });
+// 6 Mobile record outcome (sheet) — minor 5: the sheet closes on success, so the toast is shown over the agenda (frame 7)
+{ const { f, c } = await mob(S, N + 'Mobile — Light — Record outcome', { title: 'Record outcome', sub: 'Sunrise Bakery · Mon 19 Oct, 11:00', back: true, ini: 'LA', foot: [await button('Primary', 'Large', 'Save outcome')] });
   puts(c, await outcomeBody(true), 'FILL');
-  const t = await toast('Success', 'Outcome saved', 'Meeting marked Held. Notes added to DL-0037.'); f.appendChild(t); t.resize(358, t.height); t.x = 16; t.y = 764 - t.height - 12;
+  fit(f, { mobile: true, scroll: true }); }
+// 7 Mobile success: agenda (clone of the SCR-DEV-003 mobile frame) + toast
+{ const MB = page.findOne(n => n.type === 'FRAME' && n.name === 'SCR-DEV-003 — Meetings & calendar — Mobile — Light');
+  let f; if (MB) f = cloneF(S, MB, N + 'Mobile — Light — Outcome saved (agenda + toast)'); else { warn('SCR-DEV-003 mobile frame not found — run C03 first'); f = (await mob(S, N + 'Mobile — Light — Outcome saved (agenda + toast)', { title: 'Meetings', sub: 'Week 19–25 Oct', tab: 3, ini: 'LA' })).f; }
+  // N44-3: the agenda shows the saved state — Sunrise Bakery moves to EARLIER as Held; the empty NEEDS AN OUTCOME group is removed
+  const ct = f.children.find(n => n.name === 'Content'), sr = ct && ct.children.find(n => n.name === 'Agenda row · Sunrise Bakery — scope call'), ea = ct && ct.children.find(n => n.type === 'TEXT' && n.characters === 'EARLIER');
+  if (sr && ea) {
+    const mt = sr.findOne(n => n.type === 'TEXT' && n.characters.startsWith('Mon 19 Oct, 11:00')); if (mt) mt.characters = 'Mon 19 Oct, 11:00–11:30 · notes added';
+    const bd = sr.findOne(n => n.name === 'Badges'); if (bd) { for (const ch of [...bd.children]) ch.remove(); bd.appendChild(await badge('Success', 'Held')); } else warn('Sunrise agenda badges not found');
+    const ov = ct.children.find(n => n.type === 'TEXT' && n.characters === 'NEEDS AN OUTCOME'); if (ov) ov.remove();
+    f.appendChild(sr); ct.insertChild(ct.children.indexOf(ea) + 1, sr); sr.layoutSizingHorizontal = 'FILL';
+  } else warn('Outcome saved: Sunrise Bakery agenda row or EARLIER group not found — agenda not updated');
+  const t = await toast('Success', 'Outcome saved', 'Meeting marked Held. Notes added to DL-0037.'); f.appendChild(t); { const tc = t.findOne(n => n.type === 'INSTANCE' && n.name === 'Close'); if (tc) { tc.setProperties({ Size: 'Touch' }); const ik = Object.keys(tc.componentProperties).find(k => /^Icon#/.test(k)); if (ik) tc.setProperties({ [ik]: '44:53' }); } } t.resize(358, t.height); t.x = 16; t.y = 844 - 84 - t.height - 12;
+  if (ct) { ct.resize(390, Math.max(200, t.y - 12 - ct.y)); } // N44-3: content ends above the toast, so no row or chip sits under it (rest scrolls)
   rec(N + 'Mobile toast', t);
   fit(f, { mobile: true, scroll: true }); }
 await endSection(S, [
   ['Interaction', 'I1 — Reschedule', 'Open from a Scheduled or Missed meeting. Save validates: time not in the past, ≥1 attendee (Proposed). Success: drawer closes, toast "Meeting rescheduled", calendar moves the event; previous values are kept in history; pending reminders are superseded.'],
   ['Interaction', 'I2 — Record outcome', 'Available after the start time. Held → discovery notes attach to the deal record; Held is final for scheduling. Missed (Proposed) → meeting needs rearranging; Reschedule returns it to Scheduled.'],
   ['Interaction', 'I3 — Cancel', '"Cancel meeting…" asks for a reason; confirm is destructive. Pending reminders are cancelled. A new meeting is a new record.'],
+  ['Note', 'N2 — Request correction (M-1)', 'Business details are read-only for Developers. "Request correction" opens the shared data-correction drawer SCR-SHR-009 (page 42; not built yet, DE-2), prefilled with this business. No edit controls on page 44.'],
   ['Note', 'N1 — Mobile', 'Full-screen sheet with Back and a sticky 48 px primary button; no tab bar while editing. Fields keep the same validation copy as desktop.']
 ]);
 return OUT;

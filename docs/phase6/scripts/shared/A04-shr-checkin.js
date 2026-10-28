@@ -396,6 +396,8 @@ async function panel(st) {
   const tm = nested(p, 'Timer');
   if (tm) { await setText(tm, 'Label', 'Elapsed today'); await setText(tm, 'Elapsed', checked ? '05:34:14' : '00:00:00'); await setText(tm, 'Caption', checked ? 'Since 08:58 · today' : 'Not checked in yet today'); } else warn('Timer not found');
   await nestedProps(p, 'Progress', { Label: 'Toward 9 h workday', Value: checked ? '5h 34m of 9h' : '0h of 9h', 'Show labels': true });
+  // Fix R40-01: bar fill follows the value (DS-13c Percent axis): 0h → Percent=0; 5h 34m of 9h → 60.
+  await setProgress(nested(p, 'Progress'), checked ? 0.62 : 0);
   const v = nested(p, 'Verification'); if (v) { await setText(v, 'Title', 'Office check passed'); await setText(v, 'Meta', '08:58 · at check-in'); }
   await nestedProps(p, 'Action', checked ? { Label: 'Check out', 'Show icon': false } : { Label: 'Check in', 'Show icon': false, State: st === 'Open session from earlier day' ? 'Disabled' : 'Default' });
   await nestedProps(p, 'Policy', { DEC: 'DEC-009', Body: 'Office check mode' });
@@ -426,7 +428,9 @@ async function workList(st, max, mob) {
     for (const it of ITEMS.slice(0, st === 'Insufficient work' ? 3 : max || 6)) kids.push(await li(it[0], it[1], it[2], it[3], !mob));
   }
   kids.push(await chips([['DEC-021', 'Work-list rule']]));
-  const n = st === 'Empty work list' ? '0 items' : st === 'Insufficient work' ? '3 items' : '6 items';
+  // Fix R40-02: the count matches the drawn rows; when fewer than 6 are shown the subtitle says so and "Open queue" shows the rest.
+  const total = st === 'Empty work list' ? 0 : st === 'Insufficient work' ? 3 : 6, shown = Math.min(total, st === 'Insufficient work' ? 3 : max || 6);
+  const n = shown < total ? `Showing ${shown} of ${total} items` : `${total} items`;
   return sectionCard('My work list', n + ' · works without check-in', kids, { gap: 0, action: st === 'Empty work list' ? null : 'Open queue' });
 }
 

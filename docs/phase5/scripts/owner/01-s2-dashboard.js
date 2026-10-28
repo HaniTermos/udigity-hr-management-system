@@ -1,6 +1,9 @@
 // 01-s2-dashboard.js — Owner Screen Agent — Phase 5 (Udigity Management System)
 // Phase 6 P4 (2026-10-21): Exceptions card — chips gap 4 and tuneExceptions() keep the DEC-026 chip >= 24 px above the
-// card bottom (Light + Dark); returns OUT.fit['Exceptions · <theme>']. Nothing else changed.
+// card bottom (Light + Dark); returns OUT.fit['Exceptions · <theme>'].
+// Phase 6 review-41 (2026-10-22): M-03 Accepted chip = Stage names · No DEC ID; M-04 per-Developer workload caption;
+// exception actions share one style. Re-run C01 afterwards (page 41 clones these frames).
+// Phase 6 P5 (2026-10-21): Targets bars are DS Progress/Bar instances (Percent + FILL) instead of token-drawn bars.
 // S2 Owner Dashboard (SCR-OWN-001), desktop 1440x900, Light + Dark, page 30 HiFi — Visual Sample (36:4).
 // Spec: docs/phase5/screens/owner-sample-spec.md. DS IDs: docs/phase5/ds-ids/index.md.
 // DS instances only (plus layout frames, text and chart marks bound to chart/* variables).
@@ -180,20 +183,25 @@ async function metricsRow() {
   const tiles = [
     { k: 'Call attempts', trend: 'Up', p: { Label: 'Call attempts', Value: '184', Delta: '+23 vs 161 (7–13 Oct)', Caption: 'Period · 14–20 Oct' } },
     { k: 'Businesses contacted', trend: 'Up', p: { Label: 'Businesses contacted', Value: '97', Delta: '+7 vs 90 (7–13 Oct)', Caption: 'Distinct · ≠ attempts' } },
-    { k: 'Accepted opportunities', trend: 'Pending', dec: 'B-1', p: { Label: 'Accepted opportunities', Value: '3', Delta: '', Caption: 'Snapshot · current stage' } },
+    // review-41 M-03: B-1 is the agreed definition (caption); only the stage names are pending (no DEC ID)
+    { k: 'Accepted opportunities', trend: 'Pending', dec: 'No DEC ID', title: 'Stage names', p: { Label: 'Accepted opportunities', Value: '3', Delta: '', Caption: 'Snapshot · current stage (B-1)' } },
     { k: 'Closed deals in period', trend: 'Down', p: { Label: 'Closed deals in period', Value: '1', Delta: '−1 vs 2 (7–13 Oct)', Caption: '≠ accepted · 14–20 Oct' } },
-    { k: 'Development workload', trend: 'Pending', dec: 'SB-3', p: { Label: 'Development workload', Value: '3 · 5 · 12', Delta: '', Caption: 'Deals · Projects · Tasks' } },
+    // review-41 M-04: §5A defines workload per Developer: the value is the all-developer total, the caption gives the
+    // per-Developer breakdown (Deals · Projects · Tasks); the tile drills down to the per-Developer list. Pending: DEC-019.
+    { k: 'Development workload', trend: 'Pending', dec: 'DEC-019', title: 'statuses', p: { Label: 'Development workload', Value: '3 · 5 · 12', Delta: '', Caption: 'Lina 2·4·7 · Sami 1·1·5' } },
   ];
   const ids = {};
   for (const t of tiles) {
     const m = await I(ID.metric, { Trend: t.trend }, Object.assign({ 'Show caption': true }, t.p), 'KPI · ' + t.k);
-    if (t.dec) { const pol = nested(m, 'Policy'); if (pol) { setP(pol, { DEC: t.dec, Body: t.dec + ' pending' }); const tt = txt(pol, 'Title'); if (tt) tt.characters = 'Policy pending'; } else OUT.warnings.push('KPI ' + t.k + ': Policy chip not found'); }
+    if (t.dec) { const pol = nested(m, 'Policy'); if (pol) { setP(pol, { DEC: t.dec, Body: (t.title || t.dec) + ' pending' }); const tt = txt(pol, 'Title'); if (tt) tt.characters = t.title || 'Policy pending'; } else OUT.warnings.push('KPI ' + t.k + ': Policy chip not found'); }
     // DS fix 12 unlinked Value/Caption (Pending) and Delta (Down/Flat): set those layers directly
     for (const k of ['Label', 'Value', 'Delta', 'Caption']) if (t.p[k]) await setText(m, k, t.p[k]);
     row.appendChild(m);
     m.layoutSizingHorizontal = 'FILL'; m.layoutSizingVertical = 'FILL';
     ids[t.k] = m.id;
   }
+  // fit (M-04): the per-Developer caption must not truncate inside the tile
+  for (const m of row.children) { const c = txt(m, 'Caption'); if (c && c.visible && c.width > m.width - 32 + 0.5) OUT.warnings.push(m.name + ': caption wider than the tile (' + Math.round(c.width) + ')'); }
   return { row, ids };
 }
 
@@ -233,8 +241,8 @@ async function callingBody() {
   const lg = AL('Legend', 'HORIZONTAL', { gap: 16, align: 'CENTER' });
   lg.appendChild(await I(ID.legend, { Series: '1' }, { Label: 'Call attempts' }, 'Legend · Call attempts'));
   lg.appendChild(await I(ID.legend, { Series: '2' }, { Label: 'Businesses contacted (per day)' }, 'Legend · Businesses contacted'));
-  const GUT = 40, PW = CW - GUT - 4, PH = 115, TOPP = 6, MAX = 60;
-  const plot = figma.createFrame(); plot.name = 'Calling plot (marks bound to chart/*)'; plot.fills = []; plot.resize(CW, 147); plot.clipsContent = true;
+  const GUT = 40, PW = CW - GUT - 4, PH = 108, TOPP = 6, MAX = 60; // Phase 6 fit: PH 115->108 (Calling body was +9 px)
+  const plot = figma.createFrame(); plot.name = 'Calling plot (marks bound to chart/*)'; plot.fills = []; plot.resize(CW, TOPP + PH + 22); plot.clipsContent = true;
   for (const v of [0, 15, 30, 45, 60]) {
     const y = TOPP + PH - (v / MAX) * PH;
     const g = figma.createRectangle(); g.name = 'Grid ' + v; plot.appendChild(g); g.resize(PW, 1); g.x = GUT; g.y = y; fill(g, 'chart/grid');
@@ -263,10 +271,11 @@ async function callingBody() {
 async function exceptionsBody() {
   const b = bodyFrame('Exceptions body', 6);
   const rows = [
-    [ID.iWarn, 'status/warning/fg', 'Missing checkout', 'Omar Nassar · Mon 19 Oct, in 09:04', 'Ghost', 'Review'],
+    // review-41 minor: one action style (Secondary Small) for every exception row
+    [ID.iWarn, 'status/warning/fg', 'Missing checkout', 'Omar Nassar · Mon 19 Oct, in 09:04', 'Secondary', 'Review'],
     [ID.iX, 'status/danger/fg', 'Reminder failed', 'Peak Fitness Gym · Lina Aoun', 'Secondary', 'Send again'],
     [ID.iBan, 'status/warning/fg', 'Reminder suppressed', 'Nova Dental Clinic · Sami Fares', 'Secondary', 'Send again'],
-    [ID.iAlert, 'status/danger/fg', 'Notification failed', 'Assignment changed · Omar Nassar', 'Ghost', 'View'],
+    [ID.iAlert, 'status/danger/fg', 'Notification failed', 'Assignment changed · Omar Nassar', 'Secondary', 'View'],
   ];
   for (const [ic, col, t1, t2, bv, bl] of rows) {
     const r = AL('Exception · ' + t1, 'HORIZONTAL', { gap: 8, align: 'CENTER' });
@@ -313,7 +322,7 @@ async function businessesBody() {
 }
 
 async function pipelineBody() {
-  const b = bodyFrame('Pipeline body', 8);
+  const b = bodyFrame('Pipeline body', 6); // Phase 6 fit: gap 8->6 (was +1 px)
   const sum = await T('14–20 Oct: 2 accepted · 1 closed · 1 completed', 'ds/Body Small', 'text/secondary', { name: 'Period summary', w: CW });
   const lg = AL('Legend', 'HORIZONTAL', { gap: 16, align: 'CENTER' });
   // dashed style is shown by the line itself (legend label per spec §7.2)
@@ -375,21 +384,11 @@ async function targetsBody() {
     const lt = await T(l, 'ds/Body Small', 'text/secondary', { name: 'Label', w: 160, truncate: 1 });
     const vt = await T(v, 'ds/Label Small', 'text/primary', { name: 'Value' });
     add(top, lt, vt); vt.textAutoResize = 'WIDTH_AND_HEIGHT'; lt.layoutGrow = 1; fillW(lt);
-    // Final pass: no size is set on instance children. The bar is drawn from the DS Progress/Bar paints
-    // (Track = surface/sunken, Fill = tone), copied with their variable bindings, CW wide.
-    const pb = await I(ID.progress, { Tone: 'Brand' }, { Label: l, Value: v, 'Show labels': false }, 'tmp');
-    const tr = pb.findOne(n => n.name === 'Track'), fl = pb.findOne(n => n.name === 'Fill');
-    const H = tr ? tr.height : 8;
-    const bar = figma.createFrame(); bar.name = 'Progress · ' + who + ' (Progress/Bar tokens)'; bar.resize(CW, H); bar.cornerRadius = H / 2; bar.clipsContent = true;
-    bar.fills = tr ? JSON.parse(JSON.stringify(tr.fills)) : [P('surface/sunken')];
-    if (pct > 0 && fl) {
-      const r = figma.createRectangle(); r.name = 'Fill ' + Math.round(pct * 100) + '%'; bar.appendChild(r);
-      r.resize(Math.round(CW * pct), H); r.cornerRadius = H / 2;
-      r.fills = JSON.parse(JSON.stringify(fl.fills));
-    }
-    if (!tr || !fl) OUT.warnings.push('Progress/Bar Track/Fill not found (' + who + ')');
-    pb.remove();
-    g.appendChild(bar); fillW(bar);
+    // Phase 6 P5: DS Progress/Bar is value-driven (Percent axis 0–100, step 5, DS 13) and width-agnostic:
+    // the instance is set to FILL; no instance child is resized. Labels hidden (drawn in the row above).
+    const pb = await I(ID.progress, { Tone: 'Brand', Percent: String(Math.round(pct * 20) * 5) }, { Label: l, Value: v, 'Show labels': false }, 'Progress · ' + who);
+    g.appendChild(pb); fillW(pb);
+    // DS 13c (O-1 fixed): Show labels=false hides the component's own label row; no visibility override needed.
   }
   const foot = await T('Counted by action timestamp (A2). What counts: DEC-020; daily cadence: DEC-025. No overall % shown.', 'ds/Caption', 'text/muted', { name: 'Targets caption', w: CW });
   b.appendChild(foot); fillW(foot);
@@ -464,9 +463,8 @@ async function buildScreen(label, modeId, x, sec) {
 
 // ---------- section (reuse) and rebuild of owned nodes ----------
 let sec = page.children.find(n => n.type === 'SECTION' && n.name === SECTION_NAME);
-if (!sec) { sec = figma.createSection(); sec.name = SECTION_NAME; page.appendChild(sec); OUT.created.section = sec.id; }
-else OUT.updated.section = sec.id;
-sec.x = 3400; sec.y = 0; // orchestrator placement (other sections occupy y 2400+)
+if (!sec) { sec = figma.createSection(); sec.name = SECTION_NAME; page.appendChild(sec); OUT.created.section = sec.id; sec.x = 3400; sec.y = 0; }
+else OUT.updated.section = sec.id; // Phase 6 rule 3: never move the section on re-run
 const OWNED = /^(S2 — |S2 caption|S2 annotations)/;
 for (const c of [...sec.children]) if (OWNED.test(c.name)) { OUT.removed.push(c.name); c.remove(); }
 sec.resizeWithoutConstraints(3120, 1300);
@@ -485,8 +483,8 @@ sec.appendChild(ann); ann.x = 80; ann.y = 1020;
 const NOTES = [
   ['Interaction', 'N1 — Period, compare, filters', 'Today / 7 days / 30 days, the date range and Compare update every period metric. Snapshot tiles ignore the period. Export opens Reports & Exports (synchronous, ADR-010).'],
   ['Note', 'N2 — G1 distinctions', 'Attempts ≠ businesses contacted; accepted ≠ closed ≠ completed project; not checked in yet ≠ absent. Missing policy values read "policy pending", never 0 (WF-REPORT-001 D2).'],
-  ['Note', 'N3 — Accepted opportunities (B-1)', 'Deals currently in stage Accepted opportunity: Peak Fitness Gym, Lumen Yoga Studio, Nova Dental Clinic. Excludes Signed, Paid, Closed deal and Not proceeding. Not a calling-outcome count.'],
-  ['Note', 'N4 — Development workload (SB-3, Proposed)', 'Lina Aoun 2 · 4 · 7; Sami Fares 1 · 1 · 5. Deals = non-terminal deals assigned; Projects = Scheduled, In progress, Waiting for client, Blocked; Tasks = open tasks. Never summed.'],
+  ['Note', 'N3 — Accepted opportunities (B-1, agreed)', 'Stage names are pending (no DEC ID). Deals currently in stage Accepted opportunity: Peak Fitness Gym, Lumen Yoga Studio, Nova Dental Clinic. Excludes Signed, Paid, Closed deal and Not proceeding. Not a calling-outcome count.'],
+  ['Note', 'N4 — Development workload (per Developer, §5A)', 'Tile value = all developers (3 · 5 · 12); caption and drill-down give each Developer: Lina Aoun 2 · 4 · 7; Sami Fares 1 · 1 · 5. Statuses: DEC-019. Deals = non-terminal deals assigned; Projects = Scheduled, In progress, Waiting for client, Blocked; Tasks = open tasks. Never summed.'],
   ['Interaction', 'N5 — Exceptions', 'Review opens the OWN-004 exception detail. Send again creates a new reminder; the failed one stays failed (AR-13). Notifications have no Send again: View opens the Delivery Monitor.'],
   ['Note', 'N6 — Calling chart', '20 Oct is today (to 11:20), drawn lighter. Daily distinct counts sum to 105; the period distinct count is 97 because some businesses were called on more than one day.'],
 ];

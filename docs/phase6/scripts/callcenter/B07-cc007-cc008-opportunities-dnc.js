@@ -72,7 +72,7 @@ async function T(chars, style, color, o = {}) {
 function add(p, ...k) { for (const x of k) if (x) p.appendChild(x); return p; }
 function fillW(n) { if (n.type === 'TEXT') n.textAutoResize = 'HEIGHT'; n.layoutSizingHorizontal = 'FILL'; return n; }
 function fillH(n) { n.layoutSizingVertical = 'FILL'; return n; }
-function grow(n) { n.layoutGrow = 1; return n; }
+function grow(n) { try { if (n.name === 'Spacer' && 'children' in n && !n.children.length) { n.resize(n.width, 1); n.layoutSizingVertical = 'FIXED'; } n.layoutGrow = 1; } catch (e) { W('grow ' + n.name + ': ' + e.message); } return n; } // fit: empty spacers were 100 px tall (CC-007 Owner view Content +18)
 function fixedCol(n, w) { n.resize(w, 100); n.layoutSizingHorizontal = 'FIXED'; return n; }
 function put(p, n) { p.appendChild(n); fillW(n); return n; }
 function reg(k, n) { if (n) OUT.created[k] = n.id; return n; }
@@ -97,13 +97,29 @@ async function slotCard(parent, compName, o) {
 function slotOf(inst, name) { const s = inst.findAllWithCriteria({ types: ['SLOT'] }); return s.find(x => x.name === name) || null; }
 function clearSlot(s) { if (s) for (const k of [...s.children]) k.remove(); return s; }
 function relBottom(n, f) { return n.absoluteTransform[1][2] - f.absoluteTransform[1][2] + n.height; }
+// N43-1/N43-2: port of DEV-002 stage(). Instances moved into a slot keep the layout of their old (320 px default) width, so slot
+// content is built detached at the slot's inner width, then moved in: wrapper FILL, children FIXED→FILL, own text HEIGHT+FILL, relayout.
+function inInst(n, root) { for (let a = n.parent; a && a !== root; a = a.parent) if (a.type === 'INSTANCE') return true; return false; }
+function kick(b) { if (!b || b.removed) return; try { const w = b.width, fill = b.layoutSizingHorizontal === 'FILL'; b.layoutSizingHorizontal = 'FIXED'; b.resize(w - 1, b.height); if (fill) b.layoutSizingHorizontal = 'FILL'; else b.resize(w, b.height); b.layoutSizingVertical = 'HUG'; } catch (e) { W('relayout ' + b.name + ': ' + e.message); } }
+function stage(f, s, name, gap, nodes, hug) {
+  if (!s) { W('no Content slot in ' + f.name); return null; }
+  const w = Math.max(200, Math.round(s.width - (s.paddingLeft || 0) - (s.paddingRight || 0))); for (const k of [...s.children]) k.remove(); try { s.itemSpacing = 0; } catch (e) { }
+  const b = AL(name, 'VERTICAL', { gap }); f.appendChild(b); b.resize(w, 10); b.counterAxisSizingMode = 'FIXED'; b.primaryAxisSizingMode = 'AUTO';
+  const H = new Set((hug || []).map(n => n.id));
+  for (const n of nodes) if (n) { b.appendChild(n); if (!H.has(n.id)) fillW(n); }
+  s.appendChild(b); try { b.layoutSizingHorizontal = 'FILL'; } catch (e) { b.layoutSizingHorizontal = 'FIXED'; } b.layoutSizingVertical = 'HUG';
+  for (const n of b.children) if (!H.has(n.id)) { try { n.layoutSizingHorizontal = 'FIXED'; n.layoutSizingHorizontal = 'FILL'; } catch (e) { } }
+  for (const t of b.findAll(n => n.type === 'TEXT' && !inInst(n, b))) if (t.parent === b || t.layoutSizingHorizontal === 'FILL') { try { t.layoutSizingHorizontal = 'FILL'; t.textAutoResize = 'HEIGHT'; } catch (e) { } }
+  kick(b); return b;
+}
+function overrun(b) { const o = []; if (!b) return o; for (const i of b.findAll(n => n.type === 'INSTANCE' && !inInst(n, b) && n.visible)) { const ib = i.absoluteBoundingBox; if (!ib) continue; if (i.layoutSizingHorizontal === 'FILL' && i.parent === b && Math.abs(i.width - b.width) > 1.5) { o.push(i.name + ' ' + Math.round(i.width) + '/' + Math.round(b.width) + 'w'); continue; } for (const k of i.findAll(x => x.type === 'TEXT' && x.visible)) { const kb = k.absoluteRenderBounds; if (kb && kb.x + kb.width > ib.x + ib.width + 1.5) { o.push(i.name + ' › ' + k.name + ' +' + Math.round(kb.x + kb.width - ib.x - ib.width) + 'w'); break; } } } return o; }
 // ---------- sections & frames ----------
 let SEC = null, CUR = { x: 80, y: 80, rowH: 0, n: 0 }, PREFIX = '', PART = '';
 function getSection(name, part) {
   PREFIX = name.split(' — ')[0]; PART = part || '-';
   let s = page.children.find(n => n.type === 'SECTION' && n.name === name), y0 = 80;
   if (s) {
-    for (const k of [...s.children]) { const p = k.getPluginData('ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
+    for (const k of [...s.children]) { const p = k.getSharedPluginData('udigity.cc', 'ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
     for (const k of s.children) y0 = Math.max(y0, k.y + k.height + 160);
     OUT.updated['section ' + PREFIX] = s.id;
   } else {
@@ -118,7 +134,7 @@ function newRow() { if (CUR.n) { CUR.y += CUR.rowH + 160; CUR.x = 80; CUR.rowH =
 function frame(suffix, mobile, dark) {
   const name = SEC.name + ' — ' + suffix; const w = mobile ? 390 : 1440, h = mobile ? 844 : 900;
   if (CUR.n >= (mobile ? 6 : 4)) newRow();
-  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setPluginData('ccPart', PART);
+  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setSharedPluginData('udigity.cc', 'ccPart', PART);
   f.fills = [paint('surface/page')]; f.setExplicitVariableModeForCollection(semCol, dark ? DARK : LIGHT);
   CUR.x += w + 80; CUR.rowH = Math.max(CUR.rowH, h); CUR.n++;
   OUT.created[PREFIX + ' ' + suffix] = f.id; return f;
@@ -177,7 +193,7 @@ function fitFrame(f) {
 async function annotations(notes, w) {
   newRow();
   const a = AL(PREFIX + ' — Annotations' + (PART !== '-' ? ' (' + PART + ')' : ''), 'VERTICAL', { gap: 12, pad: 24, fill: 'surface/page', stroke: 'border/default', radius: 'xl' });
-  SEC.appendChild(a); a.setPluginData('ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
+  SEC.appendChild(a); a.setSharedPluginData('udigity.cc', 'ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
   a.setExplicitVariableModeForCollection(semCol, LIGHT);
   a.appendChild(await T(PREFIX + ' annotations (designer notes and intended interactions, not product UI)', 'ds/H3', 'text/primary'));
   for (const [type, title, body] of notes) put(a, I('Annotation', { Type: type }, { Title: title, Body: body }, 'Annotation · ' + title));
@@ -189,11 +205,13 @@ function finishSection() { let mx = 0, my = 0; for (const c of SEC.children) { m
 // ================= SCR-CC-007 Opportunities & developer handoff  +  SCR-CC-008 Do-not-call list & reopening =================
 function table(parent, heads, rows) {
   const box = AL('Table', 'VERTICAL', { fill: 'surface/default', stroke: 'border/default', radius: 'xl', clip: true }); put(parent, box);
-  const h = I('Table/HeaderRow', null, null, 'Table header'); box.appendChild(h);
+  const h = I('Table/HeaderRow', null, null, 'Table header'); put(box, h);
   const HC = ['Business', 'Phone', 'Status', 'Assigned to', 'Updated'];
-  for (const n of h.findAllWithCriteria({ types: ['INSTANCE'] })) { if (n.name === 'H · Checkbox') n.visible = false; const i = HC.findIndex(x => n.name === 'H · ' + x); if (i >= 0) prop(n, { Label: heads[i] }); if (n.name === 'H · Actions') prop(n, { Label: ' ' }); }
+  { const cbh = nested(h, 'H · Checkbox'); if (cbh) cbh.visible = false; }
+  HC.forEach((x, i) => { const n = nested(h, 'H · ' + x); if (n) prop(n, { Label: heads[i] }); else W('header cell missing: ' + x); });
+  { const ah = nested(h, 'H · Actions'); if (ah) prop(ah, { Label: ' ' }); }
   for (const r of rows) {
-    const row = I('Table/Row', { State: r.sel ? 'Selected' : 'Default' }, null, 'Row · ' + r.biz[0]); box.appendChild(row);
+    const row = I('Table/Row', { State: r.sel ? 'Selected' : 'Default' }, null, 'Row · ' + r.biz[0]); put(box, row);
     const cell = n => nested(row, 'C · ' + n);
     const cb = cell('Checkbox'); if (cb) cb.visible = false;
     prop(cell('Business'), { Text: r.biz[0], Meta: r.biz[1] }); prop(cell('Phone'), { Text: r.col2 });
@@ -208,12 +226,16 @@ function chipRow(parent, chips, extra) {
   for (const [l, a] of chips) r.appendChild(I('Chip/Filter', { State: a ? 'Active' : 'Default' }, { Label: l }, 'Chip · ' + l));
   const sp = AL('Spacer', 'HORIZONTAL', {}); r.appendChild(sp); grow(sp); for (const x of extra || []) r.appendChild(x); return r;
 }
-function dialog(f, title, desc) {
+// N43-9: the dialog body is staged at the slot's inner width, so the Reason textarea and the disabled Select FILL it (no 320 px field, no detached chevron)
+function dialog(f, title, desc, nodes) {
   const sc = I('Overlay/Scrim', { Size: 'Desktop' }, null, 'Overlay/Scrim'); f.appendChild(sc); sc.x = 0; sc.y = 0;
   const dl = I('Dialog', null, { Title: title, Description: desc, 'Show description': true, 'Show footer': true, 'Show close': true }, 'Dialog · ' + title); f.appendChild(dl);
-  const s = clearSlot(slotOf(dl, 'Content') || dl.findAllWithCriteria({ types: ['SLOT'] })[0]); if (s) { try { s.itemSpacing = 12; } catch (e) { } } else W('Dialog slot missing');
-  return { dl, s };
+  const db = stage(f, slotOf(dl, 'Content') || dl.findAllWithCriteria({ types: ['SLOT'] })[0], 'Dialog body', 12, nodes);
+  if (db) { const ov = overrun(db); OUT.fit[PREFIX + ' ' + title + ' body'] = { bodyW: Math.round(db.width), overrun: ov }; if (ov.length) W(title + ': ' + ov.length + ' stale/overrunning layer(s), e.g. ' + ov[0]); }
+  return { dl, db };
 }
+// N43-10: audit-record rows whose values wrap (key column fixed, value FILL + HEIGHT) instead of List/KeyValue, whose value column is fixed
+async function recRow(k, v) { const r = AL('Record · ' + k, 'HORIZONTAL', { gap: 16, pad: [6, 0] }); r.appendChild(await T(k, 'ds/Label', 'text/secondary', { name: 'Key', w: 200 })); put(r, await T(v, 'ds/Body Small', 'text/primary', { name: 'Value', w: 400 })); return r; }
 function dialogFoot(dl, a, b, destructive) { const b1 = nested(dl, 'Secondary action'), b2 = nested(dl, 'Primary action'); if (b1) prop(b1, { Label: a, 'Show icon': false }); if (b2) prop(b2, { Variant: destructive ? 'Destructive' : 'Primary', Label: b, 'Show icon': false }); dl.x = 460; dl.y = Math.round((900 - dl.height) / 2); }
 function toast(f, title, body) { const t = I('Toast', { Tone: 'Success' }, { Title: title, Body: body, 'Show body': true }, 'Toast · ' + title); f.appendChild(t); t.x = 1440 - 24 - t.width; t.y = 80; return t; }
 // ---------------- SCR-CC-007 ----------------
@@ -233,7 +255,8 @@ async function oppPage(f, o = {}) {
     return c;
   }
   if (o.owner) put(c, banner('Warning', 'Default', 'Developer not yet assigned · 1', 'Olive & Thyme Café (created by Maya Khoury, 22 Oct) has no developer. Assign one or ask the agent to.'));
-  chipRow(c, [['All (3)', 1], [o.assigned ? 'Developer not yet assigned (0)' : 'Developer not yet assigned (1)', 0], ['Meeting not yet arranged (1)', 0]], [derived('Both conditions are derived'), notice('Chip', 'DEC-005', null, 'Developer access before closure'), notice('Chip', 'DEC-017', null, 'Several deals per business')]);
+  chipRow(c, [['All (3)', 1], [o.assigned ? 'Developer not yet assigned (0)' : 'Developer not yet assigned (1)', 0], ['Meeting not yet arranged (1)', 0]], [derived('Both conditions are derived')]);
+  { const pr = AL('Policy chips', 'HORIZONTAL', { gap: 8, align: 'CENTER' }); put(c, pr); add(pr, notice('Chip', 'DEC-005', null, 'Developer access before closure'), notice('Chip', 'DEC-017', null, 'Several deals per business')); }
   table(c, ['Opportunity', o.owner ? 'Created by' : 'Stage', 'Handoff', 'Developer', 'First meeting'], OPP(o.assigned, o.owner));
   const card = await slotCard(c, 'Card/Section', { name: 'Handoff · Olive & Thyme Café', title: 'Handoff · Olive & Thyme Café', subtitle: o.assigned ? 'Developer assigned · meeting not yet arranged (derived)' : 'Developer not yet assigned (E3) · meeting not yet arranged (derived)', action: { label: 'Edit handoff context', icon: 'edit' } });
   const cols = AL('Handoff columns', 'HORIZONTAL', { gap: 24 }); put(card.body, cols); cols.counterAxisAlignItems = 'MIN';
@@ -271,8 +294,10 @@ async function dncPage(f, o = {}) {
     const tb = table(c, ['Business', 'Phone', 'Status', 'Assigned to', 'Rejected'], []);
     const st = I('State', { Type: 'Empty', Size: 'Inline' }, { 'Show action': false }, 'State · Empty'); put(tb, st); layer(st, 'Title', 'No businesses on the do-not-call list'); layer(st, 'Body', 'Rejected businesses appear here; they never show in calling buckets.');
     const card = await slotCard(c, 'Card/Section', { name: 'Recently reopened', title: 'Recently reopened · Harbor Auto Care', subtitle: 'Reopening record (call history kept)' });
-    for (const [k, v] of [['Reopened by', 'Rana Haddad · Tue 20 Oct 2026 11:02'], ['Reason', 'Owner emailed asking for a website quote.'], ['Previous outcome', 'Rejected (15 Oct, Maya Khoury)'], ['New outcome', 'Set by DEC-016 (undecided)'], ['Assignment', 'Unchanged · Maya Khoury'], ['History', '2 call attempts kept']]) put(card.body, kv(k, v));
-    put(card.body, derived('Back to calling eligibility · re-enters buckets by its new outcome'));
+    const rows = [];
+    for (const [k, v] of [['Reopened by', 'Rana Haddad · Tue 20 Oct 2026 11:02'], ['Reason', 'Owner emailed asking for a website quote.'], ['Previous outcome', 'Rejected (15 Oct, Maya Khoury)'], ['New outcome', 'Set by DEC-016 (undecided)'], ['Assignment', 'Unchanged · Maya Khoury'], ['History', '2 call attempts kept']]) rows.push(await recRow(k, v));
+    rows.push(derived('Back to calling eligibility · re-enters buckets by its new outcome'));
+    stage(f, card.body, 'Record body', 4, rows, [rows[rows.length - 1]]);
     return c;
   }
   table(c, ['Business', 'Phone', 'Status', 'Assigned to', 'Rejected'], DNC);
@@ -280,7 +305,7 @@ async function dncPage(f, o = {}) {
   const cols = AL('Detail columns', 'HORIZONTAL', { gap: 24 }); put(card.body, cols); cols.counterAxisAlignItems = 'MIN';
   const L = AL('Record', 'VERTICAL', { gap: 4 }); cols.appendChild(L); grow(L);
   for (const [k, v] of [['Rejected by', 'Maya Khoury · 15 Oct 2026 16:22'], ['Reason', 'Not interested — asked not to be called again'], ['Open follow-ups', 'None'], ['Call history', '2 attempts · kept']]) put(L, kv(k, v));
-  const R = AL('Actions', 'VERTICAL', { gap: 10 }); cols.appendChild(R); fixedCol(R, 400);
+  const R = AL('Actions', 'VERTICAL', { gap: 10 }); cols.appendChild(R); fixedCol(R, 480);
   const br = AL('Buttons', 'HORIZONTAL', { gap: 8 }); put(R, br);
   add(br, button('Secondary', 'Medium', 'Open business'), button('Primary', 'Medium', 'Start Contact', 'phone', 'Disabled'), button(o.owner ? 'Primary' : 'Secondary', 'Medium', 'Reopen…', 'refresh', o.owner ? 'Default' : 'Disabled'));
   put(R, await T(o.owner ? 'Reopen asks for a reason; the outcome after reopening follows DEC-016.' : 'Reopen not permitted for your role. If DEC-016 adopts request-and-approve, a request flow is needed (B3-Q09).', 'ds/Caption', 'text/muted', { w: 380 }));
@@ -290,13 +315,11 @@ async function dncPage(f, o = {}) {
 for (const [s, d] of [['Desktop — Light', false], ['Desktop — Dark', true]]) { const f = frame(s, false, d); await dncPage(f); fitFrame(f); }
 {
   const f = frame('Desktop — Light — Owner reopen (reason)'); await dncPage(f, { owner: true });
-  const { dl, s } = dialog(f, 'Reopen Harbor Auto Care?', 'Rejected 15 Oct 2026 by Maya Khoury');
-  if (s) {
-    put(s, I('Textarea', { State: 'Filled' }, { Label: 'Reason', Value: 'Owner emailed asking for a website quote.', 'Show label': true, Required: true, 'Show helper': true, Helper: 'Required. Recorded with your name and the time.', Counter: '41 / 500' }, 'Reason'));
-    put(s, I('Select', { Type: 'Select', State: 'Disabled' }, { Label: 'Outcome after reopening', Value: ' ', Placeholder: 'Set by DEC-016 (undecided)', 'Show label': true, Required: false, 'Show helper': false }, 'Outcome after reopening'));
-    put(s, notice('Inline', 'DEC-016', 'Who may reopen and the outcome after reopening are undecided; no value is preselected.'));
-    put(s, banner('Info', 'Inline', 'History and assignment are kept', 'All call attempts stay. The reopening is audited (call_outcome.reopened).'));
-  }
+  const { dl } = dialog(f, 'Reopen Harbor Auto Care?', 'Rejected 15 Oct 2026 by Maya Khoury', [
+    I('Textarea', { State: 'Filled' }, { Label: 'Reason', Value: 'Owner emailed asking for a website quote.', 'Show label': true, Required: true, 'Show helper': true, Helper: 'Required. Recorded with your name and the time.', Counter: '41 / 500' }, 'Reason'),
+    I('Select', { Type: 'Select', State: 'Disabled' }, { Label: 'Outcome after reopening', Value: 'Set by DEC-016 (undecided)', Placeholder: 'Set by DEC-016 (undecided)', 'Show label': true, Required: false, 'Show helper': false }, 'Outcome after reopening'),
+    notice('Inline', 'DEC-016', 'Who may reopen and the outcome after reopening are undecided; no value is preselected.'),
+    banner('Info', 'Inline', 'History and assignment are kept', 'All call attempts stay. The reopening is audited (call_outcome.reopened).')]);
   dialogFoot(dl, 'Cancel', 'Reopen business'); reg(PREFIX + ' reopen dialog', dl); fitFrame(f);
 }
 { const f = frame('Desktop — Light — Reopened'); await dncPage(f, { owner: true, reopened: true }); reg(PREFIX + ' reopened toast', toast(f, 'Harbor Auto Care reopened', 'Back to calling eligibility; it re-enters Maya Khoury’s queue by its new outcome.')); fitFrame(f); }
@@ -304,6 +327,7 @@ await annotations([
   ['Note', 'Enforcement (WF-REJECT-001)', 'Rejected = do not call everywhere: Start Contact blocked, new/rescheduled follow-ups blocked, excluded from assignment and work lists. Data-correction requests stay available.'],
   ['Interaction', 'Reopen', 'Reopen → reason (required) → single save: reopening record (by, at, reason, previous and new outcome); history and assignment kept; audit call_outcome.reopened; business re-enters calling via WF-CALL-001.'],
   ['Note', 'Pending', 'DEC-016 reopening authority and post-reopen outcome (Call Center shown "not permitted"; Owner shown with reason; neither decided). D4 open follow-ups. ICR-4: request-and-approve would need a new flow. No mobile frame (inventory Mob —).'],
+['Note', 'Request correction target', 'Request correction opens SCR-SHR-009 (page 42, frame 175:10802); the request goes to Data Entry (WF-BIZ-002).'],
 ], 1440);
 finishSection();
 return OUT;

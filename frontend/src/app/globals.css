@@ -1,0 +1,484 @@
+@import "tailwindcss";
+
+/*
+ * Udigity design tokens (source: docs/phase5/design-system.md §2, Figma Semantic collection).
+ * - Light = the approved Figma "Light" mode, unchanged.
+ * - Dark  = NAVY dark (user directive 2026-10-23). Derived from the logo navy #122953;
+ *           every pair is checked for WCAG AA in docs/implementation/design-system-code.md.
+ * Theme switching: `.dark` on <html> (set before paint by ThemeScript in lib/theme.tsx).
+ * Tailwind: every semantic token is exposed as a colour utility, e.g. `bg-surface-default`,
+ * `text-text-primary`, `border-border-default`, `bg-status-policy-bg`, `ring-focus-ring`.
+ */
+
+/* `dark:` utilities follow the class (manual toggle + system preference via the script). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --font-inter: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+    /* ---------- Primitives (hex reference, §2.1) ---------- */
+    --navy-50: #EEF2F8;
+    --navy-100: #D9E1EE;
+    --navy-200: #B3C2DB;
+    --navy-300: #8399BF;
+    --navy-400: #5571A0;
+    --navy-500: #2F4F82;
+    --navy-600: #1F3D6E;
+    --navy-700: #17305A;
+    --navy-800: #112447;
+    --navy-900: #0B1A35;
+    --navy-950: #071226;
+
+    --teal-50: #E6F7F7;
+    --teal-100: #C2EDED;
+    --teal-200: #8EDDDE;
+    --teal-300: #52C9CB;
+    --teal-400: #22B3B6;
+    --teal-500: #0E9CA0;
+    --teal-600: #0B8084;
+    --teal-700: #0A6669;
+    --teal-800: #0A5052;
+    --teal-900: #083E40;
+    --teal-950: #052A2B;
+
+    --grey-50: #F5F7FA;
+    --grey-100: #EDF0F4;
+    --grey-200: #DFE4EA;
+    --grey-300: #C9D1DA;
+    --grey-400: #A1ACB9;
+    --grey-500: #778395;
+    --grey-600: #586476;
+    --grey-700: #414B5A;
+    --grey-800: #2A323E;
+    --grey-850: #222932;
+    --grey-900: #1A2029;
+    --grey-950: #11151B;
+
+    /* Logo colours (assets/logo). Brand reference only — not a UI token. */
+    --logo-navy: #122953;
+    --logo-orange: #FD6F03;
+
+    /* ---------- Semantic — Light (approved, §2.2) ---------- */
+    --surface-page: #F5F7FA;
+    --surface-default: #FFFFFF;
+    --surface-raised: #FFFFFF;
+    --surface-subtle: #F5F7FA;
+    --surface-sunken: #EDF0F4;
+    --surface-hover: #EDF0F4;
+    --surface-pressed: #DFE4EA;
+    --surface-selected: #E6F7F7;
+    --surface-disabled: #EDF0F4;
+    --surface-inverse: #0B1A35;
+    --surface-brand: #0B1A35;
+    --surface-brand-hover: #112447;
+    --surface-brand-active: #17305A;
+    --surface-skeleton: #DFE4EA;
+
+    --border-default: #DFE4EA;
+    --border-subtle: #EDF0F4;
+    --border-strong: #C9D1DA;
+    --border-input: #778395;
+    --border-brand: #17305A;
+    --border-selected: #0B8084;
+    --border-on-brand: rgba(255, 255, 255, 0.10);
+
+    --text-primary: #1A2029;
+    --text-secondary: #414B5A;
+    --text-muted: #586476;
+    --text-placeholder: #586476;
+    --text-disabled: #A1ACB9;
+    --text-inverse: #FFFFFF;
+    --text-on-brand: #FFFFFF;
+    --text-on-brand-muted: #B3C2DB;
+    --text-on-primary: #FFFFFF;
+    --text-on-danger: #FFFFFF;
+    --text-link: #0A6669;
+
+    --icon-default: #414B5A;
+    --icon-muted: #778395;
+    --icon-on-brand: #B3C2DB;
+    --icon-on-brand-active: #FFFFFF;
+    --icon-accent: #0B8084;
+    --icon-strong: #1A2029;
+    --icon-on-primary: #FFFFFF;
+    --icon-disabled: #A1ACB9;
+
+    --brand-primary: #17305A;
+    --brand-primary-hover: #112447;
+    --brand-primary-pressed: #0B1A35;
+    --brand-accent: #0B8084;
+    --brand-accent-strong: #0A6669;
+    --brand-accent-subtle: #E6F7F7;
+    --focus-ring: #0E9CA0;
+    --overlay-scrim: rgba(7, 18, 38, 0.56);
+
+    --status-success-fg: #116338;
+    --status-success-bg: #E7F6ED;
+    --status-success-border: #69C493;
+    --status-success-solid: #167E47;
+
+    --status-warning-fg: #855500;
+    --status-warning-bg: #FFF5E1;
+    --status-warning-border: #F5BF55;
+    --status-warning-solid: #AD6F00; /* non-text marks only */
+
+    --status-danger-fg: #8F2020;
+    --status-danger-bg: #FDECEC;
+    --status-danger-border: #EC8888;
+    --status-danger-solid: #B52A2A;
+
+    --status-info-fg: #1C4A8B;
+    --status-info-bg: #E8F1FC;
+    --status-info-border: #79A9EC;
+    --status-info-solid: #245EAF;
+
+    --status-neutral-fg: #414B5A;
+    --status-neutral-bg: #EDF0F4;
+    --status-neutral-border: #C9D1DA;
+    --status-neutral-solid: #586476;
+
+    --status-brand-fg: #0A6669;
+    --status-brand-bg: #E6F7F7;
+    --status-brand-border: #52C9CB;
+    --status-brand-solid: #0B8084;
+
+    --status-policy-fg: #523C93;
+    --status-policy-bg: #F1EDFB;
+    --status-policy-border: #A994E3;
+    --status-policy-solid: #7357C2;
+
+    --status-decision-fg: #1F3D6E;
+    --status-decision-bg: #EEF2F8;
+    --status-decision-border: #8399BF;
+    --status-decision-solid: #2F4F82;
+
+    --chart-series-1: #0E9CA0;
+    --chart-series-2: #2F4F82;
+    --chart-series-3: #7357C2;
+    --chart-series-4: #DB6E2C;
+    --chart-series-5: #C23F7E;
+    --chart-series-6: #778395;
+    --chart-grid: #DFE4EA;
+    --chart-axis: #586476;
+    --chart-target: #AD6F00;
+
+    /* Elevation (ds/Elevation/1–3, navy-tinted #0B1A35) */
+    --elevation-1: 0 1px 2px 0 rgba(11, 26, 53, 0.06), 0 1px 3px 0 rgba(11, 26, 53, 0.08);
+    --elevation-2: 0 4px 8px -2px rgba(11, 26, 53, 0.10), 0 2px 4px -2px rgba(11, 26, 53, 0.06);
+    --elevation-3: 0 16px 24px -4px rgba(11, 26, 53, 0.14), 0 6px 8px -4px rgba(11, 26, 53, 0.06);
+
+    /* Radii (§2.1 radius/*) */
+    --radius-xs: 2px;
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 12px;
+    --radius-2xl: 16px;
+    --radius-full: 9999px;
+
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  }
+
+  /* ---------- Semantic — NAVY dark (directive 2026-10-23) ---------- */
+  .dark {
+    color-scheme: dark;
+
+    /* Surfaces step through navy: page < default < raised < hover < pressed */
+    --surface-page: #0B1A36;
+    --surface-default: #122953;
+    --surface-raised: #1A3566;
+    --surface-subtle: #1A3566;
+    --surface-sunken: #0B1A36;
+    --surface-hover: #223F73;
+    --surface-pressed: #2A4778;
+    --surface-selected: #0D3446;
+    --surface-disabled: #1A3566;
+    --surface-inverse: #EDF0F4;
+    --surface-brand: #071226;
+    --surface-brand-hover: #0F2142;
+    --surface-brand-active: #1A3566;
+    --surface-skeleton: #223F73;
+
+    --border-default: #2A4778;
+    --border-subtle: #1F3A69;
+    --border-strong: #3A5A8F;
+    --border-input: #7A90B8;
+    --border-brand: #1A3566;
+    --border-selected: #22B3B6;
+    --border-on-brand: rgba(179, 194, 219, 0.14);
+
+    --text-primary: #F5F7FA;
+    --text-secondary: #C9D3E3;
+    --text-muted: #9FB0CC;
+    --text-placeholder: #9FB0CC;
+    --text-disabled: #5F7397;
+    --text-inverse: #0B1A36;
+    --text-on-brand: #FFFFFF;
+    --text-on-brand-muted: #B3C2DB;
+    --text-on-primary: #0B1A36;
+    --text-on-danger: #0B1A36;
+    --text-link: #52C9CB;
+
+    --icon-default: #C9D3E3;
+    --icon-muted: #8A9CBC;
+    --icon-on-brand: #B3C2DB;
+    --icon-on-brand-active: #FFFFFF;
+    --icon-accent: #22B3B6;
+    --icon-strong: #F5F7FA;
+    --icon-on-primary: #0B1A36;
+    --icon-disabled: #5F7397;
+
+    /* Primary switches to teal in dark (navy-on-navy fails), same rule as the approved Dark mode */
+    --brand-primary: #22B3B6;
+    --brand-primary-hover: #52C9CB;
+    --brand-primary-pressed: #8EDDDE;
+    --brand-accent: #22B3B6;
+    --brand-accent-strong: #52C9CB;
+    --brand-accent-subtle: #0D3446;
+    --focus-ring: #52C9CB;
+    --overlay-scrim: rgba(4, 10, 24, 0.72);
+
+    --status-success-fg: #69C493;
+    --status-success-bg: #0A3A21;
+    --status-success-border: #116338;
+    --status-success-solid: #3DAF73;
+
+    --status-warning-fg: #F5BF55;
+    --status-warning-bg: #4A2F00;
+    --status-warning-border: #855500;
+    --status-warning-solid: #EBA82B;
+
+    --status-danger-fg: #EC8888;
+    --status-danger-bg: #4F1212;
+    --status-danger-border: #8F2020;
+    --status-danger-solid: #E36060;
+
+    --status-info-fg: #8DB8F0;
+    --status-info-bg: #173C70;
+    --status-info-border: #2F5FA0;
+    --status-info-solid: #5390E0;
+
+    --status-neutral-fg: #C9D3E3;
+    --status-neutral-bg: #223F73;
+    --status-neutral-border: #3A5A8F;
+    --status-neutral-solid: #9FB0CC;
+
+    --status-brand-fg: #52C9CB;
+    --status-brand-bg: #0D3446;
+    --status-brand-border: #0A6669;
+    --status-brand-solid: #22B3B6;
+
+    --status-policy-fg: #A994E3;
+    --status-policy-bg: #2C2052;
+    --status-policy-border: #523C93;
+    --status-policy-solid: #A994E3;
+
+    --status-decision-fg: #B3C2DB;
+    --status-decision-bg: #0B1A36;
+    --status-decision-border: #2F4F82;
+    --status-decision-solid: #9FB4DA;
+
+    --chart-series-1: #52C9CB;
+    --chart-series-2: #9FB4DA;
+    --chart-series-3: #A994E3;
+    --chart-series-4: #F2AE7E;
+    --chart-series-5: #E58DB8;
+    --chart-series-6: #A1ACB9;
+    --chart-grid: #2A4778;
+    --chart-axis: #9FB0CC;
+    --chart-target: #F5BF55;
+
+    --elevation-1: 0 1px 2px 0 rgba(3, 9, 22, 0.40), 0 1px 3px 0 rgba(3, 9, 22, 0.30);
+    --elevation-2: 0 4px 8px -2px rgba(3, 9, 22, 0.50), 0 2px 4px -2px rgba(3, 9, 22, 0.30);
+    --elevation-3: 0 16px 24px -4px rgba(3, 9, 22, 0.60), 0 6px 8px -4px rgba(3, 9, 22, 0.30);
+  }
+}
+
+/* ---------- Tailwind utility mapping (utilities resolve to the live CSS variables) ---------- */
+@theme inline {
+  --font-sans: var(--font-inter);
+
+  --color-surface-page: var(--surface-page);
+  --color-surface-default: var(--surface-default);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-pressed: var(--surface-pressed);
+  --color-surface-selected: var(--surface-selected);
+  --color-surface-disabled: var(--surface-disabled);
+  --color-surface-inverse: var(--surface-inverse);
+  --color-surface-brand: var(--surface-brand);
+  --color-surface-brand-hover: var(--surface-brand-hover);
+  --color-surface-brand-active: var(--surface-brand-active);
+  --color-surface-skeleton: var(--surface-skeleton);
+
+  --color-border-default: var(--border-default);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-border-input: var(--border-input);
+  --color-border-brand: var(--border-brand);
+  --color-border-selected: var(--border-selected);
+  --color-border-on-brand: var(--border-on-brand);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-text-placeholder: var(--text-placeholder);
+  --color-text-disabled: var(--text-disabled);
+  --color-text-inverse: var(--text-inverse);
+  --color-text-on-brand: var(--text-on-brand);
+  --color-text-on-brand-muted: var(--text-on-brand-muted);
+  --color-text-on-primary: var(--text-on-primary);
+  --color-text-on-danger: var(--text-on-danger);
+  --color-text-link: var(--text-link);
+
+  --color-icon-default: var(--icon-default);
+  --color-icon-muted: var(--icon-muted);
+  --color-icon-on-brand: var(--icon-on-brand);
+  --color-icon-on-brand-active: var(--icon-on-brand-active);
+  --color-icon-accent: var(--icon-accent);
+  --color-icon-strong: var(--icon-strong);
+  --color-icon-on-primary: var(--icon-on-primary);
+  --color-icon-disabled: var(--icon-disabled);
+
+  --color-brand-primary: var(--brand-primary);
+  --color-brand-primary-hover: var(--brand-primary-hover);
+  --color-brand-primary-pressed: var(--brand-primary-pressed);
+  --color-brand-accent: var(--brand-accent);
+  --color-brand-accent-strong: var(--brand-accent-strong);
+  --color-brand-accent-subtle: var(--brand-accent-subtle);
+  --color-focus-ring: var(--focus-ring);
+  --color-overlay-scrim: var(--overlay-scrim);
+
+  --color-status-success-fg: var(--status-success-fg);
+  --color-status-success-bg: var(--status-success-bg);
+  --color-status-success-border: var(--status-success-border);
+  --color-status-success-solid: var(--status-success-solid);
+  --color-status-warning-fg: var(--status-warning-fg);
+  --color-status-warning-bg: var(--status-warning-bg);
+  --color-status-warning-border: var(--status-warning-border);
+  --color-status-warning-solid: var(--status-warning-solid);
+  --color-status-danger-fg: var(--status-danger-fg);
+  --color-status-danger-bg: var(--status-danger-bg);
+  --color-status-danger-border: var(--status-danger-border);
+  --color-status-danger-solid: var(--status-danger-solid);
+  --color-status-info-fg: var(--status-info-fg);
+  --color-status-info-bg: var(--status-info-bg);
+  --color-status-info-border: var(--status-info-border);
+  --color-status-info-solid: var(--status-info-solid);
+  --color-status-neutral-fg: var(--status-neutral-fg);
+  --color-status-neutral-bg: var(--status-neutral-bg);
+  --color-status-neutral-border: var(--status-neutral-border);
+  --color-status-neutral-solid: var(--status-neutral-solid);
+  --color-status-brand-fg: var(--status-brand-fg);
+  --color-status-brand-bg: var(--status-brand-bg);
+  --color-status-brand-border: var(--status-brand-border);
+  --color-status-brand-solid: var(--status-brand-solid);
+  --color-status-policy-fg: var(--status-policy-fg);
+  --color-status-policy-bg: var(--status-policy-bg);
+  --color-status-policy-border: var(--status-policy-border);
+  --color-status-policy-solid: var(--status-policy-solid);
+  --color-status-decision-fg: var(--status-decision-fg);
+  --color-status-decision-bg: var(--status-decision-bg);
+  --color-status-decision-border: var(--status-decision-border);
+  --color-status-decision-solid: var(--status-decision-solid);
+
+  --color-chart-1: var(--chart-series-1);
+  --color-chart-2: var(--chart-series-2);
+  --color-chart-3: var(--chart-series-3);
+  --color-chart-4: var(--chart-series-4);
+  --color-chart-5: var(--chart-series-5);
+  --color-chart-6: var(--chart-series-6);
+  --color-chart-grid: var(--chart-grid);
+  --color-chart-axis: var(--chart-axis);
+  --color-chart-target: var(--chart-target);
+
+  --shadow-elevation-1: var(--elevation-1);
+  --shadow-elevation-2: var(--elevation-2);
+  --shadow-elevation-3: var(--elevation-3);
+
+  --ease-ds-out: var(--ease-out);
+}
+
+body {
+  background-color: var(--surface-page);
+  color: var(--text-primary);
+  font-family: var(--font-inter);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom sleek scrollbar styled to match theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-default) transparent;
+}
+
+/* Tabular figures for numbers, timers, dates (§3 code rule) */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Typography helpers (§3 ds/* text styles) */
+.ds-display { font-size: 32px; line-height: 40px; font-weight: 700; letter-spacing: -0.01em; }
+.ds-h1 { font-size: 24px; line-height: 32px; font-weight: 600; letter-spacing: -0.005em; }
+.ds-h2 { font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: -0.005em; }
+.ds-h3 { font-size: 16px; line-height: 24px; font-weight: 600; }
+.ds-h4 { font-size: 14px; line-height: 20px; font-weight: 600; }
+.ds-body { font-size: 14px; line-height: 20px; font-weight: 400; }
+.ds-body-strong { font-size: 14px; line-height: 20px; font-weight: 500; }
+.ds-body-small { font-size: 13px; line-height: 18px; font-weight: 400; }
+.ds-label { font-size: 14px; line-height: 20px; font-weight: 500; }
+.ds-label-small { font-size: 12px; line-height: 16px; font-weight: 500; }
+.ds-caption { font-size: 12px; line-height: 16px; font-weight: 400; }
+.ds-overline { font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.ds-number { font-size: 14px; line-height: 20px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.ds-number-lg { font-size: 28px; line-height: 36px; font-weight: 600; letter-spacing: -0.005em; font-variant-numeric: tabular-nums; }
+.ds-number-xl { font-size: 40px; line-height: 48px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+
+/* Fields (after 12d): Focus/Open = 2px focus-ring stroke inside the control */
+.focus-ring-inside:focus-visible,
+.focus-ring-inside:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--focus-ring);
+  border-color: var(--focus-ring) !important;
+}
+
+/* Buttons, links, checkboxes: ds/Focus ring = 2px surface gap + 2px focus-ring */
+.focus-ring-outer:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--surface-default), 0 0 0 4px var(--focus-ring);
+}
+
+.btn-press:active {
+  transform: scale(0.97);
+  transition: transform 160ms var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+  }
+}

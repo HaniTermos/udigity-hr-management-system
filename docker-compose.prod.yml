@@ -1,0 +1,203 @@
+# Production stack for a single VPS. Runbook: devops/README.md. DO NOT deploy without the Owner's go-ahead.
+#
+#   cp devops/env/backend.env.example  devops/env/backend.env    # fill in real values (never commit)
+#   cp devops/env/frontend.env.example devops/env/frontend.env
+#   cp devops/env/postgres.env.example devops/env/postgres.env
+#   cp devops/env/migrate.env.example  devops/env/migrate.env    # owner credentials, loaded ONLY by the migrate job
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml --profile tools run --rm migrate    # runs as the owner role
+#   docker compose -f docker-compose.prod.yml up -d      # db, backend, worker, frontend, nginx
+#
+# Local smoke test: devops/scripts/prod-smoke.sh (overrides UDIGITY_ENV_DIR, NGINX_CERTS_DIR, HTTP_PORT, HTTPS_PORT).
+name: udigity
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file: ${UDIGITY_ENV_DIR:-devops/env}/postgres.env
+    environment:
+      TZ: UTC
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Creates the limited runtime login role (APP_DB_USER) on the first start of an empty data directory.
+      - ./devops/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks: [internal]
+    # No published port: only the backend and the backup job reach the database.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 256m
+    logging: *logging
+
+  backend:
+    build:
+      context: .
+      dockerfile: devops/backend.Dockerfile
+    image: udigity-backend:${UDIGITY_TAG:-latest}
+    restart: unless-stopped
+    env_file: ${UDIGITY_ENV_DIR:-devops/env}/backend.env
+    environment:
+      NODE_ENV: production
+      PORT: "5000"
+      TRUST_PROXY: "true"
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *logging
+
+  # One-shot migration job. Only this service gets the owner credentials (migrate.env); the API and worker run as the
+  # limited role from backend.env DATABASE_URL (DEV-R5). Not started by `up`: use `--profile tools run --rm migrate`.
+  migrate:
+    image: udigity-backend:${UDIGITY_TAG:-latest}
+    profiles: [tools]
+    command: ["node", "dist/db/migrate.js"]
+    env_file:
+      - ${UDIGITY_ENV_DIR:-devops/env}/backend.env
+      - ${UDIGITY_ENV_DIR:-devops/env}/migrate.env
+    environment:
+      NODE_ENV: production
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [internal]
+    logging: *logging
+
+  # Background worker (BE5): outbox relay, scheduler, email dispatch. Same image as the backend, no HTTP port.
+  # Health = the API's /health/worker (heartbeat freshness), reached over the internal network only; nginx 404s it.
+  worker:
+    # Built by the backend service (same Dockerfile); `docker compose build` produces the shared image.
+    image: udigity-backend:${UDIGITY_TAG:-latest}
+    command: ["node", "dist/worker.js"]
+    restart: unless-stopped
+    env_file: ${UDIGITY_ENV_DIR:-devops/env}/backend.env
+    environment:
+      NODE_ENV: production
+      TRUST_PROXY: "true"
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    # internal: db + backend. egress: outbound-only route so the worker can reach the external SMTP server.
+    # The worker publishes no port and is not attached to the public network, so nothing can reach it from outside.
+    networks: [internal, egress]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://backend:5000/health/worker').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging: *logging
+
+  frontend:
+    build:
+      context: .
+      dockerfile: devops/frontend.Dockerfile
+      args:
+        INTERNAL_API_URL: http://backend:5000
+    image: udigity-frontend:${UDIGITY_TAG:-latest}
+    restart: unless-stopped
+    env_file: ${UDIGITY_ENV_DIR:-devops/env}/frontend.env
+    environment:
+      NODE_ENV: production
+      INTERNAL_API_URL: http://backend:5000
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging: *logging
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      # Override HTTP_PORT / HTTPS_PORT only for local smoke tests (devops/scripts/prod-smoke.sh).
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./devops/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./devops/nginx/conf.d:/etc/nginx/conf.d:ro
+      # TLS placeholders: fullchain.pem / privkey.pem go here (e.g. from certbot). See devops/README.md.
+      - ${NGINX_CERTS_DIR:-./devops/nginx/certs}:/etc/nginx/certs:ro
+      - ./devops/nginx/acme:/var/www/acme:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    networks: [internal, public]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *logging
+
+networks:
+  # db/backend/frontend have no route to the internet. Only nginx is on the public (ingress) network.
+  internal:
+    internal: true
+  public: {}
+  # Outbound-only network for the worker (SMTP). No published ports, no ingress: only the worker joins it.
+  egress: {}
+
+volumes:
+  pgdata: {}

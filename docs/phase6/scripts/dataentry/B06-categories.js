@@ -188,7 +188,7 @@ function shell(frame, role, active, query) {
   } else W.push('TopBar not found');
   const sb = nested(sh, 'Sidebar');
   if (sb) {
-    for (const l of NAVS[role][1]) { const it = nested(sb, 'Nav/Item · ' + l); if (it) props(it, { Label: l, State: l === active ? 'Active' : 'Default' }); else W.push('nav item missing: ' + l); }
+    for (const l of NAVS[role][1]) { const it = nested(sb, 'Nav/Item · ' + l); if (it) props(it, { Label: l.replace(/ \[DEC-\d+\]$/, ''), State: l === active ? 'Active' : 'Default' }); else W.push('nav item missing: ' + l); }
     const secs = sb.findAll(n => n.type === 'INSTANCE' && n.name === 'Nav/SectionLabel');
     NAVS[role][0].forEach((l, i) => { if (secs[i]) props(secs[i], { Label: l }); });
     if (role === 'Call Center') props(nested(nested(sb, 'Nav/Item · Calling Queue'), 'Badge'), { Count: '7' });
@@ -316,14 +316,32 @@ function table(parent, cols, rows, o) {
     rw.c.forEach((v, j) => r.appendChild(cell(v, cols[j].w, cols[j].r)));
   });
   if (o.body) for (const n of o.body) put(tb, n, true);
-  if (o.pager) { const pg = I('Table/Pagination', null, { Range: o.pager }); put(tb, pg, true); tx(pg, 'Per page', '10 per page'); }
+  if (o.pager) { const pg = I('Table/Pagination', null, { Range: o.pager }); put(tb, pg, true); pagerProps(pg, o.pages, o.per); }
   return tb;
 }
 
 // ---------- fit / overflow / placeholder checks ----------
 const DEFAULTS = ['Dialog title', 'Short description of what happens next.', 'Drawer title', 'Section title', 'Banner title', 'Explain what happened and what to do next.', 'Column', 'Cell text', 'Meta line', 'Toast title', 'Toast body', 'DEC-000', 'Helper text', 'Schedule follow-up', 'Olive & Thyme Café moved to Follow-ups.', 'Confirm', 'Dialog content', 'Drawer content', 'Section content', 'Inset content', 'Card content'];
 function shown(n, root) { let p = n; while (p && p !== root) { if (p.visible === false) return false; p = p.parent; } return true; }
+function pagerProps(pg, pages, per) {
+  const p = { 'Per page': per || '10 per page' };
+  if (!pages || pages <= 1) p['Show page controls'] = false;
+  else Object.assign(p, { 'Show page controls': true, 'Show page 2': true, 'Show page 3': pages >= 3, 'Show gap': pages > 4, 'Show last page': pages > 3, 'Last page': String(pages) });
+  props(pg, p);
+}
+// DE-6 canvas patch mirrored: Touch Close = Icon/x 44:53, Back = Icon/chevron-left 44:38; DS-13d: Notice/Access FIXED→FILL re-lay-out.
+function touchFix(root) {
+  const ib = n => n.type === 'INSTANCE' && n.mainComponent && n.mainComponent.parent && n.mainComponent.parent.name === 'IconButton';
+  for (const b of root.findAll(n => (n.name === 'Close' || n.name === 'Back') && ib(n))) {
+    const k = Object.keys(b.componentProperties).find(x => x.split('#')[0] === 'Icon');
+    if (k) { try { b.setProperties({ [k]: b.name === 'Close' ? '44:53' : '44:38' }); } catch (e) { W.push('icon ' + b.name + ': ' + e.message); } }
+  }
+  for (const n of root.findAll(n => n.type === 'INSTANCE' && n.mainComponent && (n.mainComponent.name === 'Notice/Access' || (n.mainComponent.parent && n.mainComponent.parent.name === 'Notice/Access')) && n.layoutSizingHorizontal === 'FILL')) {
+    try { n.layoutSizingHorizontal = 'FIXED'; n.layoutSizingHorizontal = 'FILL'; } catch (e) { W.push('relayout ' + n.name + ': ' + e.message); }
+  }
+}
 function fit(frame) {
+  touchFix(frame);
   const key = frame.name.replace(/^SCR-[A-Z]+-\d+ — [^—]+ — /, '');
   const fb = frame.absoluteBoundingBox, rec = {};
   const ct = frame.children.find(n => n.name === 'Content');

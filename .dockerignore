@@ -1,0 +1,23 @@
+# Keep the build context small and secret-free.
+**/node_modules
+**/.next
+**/dist
+**/coverage
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+!**/*.env.example
+!**/.env.example
+.git
+.github
+.agents
+.claude
+.codestudio
+.hermes
+assets
+docs
+devops/backup
+devops/env/*.env
+**/*.log
+**/npm-debug.log*
+docker-compose*.yml

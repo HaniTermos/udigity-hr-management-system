@@ -74,7 +74,7 @@ async function T(chars, style, color, o = {}) {
 function add(p, ...k) { for (const x of k) if (x) p.appendChild(x); return p; }
 function fillW(n) { if (n.type === 'TEXT') n.textAutoResize = 'HEIGHT'; n.layoutSizingHorizontal = 'FILL'; return n; }
 function fillH(n) { n.layoutSizingVertical = 'FILL'; return n; }
-function grow(n) { n.layoutGrow = 1; return n; }
+function grow(n) { try { if (n.name === 'Spacer' && 'children' in n && !n.children.length) { n.resize(n.width, 1); n.layoutSizingVertical = 'FIXED'; } n.layoutGrow = 1; } catch (e) { W('grow ' + n.name + ': ' + e.message); } return n; } // fit: empty spacers were 100 px tall (CC-007 Owner view Content +18)
 function fixedCol(n, w) { n.resize(w, 100); n.layoutSizingHorizontal = 'FIXED'; return n; }
 function put(p, n) { p.appendChild(n); fillW(n); return n; }
 function notice(size, dec, body, title) { const n = I('Notice/Policy pending', { Size: size, Tone: 'Policy pending' }, size === 'Chip' ? { DEC: dec } : { DEC: dec, Body: body }, 'Policy · ' + dec); if (title) layer(n, 'Title', title); return n; }
@@ -104,7 +104,7 @@ function getSection(name, part) {
   PREFIX = name.split(' — ')[0]; PART = part || '-';
   let s = page.children.find(n => n.type === 'SECTION' && n.name === name), y0 = 80;
   if (s) {
-    for (const k of [...s.children]) { const p = k.getPluginData('ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
+    for (const k of [...s.children]) { const p = k.getSharedPluginData('udigity.cc', 'ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
     for (const k of s.children) y0 = Math.max(y0, k.y + k.height + 160);
     OUT.updated['section ' + PREFIX] = s.id;
   } else {
@@ -119,7 +119,7 @@ function newRow() { if (CUR.n) { CUR.y += CUR.rowH + 160; CUR.x = 80; CUR.rowH =
 function frame(suffix, mobile, dark) {
   const name = SEC.name + ' — ' + suffix; const w = mobile ? 390 : 1440, h = mobile ? 844 : 900;
   if (CUR.n >= (mobile ? 6 : 4)) newRow();
-  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setPluginData('ccPart', PART);
+  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setSharedPluginData('udigity.cc', 'ccPart', PART);
   f.fills = [paint('surface/page')]; f.setExplicitVariableModeForCollection(semCol, dark ? DARK : LIGHT);
   CUR.x += w + 80; CUR.rowH = Math.max(CUR.rowH, h); CUR.n++;
   OUT.created[PREFIX + ' ' + suffix] = f.id; return f;
@@ -209,7 +209,7 @@ function fitFrame(f) {
 async function annotations(notes, w) {
   newRow();
   const a = AL(PREFIX + ' — Annotations' + (PART !== '-' ? ' (' + PART + ')' : ''), 'VERTICAL', { gap: 12, pad: 24, fill: 'surface/page', stroke: 'border/default', radius: 'xl' });
-  SEC.appendChild(a); a.setPluginData('ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
+  SEC.appendChild(a); a.setSharedPluginData('udigity.cc', 'ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
   a.setExplicitVariableModeForCollection(semCol, LIGHT);
   a.appendChild(await T(PREFIX + ' annotations (designer notes and intended interactions, not product UI)', 'ds/H3', 'text/primary'));
   for (const [type, title, body] of notes) put(a, I('Annotation', { Type: type }, { Title: title, Body: body }, 'Annotation · ' + title));
@@ -222,22 +222,23 @@ function finishSection() { let mx = 0, my = 0; for (const c of SEC.children) { m
 const QB = [
   { label: 'Callbacks due today', count: '2', exp: true, rows: [
     { name: 'Olive & Thyme Café', cat: 'Café', out: 'Needs another call', meta: 'Due 10:30 · last attempt 13 Oct 15:10' },
-    { name: 'Nova Dental Clinic', cat: 'Clinic', out: 'Needs another call', meta: 'Due 14:00 · last attempt 16 Oct 11:45' }] },
+    { name: 'Nova Dental Clinic', cat: 'Clinic', out: 'Needs another call', meta: 'Due 14:00 · held by Omar Nassar since 10:24', resv: 'Reserved' }] },
   { label: 'Overdue follow-ups', count: '1', exp: true, rows: [
     { name: 'Sunrise Bakery', cat: 'Shop', out: 'On hold', meta: 'Was due 19 Oct 16:00 · last attempt 15 Oct', flag: ['Danger', 'Overdue'] }] },
   { label: 'New assignments', count: '2', exp: false, rows: [] },
   { label: 'Callback to be scheduled', count: '1', exp: true, rows: [
     { name: 'Cedar Home Realty', cat: 'Real estate', out: 'Needs another call', meta: 'Time not set yet · last attempt 16 Oct' }] },
   { label: 'Data correction requested', count: '1', exp: true, rows: [
-    { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30', flag: ['Warning', 'Correction requested 14 Oct'] }] },
+    { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30', flag: ['Warning', 'Correction submitted · 14 Oct'] }] },
   { label: 'Requires contact', count: '1', exp: false, rows: [] },
 ];
 function qRow(r, sel) {
-  const row = I('Queue/Row', { State: sel ? 'Selected' : 'Default' }, { Name: r.name, Meta: r.cat + ' · ' + r.meta, 'Show flag': !!r.flag }, 'Row · ' + r.name);
+  const row = I('Queue/Row', { State: sel ? 'Selected' : 'Default' }, { Name: r.name, Meta: r.cat + ' · ' + r.meta, 'Show flag': !!(r.flag || r.resv) }, 'Row · ' + r.name);
   const cat = nested(row, 'Category'); if (cat) cat.visible = false;
   for (const tn of ['Name', 'Meta']) { const t = row.findAllWithCriteria({ types: ['TEXT'] }).find(n => n.name === tn); if (t) { try { t.maxLines = 2; } catch (e) { } } }
   prop(nested(row, 'Outcome'), { Outcome: r.out });
   if (r.flag) prop(nested(row, 'Flag'), { Tone: r.flag[0], Label: r.flag[1] });
+  if (r.resv) { const fl = nested(row, 'Flag'); try { fl.swapComponent(variantOf('Chip/Derived', { Tone: 'Amber' })); prop(fl, { Label: r.resv }); } catch (e) { W('Reserved flag: ' + e.message); if (fl) prop(fl, { Tone: 'Warning', Label: r.resv }); } } // N43-11 / O-2: derived amber flag
   return row;
 }
 function bucketHeader(b) { const bh = I('Queue/BucketHeader', { Expanded: b.exp ? 'True' : 'False' }, { Label: b.label }, 'Bucket · ' + b.label); prop(nested(bh, 'Count'), { Count: b.count }); return bh; }
@@ -328,12 +329,12 @@ const COLS = [
   { over: 'NEEDS ATTENTION', buckets: [{ label: 'Requires contact', count: '1', exp: true, rows: [
       { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30 · no open follow-up' }] }, QB[4]] },
 ];
-function hideQueueBadge(f) { const it = f.findAllWithCriteria({ types: ['INSTANCE'] }).find(n => n.name === 'Nav/Item · Calling Queue'); if (it) prop(it, { 'Show badge': false }); }
-async function toolbar(c, owner) {
+function hideQueueBadge(f) { for (const it of f.findAllWithCriteria({ types: ['INSTANCE'] }).filter(n => n.name === 'Nav/Item · Calling Queue' || n.name === 'Nav/Item · Follow-ups & Calendar')) prop(it, { 'Show badge': false }); } // R43 minors 2-3: no counts while empty/loading/error
+async function toolbar(c, owner, loading) {
   const tb = AL('Toolbar', 'HORIZONTAL', { gap: 12, align: 'CENTER' }); put(c, tb);
-  const s = I('Input/Search', { Size: 'Medium', State: 'Default' }, { Placeholder: 'Filter by name, phone or handle' }, 'Filter'); tb.appendChild(s); fixedCol(s, 320);
+  const s = I('Input/Search', { Size: 'Medium', State: 'Default' }, { Placeholder: 'Filter by name or phone' }, 'Filter'); tb.appendChild(s); s.resize(240, s.height); s.layoutSizingHorizontal = 'FIXED';
   const tabs = I('Tabs', { Style: 'Segmented', Active: '1' }, null, 'Bucket filter');
-  prop(nested(tabs, 'Tab 1'), { Label: 'All buckets' }); prop(nested(tabs, 'Tab 2'), { Label: owner ? 'Due today (1)' : 'Due today (2)' }); prop(nested(tabs, 'Tab 3'), { Label: owner ? 'Inaccessible (1)' : 'Overdue (1)' }); hideLayer(tabs, 'Tab 4');
+  prop(nested(tabs, 'Tab 1'), { Label: 'All buckets' }); prop(nested(tabs, 'Tab 2'), { Label: loading ? 'Due today' : owner ? 'Due today (1)' : 'Due today (2)' }); prop(nested(tabs, 'Tab 3'), { Label: loading ? 'Overdue' : owner ? 'Inaccessible (1)' : 'Overdue (1)' }); hideLayer(tabs, 'Tab 4');
   tb.appendChild(tabs);
   const sp = AL('Spacer', 'HORIZONTAL', {}); tb.appendChild(sp); grow(sp);
   add(tb, derived('Buckets are derived · a business can be in 2'), notice('Chip', 'No DEC ID', null, 'Overdue threshold'));
@@ -378,8 +379,8 @@ await deskQueue(frame('Desktop — Dark', false, true), true);
   const c = await deskShell(f, { user: 'rana', active: 'Calling Assignments' });
   const agent = I('Select', { Type: 'Person', State: 'Filled' }, { Label: 'Agent', 'Show label': false, Required: false, Value: 'Maya Khoury', Placeholder: 'Choose agent', 'Show helper': false }, 'Agent switch');
   const av = nested(agent, 'Avatar'); if (av) prop(av, { Initials: 'MK' });
-  await pageHeader(c, { crumb: ['Calling Assignments', 'Maya Khoury'], title: 'Calling queue — Maya Khoury', sub: 'Owner view · Mon 2 Nov 2026 · 5 businesses visible to Maya · 1 assigned but inaccessible', actions: [agent, button('Secondary', 'Medium', 'Open Calling Assignments', 'users')] });
-  fixedCol(agent, 260);
+  await pageHeader(c, { crumb: ['Calling Assignments', 'Maya Khoury'], title: 'Calling queue — Maya Khoury', sub: 'Owner view · Mon 2 Nov 2026 · 4 businesses in buckets · 1 do-not-call · 1 assigned but inaccessible', actions: [agent, button('Secondary', 'Medium', 'Open Calling Assignments', 'users')] });
+  agent.resize(260, agent.height); agent.layoutSizingHorizontal = 'FIXED';
   put(c, banner('Warning', 'Default', '1 assigned business is inaccessible to Maya Khoury', 'Cedar Home Realty is assigned to Maya but hidden from her by the visibility policy. Decide what happens; the system never reassigns automatically.'));
   await toolbar(c, true);
   await board(c, [
@@ -388,7 +389,7 @@ await deskQueue(frame('Desktop — Dark', false, true), true);
     { over: 'TO CONTACT', buckets: [{ label: 'Requires contact', count: '2', exp: true, rows: [
       { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 29 Oct 12:30 · no open follow-up' },
       { name: 'Urban Cuts Barbershop', cat: 'Salon', out: 'On hold', meta: 'Last attempt 30 Oct 09:40 · no open follow-up' }] },
-      { label: 'Data correction requested', count: '1', exp: true, rows: [{ name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Correction open since 29 Oct', flag: ['Warning', 'Correction requested'] }] }] },
+      { label: 'Data correction requested', count: '1', exp: true, rows: [{ name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Correction open since 29 Oct', flag: ['Warning', 'Correction in review'] }] }] },
     { over: 'OWNER ONLY', buckets: [{ label: 'Assigned but inaccessible', count: '1', exp: true, rows: [
       { name: 'Cedar Home Realty', cat: 'Real estate', out: 'Needs another call', meta: 'Hidden from Maya since 31 Oct · last attempt 16 Oct', flag: ['Danger', 'Inaccessible to assignee'] }] }],
       extra: async k => {
@@ -405,21 +406,21 @@ await deskQueue(frame('Desktop — Dark', false, true), true);
 }
 {
   const f = frame('Desktop — Light — Empty'); const c = await deskShell(f, { active: 'Calling Queue', qCount: '0' }); hideQueueBadge(f);
-  await pageHeader(c, { title: 'Calling queue', sub: 'Tue 20 Oct 2026 · no businesses assigned to you', actions: [button('Secondary', 'Medium', 'Follow-ups & Calendar', 'calendar')] });
+  await pageHeader(c, { title: 'Calling queue', sub: 'Tue 20 Oct 2026 · no businesses assigned to you', actions: [button('Secondary', 'Medium', 'Follow-ups & Calendar', 'calendar'), button('Ghost', 'Medium', 'Do-not-call list (1)', 'ban')] });
   await stateBox(c, 'Empty', 'Your calling queue is empty', 'Businesses appear here when the Owner assigns them to you. Follow-ups you schedule bring businesses back on their due day.', 'Open Follow-ups & Calendar');
   fitFrame(f);
 }
 {
-  const f = frame('Desktop — Light — Loading'); const c = await deskShell(f, { active: 'Calling Queue' });
+  const f = frame('Desktop — Light — Loading'); const c = await deskShell(f, { active: 'Calling Queue' }); hideQueueBadge(f);
   await pageHeader(c, { title: 'Calling queue', sub: 'Tue 20 Oct 2026 · loading your assigned businesses…', actions: [button('Secondary', 'Medium', 'Follow-ups & Calendar', 'calendar')] });
-  await toolbar(c);
+  await toolbar(c, false, true);
   const bd = AL('Bucket board · loading', 'HORIZONTAL', { gap: 16 }); put(c, bd); fillH(bd); bd.counterAxisAlignItems = 'MIN';
   for (let i = 0; i < 3; i++) { const k = AL('Column skeleton ' + (i + 1), 'VERTICAL', { gap: 12, pad: 16, fill: 'surface/default', stroke: 'border/default', radius: 'xl' }); bd.appendChild(k); grow(k); for (let j = 0; j < 3; j++) put(k, I('Skeleton', { Type: 'Card' }, null, 'Skeleton card')); }
   const st = I('State', { Type: 'Loading', Size: 'Inline' }, null, 'State · Loading'); put(c, st); layer(st, 'Title', 'Loading buckets… a business can appear in more than one.');
   fitFrame(f);
 }
 {
-  const f = frame('Desktop — Light — Error'); const c = await deskShell(f, { active: 'Calling Queue' });
+  const f = frame('Desktop — Light — Error'); const c = await deskShell(f, { active: 'Calling Queue' }); hideQueueBadge(f);
   await pageHeader(c, { title: 'Calling queue', sub: 'Tue 20 Oct 2026', actions: [button('Secondary', 'Medium', 'Follow-ups & Calendar', 'calendar')] });
   await stateBox(c, 'Error', 'We could not load your queue', 'Your assignments and follow-ups are safe. Check your connection and try again.', 'Try again');
   fitFrame(f);
@@ -445,7 +446,9 @@ await annotations([
   ['Note', 'Derived buckets', 'All buckets are derived classifications, not stored states. A business may appear in two buckets (Bloom Florist: Requires contact + Data correction requested). Each row shows the previous outcome and last attempt.'],
   ['Note', 'Rejected excluded', 'Rejected businesses never appear in callable buckets; they are reached only through the view-only Do-not-call list (SCR-CC-008). Reopening authority: DEC-016 pending.'],
   ['Note', 'Hidden items (DEC-001/002)', 'Businesses that fail the access check are omitted for the agent with no hint of existence. Only the Owner view lists them as "Assigned but inaccessible" (B7) with reassign / unassign / keep; nothing is reassigned automatically.'],
+  ['Note', 'Reserved (derived, O-2)', 'Amber "Reserved" flag: another user holds the contact reservation (Nova Dental Clinic, Omar Nassar since 10:24). Derived from the reservation, not stored; Owner override · DEC-004 (Proposed) on SCR-CC-005.'],
   ['Note', 'Policies shown', 'Overdue threshold has no DEC ID (pending). No check-in is required to work the queue (contract A1). Owner view is dated Mon 2 Nov 2026 to show a later visibility change.'],
+  ['Note', 'Data correction (cross-page)', 'Correction flags follow the Data Entry request states (SCR-DE-006): Submitted → In review → Resolved / Closed / Rejected / Withdrawn. The bucket shows Submitted or In review requests only; Request correction opens SCR-SHR-009 (page 42).'],
   ['Interaction', 'Mobile', 'Chip row scrolls horizontally (intentional). Chips and links sit in 44 px hit areas. The queue list scrolls; the strip under it names the hidden buckets.'],
 ]);
 finishSection();

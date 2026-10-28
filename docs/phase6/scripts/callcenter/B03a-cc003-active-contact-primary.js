@@ -74,13 +74,14 @@ async function T(chars, style, color, o = {}) {
 function add(p, ...k) { for (const x of k) if (x) p.appendChild(x); return p; }
 function fillW(n) { if (n.type === 'TEXT') n.textAutoResize = 'HEIGHT'; n.layoutSizingHorizontal = 'FILL'; return n; }
 function fillH(n) { n.layoutSizingVertical = 'FILL'; return n; }
-function grow(n) { n.layoutGrow = 1; return n; }
+function grow(n) { try { if (n.name === 'Spacer' && 'children' in n && !n.children.length) { n.resize(n.width, 1); n.layoutSizingVertical = 'FIXED'; } n.layoutGrow = 1; } catch (e) { W('grow ' + n.name + ': ' + e.message); } return n; } // fit: empty spacers were 100 px tall (CC-007 Owner view Content +18)
 function fixedCol(n, w) { n.resize(w, 100); n.layoutSizingHorizontal = 'FIXED'; return n; }
 function put(p, n) { p.appendChild(n); fillW(n); return n; }
 function reg(k, n) { if (n) OUT.created[k] = n.id; return n; }
 function notice(size, dec, body, title) { const n = I('Notice/Policy pending', { Size: size, Tone: 'Policy pending' }, size === 'Chip' ? { DEC: dec } : { DEC: dec, Body: body }, 'Policy · ' + dec); if (title) layer(n, 'Title', title); return n; }
 function button(variant, size, label, icon, state) { const p = { Label: label, 'Show icon': !!icon }; if (icon) p.Icon = icon; return I('Button', { Variant: variant, Size: size, State: state || 'Default' }, p, 'Button · ' + label); }
 function link(label, icon, size) { const p = { Label: label, 'Show icon': !!icon }; if (icon) p.Icon = icon; return I('Link', { Size: size || 'Small', State: 'Default' }, p, 'Link · ' + label); }
+function hit44(n) { const h = AL('Hit area 44 · ' + n.name, 'HORIZONTAL', { align: 'CENTER' }); h.appendChild(n); h.resize(Math.max(44, n.width), 44); h.layoutSizingVertical = 'FIXED'; h.layoutSizingHorizontal = 'HUG'; return h; }
 function banner(tone, size, title, body, nodeName) { return I('Banner', { Tone: tone, Size: size }, { Title: title, Body: body, 'Show title': !!title, 'Show action': false, 'Show close': false }, nodeName || 'Banner · ' + (title || body).slice(0, 30)); }
 function status(tone, label, dot) { return I('Badge/Status', { Tone: tone, Size: 'Small' }, { Label: label, 'Show dot': !!dot }, 'Status · ' + label); }
 function derived(label, amber) { return I('Chip/Derived', { Tone: amber ? 'Amber' : 'Neutral' }, { Label: label }, 'Derived · ' + label); }
@@ -104,8 +105,8 @@ function getSection(name, part) {
   PREFIX = name.split(' — ')[0]; PART = part || '-';
   let s = page.children.find(n => n.type === 'SECTION' && n.name === name), y0 = 80;
   if (s) {
-    for (const k of [...s.children]) { const p = k.getPluginData('ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
-    for (const k of s.children) y0 = Math.max(y0, k.y + k.height + 160);
+    for (const k of [...s.children]) { const p = k.getSharedPluginData('udigity.cc', 'ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
+    for (const k of s.children) if ((k.getSharedPluginData('udigity.cc', 'ccPart') || '-') < PART) y0 = Math.max(y0, k.y + k.height + 160); // stack after earlier parts only; later parts are re-flowed in finishSection
     OUT.updated['section ' + PREFIX] = s.id;
   } else {
     const bottoms = page.children.filter(n => n.type === 'SECTION').map(n => n.y + n.height);
@@ -119,7 +120,7 @@ function newRow() { if (CUR.n) { CUR.y += CUR.rowH + 160; CUR.x = 80; CUR.rowH =
 function frame(suffix, mobile, dark) {
   const name = SEC.name + ' — ' + suffix; const w = mobile ? 390 : 1440, h = mobile ? 844 : 900;
   if (CUR.n >= (mobile ? 6 : 4)) newRow();
-  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setPluginData('ccPart', PART);
+  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setSharedPluginData('udigity.cc', 'ccPart', PART);
   f.fills = [paint('surface/page')]; f.setExplicitVariableModeForCollection(semCol, dark ? DARK : LIGHT);
   CUR.x += w + 80; CUR.rowH = Math.max(CUR.rowH, h); CUR.n++;
   OUT.created[PREFIX + ' ' + suffix] = f.id; return f;
@@ -177,12 +178,12 @@ async function cueStrip(parent, index, label, name, boxed) {
   parent.insertChild(Math.min(index, parent.children.length), h); fillW(h); fillW(t);
   return { cue: h, label: t };
 }
-function clipTo(key, view, cue, describe, prefix) {
+function clipTo(key, view, cue, describe, prefix, peek) { // peek: first cut child stays visible, clipped by the viewport (no dead gap above the cue)
   let hidden = [];
   for (let pass = 0; pass < 4; pass++) {
     for (const k of view.children) k.visible = true; hidden = []; let cut = false;
     const lim = view.height - (view.paddingBottom || 0) + 0.5;
-    for (const k of view.children) { if (!cut && relBottom(k, view) <= lim) continue; cut = true; k.visible = false; const d = describe(k); if (d) hidden.push(d); }
+    for (const k of view.children) { if (!cut && relBottom(k, view) <= lim) continue; if (!cut && peek) { cut = true; const d0 = describe(k); if (d0) hidden.push(d0); continue; } cut = true; k.visible = false; const d = describe(k); if (d) hidden.push(d); }
     if (!cue) break;
     const lbl = (prefix || '↓ More below') + (hidden.length ? ' · ' + hidden.slice(0, 2).join(' · ') + (hidden.length > 2 ? ` +${hidden.length - 2}` : '') : '');
     if (cue.label.characters === lbl) break; cue.label.characters = lbl;
@@ -209,13 +210,22 @@ function fitFrame(f) {
 async function annotations(notes, w) {
   newRow();
   const a = AL(PREFIX + ' — Annotations' + (PART !== '-' ? ' (' + PART + ')' : ''), 'VERTICAL', { gap: 12, pad: 24, fill: 'surface/page', stroke: 'border/default', radius: 'xl' });
-  SEC.appendChild(a); a.setPluginData('ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
+  SEC.appendChild(a); a.setSharedPluginData('udigity.cc', 'ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
   a.setExplicitVariableModeForCollection(semCol, LIGHT);
   a.appendChild(await T(PREFIX + ' annotations (designer notes and intended interactions, not product UI)', 'ds/H3', 'text/primary'));
   for (const [type, title, body] of notes) put(a, I('Annotation', { Type: type }, { Title: title, Body: body }, 'Annotation · ' + title));
   OUT.created['annotations ' + PREFIX] = a.id; CUR.y += a.height; return a;
 }
-function finishSection() { let mx = 0, my = 0; for (const c of SEC.children) { mx = Math.max(mx, c.x + c.width); my = Math.max(my, c.y + c.height); } SEC.resizeWithoutConstraints(mx + 80, my + 80); OUT.fit['section ' + PREFIX] = [Math.round(SEC.x), Math.round(SEC.y), Math.round(SEC.width), Math.round(SEC.height)]; }
+function finishSection() {
+  const pt = k => k.getSharedPluginData('udigity.cc', 'ccPart') || '-';
+  const mine = SEC.children.filter(k => pt(k) <= PART), later = SEC.children.filter(k => pt(k) > PART);
+  if (later.length) { // keep part order a → b inside the section; frames move, the section never does
+    const top = Math.max(80, ...mine.map(k => k.y + k.height + 160)), d = top - Math.min(...later.map(k => k.y));
+    if (Math.abs(d) > 0.5) { for (const k of later) k.y += d; OUT.fit['later parts shifted ' + PREFIX] = Math.round(d); }
+  }
+  let mx = 0, my = 0; for (const c of SEC.children) { mx = Math.max(mx, c.x + c.width); my = Math.max(my, c.y + c.height); } SEC.resizeWithoutConstraints(mx + 80, my + 80); OUT.fit['section ' + PREFIX] = [Math.round(SEC.x), Math.round(SEC.y), Math.round(SEC.width), Math.round(SEC.height)];
+  for (const o of page.children) if (o !== SEC && o.type === 'SECTION' && o.x < SEC.x + SEC.width && SEC.x < o.x + o.width && o.y < SEC.y + SEC.height && SEC.y < o.y + o.height) W(`${PREFIX} section overlaps ${o.name.split(' — ')[0]} (section not moved)`);
+}
 // ---------- end helper library ----------
 
 // ---------- workspace module (queue column + business detail column + contact panel; approved S3 layout) ----------
@@ -229,7 +239,7 @@ const QB = [
   { label: 'Callback to be scheduled', count: '1', exp: true, rows: [
     { name: 'Cedar Home Realty', cat: 'Real estate', out: 'Needs another call', meta: 'Time not set yet · last attempt 16 Oct' }] },
   { label: 'Data correction requested', count: '1', exp: true, rows: [
-    { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30', flag: ['Warning', 'Correction requested 14 Oct'] }] },
+    { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30', flag: ['Warning', 'Correction submitted · 14 Oct'] }] },
   { label: 'Requires contact', count: '1', exp: false, rows: [] },
 ];
 function qRow(r, sel) {
@@ -276,7 +286,7 @@ const TL_OLIVE = [
 async function dColumn(parent, o) {
   const b = BIZ[o.biz || 'olive'];
   const col = AL('Business detail column', 'VERTICAL', { gap: 8 }); parent.appendChild(col); fixedCol(col, 400); fillH(col);
-  const D = AL('Detail scroll area', 'VERTICAL', { gap: 12, clip: true }); put(col, D); fillH(D);
+  const D = AL('Detail scroll area (scrolls)', 'VERTICAL', { gap: 12, clip: true }); put(col, D); fillH(D);
   if (o.top) await o.top(D);
   const biz = await slotCard(D, 'Card/Section', { name: 'Business · ' + b.name, title: b.name, subtitle: o.bizSub || (b.cat + ' · Assigned to you'), action: { label: 'Request correction', icon: 'flag' } });
   for (const [num, lab] of b.phones) {
@@ -381,16 +391,23 @@ await nacDesk('Desktop — Dark', true);
 async function mobLog(suffix, dark) {
   const f = frame(suffix, true, dark);
   const c = await mobShell(f, { back: true, title: 'Log call attempt', subtitle: 'Olive & Thyme Café · 10:32', tab: 2, h: 600 });
-  const view = AL('Form viewport', 'VERTICAL', { gap: 10, clip: true }); put(c, view); fillH(view);
-  const r = I('Banner/Reservation', { State: 'Reserved by me', Size: 'Banner' }, { 'Show policy': true }, 'Reservation · Reserved by me'); put(view, r);
+  // N43-3: release (Cancel contact) and the read-only business route stay reachable during the call; sticky above the form, 44 px+
+  const act = AL('Contact actions', 'HORIZONTAL', { gap: 8, align: 'CENTER', justify: 'SPACE_BETWEEN' }); act.layoutWrap = 'WRAP'; act.counterAxisSpacing = 4; put(c, act);
+  const bl = hit44(link('Details · Request correction', 'building')); bl.name = 'Business details link'; act.appendChild(bl);
+  const cx = button('Ghost', 'Large', 'Cancel contact'); act.appendChild(cx);
+  reg(PREFIX + ' ' + suffix + ' Cancel contact', cx); reg(PREFIX + ' ' + suffix + ' Business details link', bl);
+  const view = AL('Form viewport (scrolls)', 'VERTICAL', { gap: 10, clip: true }); put(c, view); fillH(view);
+  const r = I('Banner/Reservation', { State: 'Reserved by me', Size: 'Banner' }, { 'Show policy': false }, 'Reservation · Reserved by me'); put(view, r);
   layer(r, 'Title', 'Reserved by you · since 10:31'); layer(r, 'Body', 'Renews while this screen is open; expires 10:41 if not renewed.');
+  view.appendChild(notice('Chip', 'DEC-004', null, 'Reservation rules pending'));
   await outcomeGroup(view, 1);
   await followUp(view); notes(view);
   const cue = await cueStrip(c, c.children.length, '↓ More below', 'Scroll cue · mobile form', true);
-  clipTo(PREFIX + ' ' + suffix + ' form', view, cue, k => ({ 'Follow-up (Needs another call)': 'Follow-up', Notes: 'Notes', 'Outcome group': 'Outcomes' })[k.name] || null);
+  clipTo(PREFIX + ' ' + suffix + ' form', view, cue, k => ({ 'Follow-up (Needs another call)': 'Follow-up', Notes: 'Notes', 'Outcome group': 'Outcomes' })[k.name] || null, null, true);
   const ft = AL('Sticky footer', 'VERTICAL', { gap: 6, pad: [12, 16], fill: 'surface/default' }); topRule(ft, 'border/default'); f.appendChild(ft);
   ft.x = 0; ft.y = 656; ft.resize(390, 124); ft.primaryAxisSizingMode = 'FIXED'; ft.counterAxisSizingMode = 'FIXED';
   await saveFooter(ft, 'Keep reserved', 'Save attempt', true);
+  OUT.fit[PREFIX + ' ' + suffix + ' contact actions'] = { rowH: Math.round(act.height), cancelH: Math.round(cx.height), detailsHitH: Math.round(bl.height) }; if (cx.height < 44 || bl.height < 44) W(suffix + ': contact action < 44 px');
   fitFrame(f);
 }
 newRow();
@@ -413,6 +430,8 @@ await annotations([
   ['Note', 'Four distinct outcomes', 'On hold, Needs another call, Rejected and Accepted are separate, equal-weight choices with no system default; they are not sequential. Other branches: part b frames. Outcome model R-10 → USER.'],
   ['Note', 'Reservation (SCR-CC-005)', 'Released only after a successful save; tab switches never release. Expiring, expired, network loss, stale client and override states live in SCR-CC-005. DEC-004 pending.'],
   ['Interaction', 'Mobile', 'Outcome cards are 44 px+; Save attempt and Keep reserved are Large (48 px) in a sticky footer. Success returns to the queue with the next due business offered.'],
+  ['Interaction', 'Mobile release and business route (N43-3)', '"Cancel contact" (Ghost Large, 48 px) sits in the sticky row under the header: warns if notes are unsaved (keep as draft or discard), then releases the reservation; no attempt is logged (WF-CALL-002 explicit release). "Details · Request correction" (44 px hit area) opens the existing shared Business detail screen SCR-SHR-008 (page 42, section 175:9043; Mobile Light 175:10448; desktop Call Center read-only 175:9630, Desktop Light 175:9048). Its "Request correction" opens the SCR-SHR-009 drawer (175:10802; mobile 175:11442). No new sheet is drawn; no editing here.'],
+['Note', 'Request correction target', 'Request correction opens SCR-SHR-009 (page 42, frame 175:10802); the request goes to Data Entry (WF-BIZ-002).'],
 ]);
 finishSection();
 return OUT;

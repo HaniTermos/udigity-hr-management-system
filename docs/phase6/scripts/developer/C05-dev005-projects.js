@@ -65,7 +65,9 @@ function nested(root, name) { return root.findOne(n => n.type === 'INSTANCE' && 
 function layerText(root, name, txt, quiet) { const t = root.findOne(n => n.type === 'TEXT' && n.name === name); if (!t) { if (!quiet) warn(`no text layer ${name} in ${root.name}`); return; } try { t.characters = txt; } catch (e) { warn(`text ${name}: ${e.message}`); } }
 function slotOf(i, name) { const s = i.findAll(n => n.type === 'SLOT'); return s.find(x => x.name === name) || s[0] || null; }
 function clearSlot(s) { if (!s) return; for (const ch of [...s.children]) { try { ch.remove(); } catch (e) { ch.visible = false; } } }
-function fillSlot(i, nodes, name, gap) { const s = slotOf(i, name || 'Content'); if (!s) { warn('no slot in ' + i.name); return null; } clearSlot(s); if (gap != null) num(s, 'itemSpacing', gap); for (const n of nodes) if (n) put(s, n, 'FILL'); return s; }
+function fillSlot(i, nodes, name, gap) { const s = slotOf(i, name || 'Content'); if (!s) { warn('no slot in ' + i.name); return null; } clearSlot(s); if (gap != null) num(s, 'itemSpacing', gap); for (const n of nodes) if (n) put(s, n, hugK(n)); return s; }
+// M-6: badges, chips and policy chips HUG inside slots; everything else FILL
+function hugK(n) { return n.type === 'INSTANCE' && (/^(Badge|Badge\/Flag|Chip\/Derived) · /.test(n.name) || (n.name.startsWith('Policy · ') && n.variantProperties && n.variantProperties.Size === 'Chip')) ? 'HUG' : 'FILL'; }
 // ---- DS builders (every visible text set explicitly)
 async function badge(tone, label, size, dot) { const b = await inst('Badge', { Tone: tone, Size: size || 'Small' }, 'Badge · ' + label); setP(b, { Label: label, 'Show dot': dot !== false }); return b; }
 async function chip(tone, label) { const c = await inst('Chip', { Tone: tone }, 'Chip/Derived · ' + label); setP(c, { Label: label }); return c; }
@@ -99,6 +101,8 @@ async function table(parent, cols, rows) {
       if (s.t === 'status') setP(nested(c, 'Status'), { Tone: s.tone, Label: s.a, 'Show dot': true });
       if (s.t === 'link') setP(nested(c, 'Link'), { Label: s.a, 'Show icon': false });
     }
+    // D-5: captions in composed cells wrap to the final cell width (was "Conditions +24w")
+    for (const cc of tr.children) if (cc.type === 'FRAME' && cc.name.startsWith('Cell · ')) { const iw = cc.width - (cc.paddingLeft || 0) - (cc.paddingRight || 0); for (const n of cc.children) if (n.type === 'TEXT' && n.width > iw) { n.textAutoResize = 'HEIGHT'; n.resize(Math.max(40, Math.floor(iw)), n.height); } }
   }
   return t;
 }
@@ -139,10 +143,7 @@ async function scrim(f, mobile) { const s = await inst('Scrim', { Size: mobile ?
 async function drawer(f, title, sub, nodes, footer) {
   await scrim(f); const dr = await inst('Drawer', null, 'Drawer · ' + title); f.appendChild(dr); dr.x = 960; dr.y = 0;
   setP(dr, { Title: title, Subtitle: sub || ' ', 'Show subtitle': !!sub });
-  const bs = slotOf(dr, 'Content'); clearSlot(bs); num(bs, 'itemSpacing', 0);
-  const body = AL('Drawer body', 'VERTICAL', { gap: 16 }); bs.appendChild(body);
-  try { body.layoutSizingHorizontal = 'FILL'; } catch (e) { body.resize(Math.max(1, bs.width - (bs.paddingLeft || 0) - (bs.paddingRight || 0)), 10); body.layoutSizingHorizontal = 'FIXED'; } body.layoutSizingVertical = 'HUG';
-  for (const n of nodes) if (n) put(body, n, 'FILL');
+  const bs = slotOf(dr, 'Content'), body = stage(f, bs, 'Drawer body', 16, nodes);
   const fs = dr.findAll(n => n.type === 'SLOT').find(s => s.name === 'Footer');
   if (fs) { clearSlot(fs); const fr = AL('Drawer actions', 'HORIZONTAL', { gap: 8, align: 'CENTER' }); fs.appendChild(fr); try { fr.layoutSizingHorizontal = 'FILL'; } catch (e) { fr.resize(Math.max(1, fs.width - 48), 40); } fr.layoutSizingVertical = 'HUG'; for (const b of footer) { if (b === 'spacer') spacer(fr); else fr.appendChild(b); } } else warn('drawer footer slot not found');
   meta(f).drawer = { dr, bs, body }; return dr;
@@ -151,14 +152,43 @@ async function dialog(f, title, desc, nodes, sec, pri, o) {
   o = o || {}; await scrim(f, o.mobile); const d = await inst('Dialog', null, 'Dialog · ' + title); f.appendChild(d);
   setP(d, { Title: title, Description: desc || ' ', 'Show description': !!desc, 'Show footer': !!(sec || pri), 'Show close': true });
   if (o.w) d.resize(o.w, d.height);
-  fillSlot(d, nodes, 'Content', 12);
+  meta(f).dbody = stage(f, slotOf(d, 'Content'), 'Dialog body', 12, nodes);
   const sb = nested(d, 'Secondary action'), pb = nested(d, 'Primary action');
   if (sb) { if (sec) setP(sb, { Label: sec, 'Show icon': false }); else sb.visible = false; }
   if (pb) { if (pri) { setP(pb, { Label: pri, 'Show icon': false }); if (o.destructive) setP(pb, { Variant: 'Destructive' }); if (o.disabled) setP(pb, { State: 'Disabled' }); } else pb.visible = false; }
   const W = o.mobile ? 390 : 1440, H = o.mobile ? 844 : 900; d.x = Math.round((W - d.width) / 2); d.y = Math.max(o.mobile ? 16 : 40, Math.round((H - d.height) / 2));
   meta(f).dialog = d; return d;
 }
-function relayout(f) { for (const i of f.findAll(n => n.type === 'INSTANCE' && n.name.startsWith('Field · '))) { try { if (i.layoutSizingHorizontal === 'FILL') { i.layoutSizingHorizontal = 'FIXED'; i.layoutSizingHorizontal = 'FILL'; } } catch (e) { } } }
+const _META = {}; function meta(f) { return _META[f.id] || (_META[f.id] = {}); }
+function relayout(f) { for (const i of f.findAll(n => n.type === 'INSTANCE' && n.name.startsWith('Field · '))) { try { if (i.layoutSizingHorizontal === 'FILL') { i.layoutSizingHorizontal = 'FIXED'; i.layoutSizingHorizontal = 'FILL'; } } catch (e) { } } const M = meta(f); kick(M.drawer && M.drawer.body); kick(M.dbody); }
+// N44-1/2: nested instances moved into another instance's slot keep the layout of their old (320 default) width. So the
+// slot body is built detached, at the slot's inner width, in a plain frame (layout runs there, as on mobile), then:
+// 1 append to slot, 2 wrapper FILL, 3 children FILL, 4 own text HEIGHT+FILL, 5 relayout (wrapper width really changes).
+function stage(f, s, name, gap, nodes) {
+  if (!s) { warn('no Content slot in ' + f.name); return null; }
+  const W = Math.max(200, Math.round(s.width - (s.paddingLeft || 0) - (s.paddingRight || 0))); clearSlot(s); num(s, 'itemSpacing', 0);
+  const b = AL(name, 'VERTICAL', { gap }); f.appendChild(b); b.resize(W, 10); b.counterAxisSizingMode = 'FIXED'; b.primaryAxisSizingMode = 'AUTO';
+  for (const n of nodes) if (n) put(b, n, hugK(n));
+  s.appendChild(b); try { b.layoutSizingHorizontal = 'FILL'; } catch (e) { b.layoutSizingHorizontal = 'FIXED'; } b.layoutSizingVertical = 'HUG';
+  for (const n of b.children) if (hugK(n) === 'FILL') { try { n.layoutSizingHorizontal = 'FILL'; } catch (e) { } }
+  for (const t of b.findAll(n => n.type === 'TEXT' && !lockedIn(n, b))) if (t.parent === b || t.layoutSizingHorizontal === 'FILL') { try { t.layoutSizingHorizontal = 'FILL'; t.textAutoResize = 'HEIGHT'; } catch (e) { } }
+  kick(b); return b;
+}
+function kick(b) { if (!b || b.removed) return; try { const w = b.width, fill = b.layoutSizingHorizontal === 'FILL'; b.layoutSizingHorizontal = 'FIXED'; b.resize(w - 1, b.height); if (fill) b.layoutSizingHorizontal = 'FILL'; else b.resize(w, b.height); b.layoutSizingVertical = 'HUG'; } catch (e) { warn('relayout ' + b.name + ': ' + e.message); } }
+// fit: FILL layers inside slot instances that kept an old width, or that render past their instance box
+function stale(b) {
+  const o = []; if (!b || b.removed) return o; const inner = p => p.width - (p.paddingLeft || 0) - (p.paddingRight || 0);
+  for (const i of b.findAll(n => n.type === 'INSTANCE' && !lockedIn(n, b) && shown(n, b))) {
+    const ib = i.absoluteBoundingBox; if (!ib) continue; let m = null;
+    for (const k of i.findAll(x => shown(x, i))) {
+      const p = k.parent; if (p && p.layoutMode === 'VERTICAL' && k.layoutSizingHorizontal === 'FILL' && Math.abs(k.width - inner(p)) > 1.5) { m = k.name + ' ' + Math.round(k.width) + '/' + Math.round(inner(p)); break; }
+      const kb = k.absoluteRenderBounds; if (kb && kb.x + kb.width > ib.x + ib.width + 1.5) { m = k.name + ' +' + Math.round(kb.x + kb.width - ib.x - ib.width) + 'w'; break; }
+    }
+    if (m) o.push(i.name + ' › ' + m);
+  }
+  return o;
+}
+function lockedIn(p, root) { for (let a = p.parent; a && a !== root; a = a.parent) if (a.type === 'INSTANCE') return true; return false; } // D-5: p sits inside another instance, so scripts cannot resize it
 function shown(n, root) { for (let p = n; p && p !== root; p = p.parent) if (p.visible === false) return false; return true; }
 function fit(f, o) {
   o = o || {}; relayout(f); const r = { size: [Math.round(f.width), Math.round(f.height)] }, over = [];
@@ -169,12 +199,13 @@ function fit(f, o) {
     const pb = p.absoluteBoundingBox, b = n.absoluteBoundingBox; if (!pb || !b || b.width < 1) continue;
     const dx = b.x + b.width - (pb.x + pb.width - (p.paddingRight || 0)); if (dx > 1.5) over.push(`${n.name} ⊄ ${p.name} +${Math.round(dx)}w`);
     const fixedH = p.layoutMode === 'VERTICAL' ? p.primaryAxisSizingMode === 'FIXED' : p.counterAxisSizingMode === 'FIXED';
-    if (fixedH && p.clipsContent && !(o.scroll && p === c)) { const dy = b.y + b.height - (pb.y + pb.height - (p.paddingBottom || 0)); if (dy > 1.5) over.push(`${n.name} ⊄ ${p.name} +${Math.round(dy)}h`); }
+    if (fixedH && p.clipsContent && !(o.scroll && p === c)) { const dy = b.y + b.height - (pb.y + pb.height - (p.paddingBottom || 0)); if (dy > 1.5) { const m = `${n.name} ⊄ ${p.name} +${Math.round(dy)}h`; if (p.type === 'INSTANCE' && lockedIn(p, f) && dy <= (p.paddingBottom || 0) + 0.5) (r.padOnly = r.padOnly || []).push(m + ' (bottom padding only, not clipped; component geometry)'); else over.push(m); } }
   }
   const M = meta(f);
-  for (const k of ['dialog', 'drawer']) if (M[k]) { const d = M[k].dr || M[k]; r[k] = [Math.round(d.width), Math.round(d.height)]; if (d.y + d.height > f.height - 8) warn(`${f.name}: ${k} taller than the frame`); }
+  for (const k of ['dialog', 'drawer']) if (M[k]) { const d = k === 'drawer' ? M[k].dr : M[k]; r[k] = [Math.round(d.width), Math.round(d.height)]; if (d.y + d.height > f.height - (k === 'drawer' ? 0 : 8) + 0.5) warn(`${f.name}: ${k} taller than the frame`); }
   if (M.drawer) { const { bs, body } = M.drawer; const free = Math.round(bs.absoluteBoundingBox.y + bs.height - (bs.paddingBottom || 0) - (body.absoluteBoundingBox.y + body.height)); r.drawerBodyFree = free; if (free < 0) warn(`${f.name}: drawer body taller than its slot by ${-free} px`); }
   if (o.mobile) { const small = []; for (const n of f.findAll(x => x.type === 'INSTANCE' && /^(Button|IconButton|Link|Chip\/Filter) · /.test(x.name) && shown(x, f))) if (n.height < 44) small.push(`${n.name} ${Math.round(n.height)}px`); const bk = f.findOne(x => x.type === 'INSTANCE' && x.name === 'Back'); if (bk && shown(bk, f)) r.backButton = Math.round(bk.height); if (bk && shown(bk, f) && bk.height < 44) small.push('Header Back ' + Math.round(bk.height) + 'px (Component request: Shell/Mobile/Header)'); r.tapTargetsUnder44 = small; if (small.length) warn(`${f.name}: ${small.length} tap target(s) < 44 px`); }
+  { const M = meta(f), st = stale(M.drawer && M.drawer.body).concat(stale(M.dbody)); r.stale = st.slice(0, 8); if (st.length) warn(`${f.name}: ${st.length} stale/overrunning layer(s) in the overlay, e.g. ${st[0]}`); }
   r.overflow = over.slice(0, 12); if (over.length) warn(`${f.name}: ${over.length} overflow(s), e.g. ${over[0]}`);
   OUT.fit[f.name] = r; return r;
 }
@@ -191,7 +222,7 @@ async function projects(name, mode) {
   await TF(h, 'Delivery of closed deals. Project status is separate from task status; a closed deal is not a completed project.', 'ds/Body Small', 'text/secondary');
   const m = AL('Metrics', 'HORIZONTAL', { gap: 16 }); put(c, m, 'FILL');
   const MET = mode === 'loading' ? [['Loading', 'Development workload — Proposed', '', null, null], ['Loading', 'Active projects', '', null, null], ['Loading', 'Delivery overdue', '', null, null], ['Loading', 'Completed this month', '', null, null]]
-    : mode === 'empty' ? [['Flat', 'Development workload — Proposed', '0 · 0 · 0', 'SB-3 §11 definition', 'Deals · Projects · Tasks'], ['Flat', 'Active projects', '0', 'No change', 'Assigned to you'], ['Flat', 'Delivery overdue (derived)', '0', 'No change', 'Target date passed'], ['Flat', 'Completed this month', '0', 'No change', 'October 2026']]
+    : mode === 'empty' ? [['Flat', 'Development workload — Proposed', '0 · 0 · 0', 'SB-3 §11 definition', 'Deals · Projects · Tasks'], ['Flat', 'Active projects', '0', 'No change', 'Company-wide eligible'], ['Flat', 'Delivery overdue (derived)', '0', 'No change', 'Target date passed'], ['Flat', 'Completed this month', '0', 'No change', 'October 2026']]
     : [['Flat', 'Development workload — Proposed', '2 · 2 · 6', 'SB-3 §11 definition', 'Deals · Projects · Tasks (yours)'], ['Flat', 'Active projects', '3', 'No change', 'Company-wide eligible'], ['Flat', 'Delivery overdue (derived)', '1', '1 more than last week', 'Target date passed, not delivered'], ['Up', 'Completed this month', '1', '+1 vs September', 'October 2026']];
   for (const [t, l, v, d, cap] of MET) put(m, await metric(t, l, v, t === 'Loading' ? null : d, cap), 'FILL');
   if (mode === 'main') put(c, await banner('Info', null, '1 closed deal has no project yet: Nova Dental Clinic — Patient booking portal. Project provisioning pending (derived) · F2 pending: automatic at closure or manual.', null, 'Inline'), 'FILL');
@@ -210,11 +241,11 @@ async function projects(name, mode) {
   }
   const st = (s) => ({ t: 'status', tone: PS[s], a: s });
   const fl = (arr) => ({ t: 'nodes', f: async () => { const o = []; for (const [k, a] of arr) o.push(k === 'mine' ? await chip('Neutral', 'Assigned to me') : k === 'od' ? await chip('Amber', 'Delivery overdue') : await T(a, 'ds/Caption', 'text/muted')); return o; } });
-  await table(c, [['Project', 320], ['Project status', 168], ['Developer', 160], ['Target delivery', 132], ['Tasks', 112, 'Right'], ['Conditions', 'FILL'], ['', 84]], [
-    [{ t: 'meta', a: 'Harbor Auto Care — Service reminders', b: 'PRJ-0011 · DL-0027' }, st('Blocked'), { t: 'avatar', a: 'Sami Fares', ini: 'SF' }, { t: 'text', a: '16 Oct 2026' }, { t: 'text', a: '3 of 6 done' }, fl([['mine'], ['od'], ['t', 'Blocker: SMS provider account']]), { t: 'link', a: 'Open board' }],
+  await table(c, [['Project', 296], ['Project status', 168], ['Developer', 148], ['Target date', 124], ['Tasks', 104, 'Right'], ['Conditions', 'FILL'], ['', 108]], [
+    [{ t: 'meta', a: 'Urban Cuts Barbershop — Online booking', b: 'PRJ-0012 · DL-0024' }, st('Completed'), { t: 'avatar', a: 'Lina Aoun', ini: 'LA' }, { t: 'text', a: '10 Oct 2026' }, { t: 'text', a: '3 of 3 done' }, fl([['t', '1 cancelled · read-only since 14 Oct']]), { t: 'link', a: 'Open board' }],
+    [{ t: 'meta', a: 'Harbor Auto Care — Service reminders', b: 'PRJ-0011 · DL-0027' }, st('Blocked'), { t: 'avatar', a: 'Sami Fares', ini: 'SF' }, { t: 'text', a: '16 Oct 2026' }, { t: 'text', a: '3 of 6 done' }, fl([['mine'], ['od'], ['t', 'Blocker: SMS account']]), { t: 'link', a: 'Open board' }],
     [{ t: 'meta', a: 'Glow Beauty Salon — Booking website', b: 'PRJ-0014 · DL-0031' }, st('In progress'), { t: 'avatar', a: 'Sami Fares', ini: 'SF' }, { t: 'text', a: '20 Nov 2026' }, { t: 'text', a: '1 of 4 done' }, fl([['mine']]), { t: 'link', a: 'Open board' }],
-    [{ t: 'meta', a: 'Lumen Yoga Studio — Class schedule site', b: 'PRJ-0016 · DL-0034' }, st('Waiting for client'), { t: 'avatar', a: 'Lina Aoun', ini: 'LA' }, { t: 'text', a: '4 Dec 2026' }, { t: 'text', a: '0 of 3 done' }, fl([['t', 'Waiting for class timetable']]), { t: 'link', a: 'Open board' }],
-    [{ t: 'meta', a: 'Urban Cuts Barbershop — Online booking', b: 'PRJ-0012 · DL-0024' }, st('Completed'), { t: 'avatar', a: 'Lina Aoun', ini: 'LA' }, { t: 'text', a: '10 Oct 2026' }, { t: 'text', a: '4 of 4 done' }, fl([['t', 'Completed 14 Oct · read-only']]), { t: 'link', a: 'Open board' }]
+    [{ t: 'meta', a: 'Lumen Yoga Studio — Class schedule site', b: 'PRJ-0016 · DL-0034' }, st('Waiting for client'), { t: 'avatar', a: 'Lina Aoun', ini: 'LA' }, { t: 'text', a: '4 Dec 2026' }, { t: 'text', a: '0 of 3 done' }, fl([['t', 'Waiting for class timetable']]), { t: 'link', a: 'Open board' }]
   ]);
   put(c, await row('Policy row', [await nchip('DEC-019', 'Scheduled · In progress · Waiting for client · Blocked · Delivered · Completed'), await nchip('SB-3 §11', 'workload definition'), await nchip('DEC-002', 'completed-project visibility')], 8, true), 'FILL');
   put(c, await T('Completed ≠ closed deal (G1). Cancelled projects are not modelled (OQ-11). Rows you cannot access are omitted and not counted.', 'ds/Caption', 'text/muted'), 'FILL');
@@ -226,7 +257,7 @@ await projects(N + 'Light — Empty', 'empty');
 await projects(N + 'Light — Loading', 'loading');
 await endSection(S, [
   ['Interaction', 'I1 — Open board', 'Row or "Open board" → SCR-DEV-006 for that project. Filters: project status, developer, Assigned to me (derived), Delivery overdue (derived). Metric "Development workload" opens nothing (definition Proposed, SB-3 §11).'],
-  ['Note', 'N1 — Status vs conditions', 'Project status is one of six proposed statuses (DEC-019). Delivery overdue and Assigned to me are derived chips. Task progress ("3 of 6 done") is task data, not a project status.'],
+  ['Note', 'N1 — Status vs conditions', 'Project status is one of six proposed statuses (DEC-019). Delivery overdue and Assigned to me are derived chips. Task progress ("3 of 6 done") is task data, not a project status; cancelled tasks are not counted in "n of m done".'],
   ['Note', 'N2 — No project yet', 'A closed deal without a project is not a row here; it shows as an info banner (Project provisioning pending, F2/F3) and on the Owner delivery monitor.']
 ]);
 return OUT;

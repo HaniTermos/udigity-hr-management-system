@@ -73,7 +73,7 @@ async function T(chars, style, color, o = {}) {
 }
 function add(p, ...k) { for (const x of k) if (x) p.appendChild(x); return p; }
 function fillW(n) { if (n.type === 'TEXT') n.textAutoResize = 'HEIGHT'; n.layoutSizingHorizontal = 'FILL'; return n; }
-function grow(n) { n.layoutGrow = 1; return n; }
+function grow(n) { try { if (n.name === 'Spacer' && 'children' in n && !n.children.length) { n.resize(n.width, 1); n.layoutSizingVertical = 'FIXED'; } n.layoutGrow = 1; } catch (e) { W('grow ' + n.name + ': ' + e.message); } return n; } // fit: empty spacers were 100 px tall (CC-007 Owner view Content +18)
 function put(p, n) { p.appendChild(n); fillW(n); return n; }
 function reg(k, n) { if (n) OUT.created[k] = n.id; return n; }
 function notice(size, dec, body, title) { const n = I('Notice/Policy pending', { Size: size, Tone: 'Policy pending' }, size === 'Chip' ? { DEC: dec } : { DEC: dec, Body: body }, 'Policy · ' + dec); if (title) layer(n, 'Title', title); return n; }
@@ -97,13 +97,29 @@ async function slotCard(parent, compName, o) {
 function slotOf(inst, name) { const s = inst.findAllWithCriteria({ types: ['SLOT'] }); return s.find(x => x.name === name) || null; }
 function clearSlot(s) { if (s) for (const k of [...s.children]) k.remove(); return s; }
 function relBottom(n, f) { return n.absoluteTransform[1][2] - f.absoluteTransform[1][2] + n.height; }
+// N43-1/N43-2: port of DEV-002 stage(). Instances moved into a slot keep the layout of their old (320 px default) width, so slot
+// content is built detached at the slot's inner width, then moved in: wrapper FILL, children FIXED→FILL, own text HEIGHT+FILL, relayout.
+function inInst(n, root) { for (let a = n.parent; a && a !== root; a = a.parent) if (a.type === 'INSTANCE') return true; return false; }
+function kick(b) { if (!b || b.removed) return; try { const w = b.width, fill = b.layoutSizingHorizontal === 'FILL'; b.layoutSizingHorizontal = 'FIXED'; b.resize(w - 1, b.height); if (fill) b.layoutSizingHorizontal = 'FILL'; else b.resize(w, b.height); b.layoutSizingVertical = 'HUG'; } catch (e) { W('relayout ' + b.name + ': ' + e.message); } }
+function stage(f, s, name, gap, nodes, hug) {
+  if (!s) { W('no Content slot in ' + f.name); return null; }
+  const w = Math.max(200, Math.round(s.width - (s.paddingLeft || 0) - (s.paddingRight || 0))); for (const k of [...s.children]) k.remove(); try { s.itemSpacing = 0; } catch (e) { }
+  const b = AL(name, 'VERTICAL', { gap }); f.appendChild(b); b.resize(w, 10); b.counterAxisSizingMode = 'FIXED'; b.primaryAxisSizingMode = 'AUTO';
+  const H = new Set((hug || []).map(n => n.id));
+  for (const n of nodes) if (n) { b.appendChild(n); if (!H.has(n.id)) fillW(n); }
+  s.appendChild(b); try { b.layoutSizingHorizontal = 'FILL'; } catch (e) { b.layoutSizingHorizontal = 'FIXED'; } b.layoutSizingVertical = 'HUG';
+  for (const n of b.children) if (!H.has(n.id)) { try { n.layoutSizingHorizontal = 'FIXED'; n.layoutSizingHorizontal = 'FILL'; } catch (e) { } }
+  for (const t of b.findAll(n => n.type === 'TEXT' && !inInst(n, b))) if (t.parent === b || t.layoutSizingHorizontal === 'FILL') { try { t.layoutSizingHorizontal = 'FILL'; t.textAutoResize = 'HEIGHT'; } catch (e) { } }
+  kick(b); return b;
+}
+function overrun(b) { const o = []; if (!b) return o; for (const i of b.findAll(n => n.type === 'INSTANCE' && !inInst(n, b) && n.visible)) { const ib = i.absoluteBoundingBox; if (!ib) continue; if (i.layoutSizingHorizontal === 'FILL' && i.parent === b && Math.abs(i.width - b.width) > 1.5) { o.push(i.name + ' ' + Math.round(i.width) + '/' + Math.round(b.width) + 'w'); continue; } for (const k of i.findAll(x => x.type === 'TEXT' && x.visible)) { const kb = k.absoluteRenderBounds; if (kb && kb.x + kb.width > ib.x + ib.width + 1.5) { o.push(i.name + ' › ' + k.name + ' +' + Math.round(kb.x + kb.width - ib.x - ib.width) + 'w'); break; } } } return o; }
 // ---------- sections & frames ----------
 let SEC = null, CUR = { x: 80, y: 80, rowH: 0, n: 0 }, PREFIX = '', PART = '';
 function getSection(name, part) {
   PREFIX = name.split(' — ')[0]; PART = part || '-';
   let s = page.children.find(n => n.type === 'SECTION' && n.name === name), y0 = 80;
   if (s) {
-    for (const k of [...s.children]) { const p = k.getPluginData('ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
+    for (const k of [...s.children]) { const p = k.getSharedPluginData('udigity.cc', 'ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
     for (const k of s.children) y0 = Math.max(y0, k.y + k.height + 160);
     OUT.updated['section ' + PREFIX] = s.id;
   } else {
@@ -118,7 +134,7 @@ function newRow() { if (CUR.n) { CUR.y += CUR.rowH + 160; CUR.x = 80; CUR.rowH =
 function frame(suffix, mobile, dark) {
   const name = SEC.name + ' — ' + suffix; const w = mobile ? 390 : 1440, h = mobile ? 844 : 900;
   if (CUR.n >= (mobile ? 6 : 4)) newRow();
-  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setPluginData('ccPart', PART);
+  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setSharedPluginData('udigity.cc', 'ccPart', PART);
   f.fills = [paint('surface/page')]; f.setExplicitVariableModeForCollection(semCol, dark ? DARK : LIGHT);
   CUR.x += w + 80; CUR.rowH = Math.max(CUR.rowH, h); CUR.n++;
   OUT.created[PREFIX + ' ' + suffix] = f.id; return f;
@@ -177,7 +193,7 @@ function fitFrame(f) {
 async function annotations(notes, w) {
   newRow();
   const a = AL(PREFIX + ' — Annotations' + (PART !== '-' ? ' (' + PART + ')' : ''), 'VERTICAL', { gap: 12, pad: 24, fill: 'surface/page', stroke: 'border/default', radius: 'xl' });
-  SEC.appendChild(a); a.setPluginData('ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
+  SEC.appendChild(a); a.setSharedPluginData('udigity.cc', 'ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
   a.setExplicitVariableModeForCollection(semCol, LIGHT);
   a.appendChild(await T(PREFIX + ' annotations (designer notes and intended interactions, not product UI)', 'ds/H3', 'text/primary'));
   for (const [type, title, body] of notes) put(a, I('Annotation', { Type: type }, { Title: title, Body: body }, 'Annotation · ' + title));
@@ -206,53 +222,56 @@ async function bg(f, success) {
   await bgRow(b.body, success ? 'Wed 21 Oct · 09:30' : 'Time not set', 'Cedar Home Realty', success ? 'Call back after the open house · Maya Khoury' : 'Client asked for a callback on 16 Oct', success ? null : ['To schedule', true]);
   return c;
 }
-async function drawer(f, title, sub, fields, foot) {
+// N43-7: the drawer body is staged (built detached at the slot's inner width, then moved in), so fields, icons, notices and helper text FILL ~430 px
+async function drawer(f, title, sub, nodes, foot) {
   const sc = I('Overlay/Scrim', { Size: 'Desktop' }, null, 'Overlay/Scrim'); f.appendChild(sc); sc.x = 0; sc.y = 0;
   const dr = I('Drawer', null, { Title: title, Subtitle: sub, 'Show subtitle': true }, 'Drawer · ' + title); f.appendChild(dr); dr.x = 960; dr.y = 0;
-  const body = clearSlot(slotOf(dr, 'Content')), ft = clearSlot(slotOf(dr, 'Footer'));
+  const body = slotOf(dr, 'Content'), ft = clearSlot(slotOf(dr, 'Footer'));
   if (!body || !ft) { W('Drawer slots missing'); return dr; }
-  const inner = AL('Drawer body', 'VERTICAL', { gap: 16 }); body.appendChild(inner); fillW(inner); inner.layoutSizingVertical = 'HUG';
-  await fields(inner);
+  const inner = stage(f, body, 'Drawer body', 16, nodes);
   const row = AL('Drawer actions', 'HORIZONTAL', { gap: 8, align: 'CENTER' }); ft.appendChild(row); fillW(row);
   const sp = AL('Spacer', 'HORIZONTAL', {}); add(row, foot[0], sp, foot[1]); grow(sp);
-  const sb = body.absoluteBoundingBox, ib = inner.absoluteBoundingBox;
-  OUT.fit[PREFIX + ' ' + f.name.slice(SEC.name.length + 3) + ' drawer'] = { bodyFreeHeight: Math.round(sb.y + sb.height - (body.paddingBottom || 0) - (ib.y + ib.height)), innerW: Math.round(inner.width) };
+  const sb = body.absoluteBoundingBox, ib = inner.absoluteBoundingBox, ov = overrun(inner), key = PREFIX + ' ' + f.name.slice(SEC.name.length + 3) + ' drawer';
+  OUT.fit[key] = { bodyFreeHeight: Math.round(sb.y + sb.height - (body.paddingBottom || 0) - (ib.y + ib.height)), innerW: Math.round(inner.width), overrun: ov };
   if (sb.y + sb.height - (body.paddingBottom || 0) < ib.y + ib.height) W(f.name + ': drawer body taller than its slot');
-  reg(PREFIX + ' ' + f.name.slice(SEC.name.length + 3) + ' drawer', dr); return dr;
+  if (ov.length) W(f.name + ': ' + ov.length + ' stale/overrunning layer(s), e.g. ' + ov[0]);
+  reg(key, dr); return dr;
 }
 const dateF = (state, value, err) => I('Input/Date', { Type: 'Date and time', State: state }, { Label: 'Date and time (company timezone)', Value: value, Placeholder: 'DD MMM YYYY · HH:MM', Required: true, 'Show label': true, 'Show helper': true, Helper: 'Must be in the future.', 'Error message': err || 'Choose a time in the future.' }, 'Date and time');
-function respF() { const s = I('Select', { Type: 'Person', State: 'Filled' }, { Label: 'Responsible', Value: 'Maya Khoury', Placeholder: 'Choose person', 'Show label': true, Required: true, 'Show helper': true, Helper: 'Defaults to the assignee: an active Call Center agent or the Owner.' }, 'Responsible'); const av = nested(s, 'Avatar'); if (av) prop(av, { Initials: 'MK' }); return s; }
-async function createFields(b, err) {
-  if (err) put(b, banner('Error', 'Inline', 'Fix 1 field to save', 'The follow-up time is in the past.'));
-  else put(b, banner('Info', 'Inline', 'Clears “Callback to be scheduled”', 'Saving schedules the callback the client asked for on 16 Oct (Needs another call).'));
-  put(b, err ? dateF('Error', 'Tue 20 Oct 2026 · 09:00', 'Choose a time in the future. Now: Tue 20 Oct, 10:32 (company timezone).') : dateF('Filled', 'Wed 21 Oct 2026 · 09:30'));
-  put(b, respF());
-  put(b, I('Input', { Type: 'Text', State: 'Filled' }, { Label: 'Purpose', Value: 'Call back after the open house', 'Show label': true, Required: false, 'Show helper': false, 'Show icon': false }, 'Purpose'));
-  put(b, I('Textarea', { State: 'Filled' }, { Label: 'Note', Value: 'Agent prefers mornings; ask about property listing pages.', 'Show label': true, Required: false, 'Show helper': false, Counter: '56 / 1000' }, 'Note'));
-  put(b, notice('Inline', 'No DEC ID', 'Reminder lead time and escalation are undecided. A reminder failure never changes the follow-up.'));
-  put(b, await T('No contact reservation is needed to schedule outside a call.', 'ds/Caption', 'text/muted', { w: 400 }));
+function respF() { const s = I('Select', { Type: 'Person', State: 'Filled' }, { Label: 'Responsible', Value: 'Maya Khoury', Placeholder: 'Choose person', 'Show label': true, Required: true, 'Show helper': true, Helper: 'Default: the assignee. Active Call Center agent or the Owner.' }, 'Responsible'); const av = nested(s, 'Avatar'); if (av) prop(av, { Initials: 'MK' }); return s; }
+async function createFields(err) {
+  return [
+    err ? banner('Error', 'Inline', 'Fix 1 field to save', 'The follow-up time is in the past.') : banner('Info', 'Inline', 'Clears “Callback to be scheduled”', 'Saving schedules the callback the client asked for on 16 Oct (Needs another call).'),
+    err ? dateF('Error', 'Tue 20 Oct 2026 · 09:00', 'Choose a time in the future. Now: Tue 20 Oct, 10:32 (company timezone).') : dateF('Filled', 'Wed 21 Oct 2026 · 09:30'),
+    respF(),
+    I('Input', { Type: 'Text', State: 'Filled' }, { Label: 'Purpose', Value: 'Call back after the open house', 'Show label': true, Required: false, 'Show helper': false, 'Show icon': false }, 'Purpose'),
+    I('Textarea', { State: 'Filled' }, { Label: 'Note', Value: 'Agent prefers mornings; ask about property listing pages.', 'Show label': true, Required: false, 'Show helper': false, Counter: '56 / 1000' }, 'Note'),
+    notice('Inline', 'No DEC ID', 'Reminder lead time and escalation are undecided. A reminder failure never changes the follow-up.'),
+    await T('No contact reservation is needed to schedule outside a call.', 'ds/Caption', 'text/muted', { w: 400 })];
 }
-async function rescheduleFields(b, conflict) {
+async function rescheduleFields(conflict) {
+  // N43-7: in Save conflict the follow-up is Completed (final), so the stale Date and Reason inputs are replaced by read-only values
   if (conflict) {
-    put(b, banner('Warning', 'Inline', 'This follow-up changed while you were editing', 'It was completed by a call attempt at 10:35 (Maya Khoury, other tab). Completed follow-ups are final. Nothing was overwritten.'));
-    const st = I('State', { Type: 'Save conflict', Size: 'Inline' }, { 'Show action': false }, 'State · Save conflict'); put(b, st);
+    const st = I('State', { Type: 'Save conflict', Size: 'Inline' }, { 'Show action': false }, 'State · Save conflict');
     layer(st, 'Title', 'Status now: Completed · 10:35'); layer(st, 'Body', 'Reload to see the latest. If another call is needed, schedule a new follow-up.');
+    return [banner('Warning', 'Inline', 'This follow-up changed while you were editing', 'A call attempt completed it at 10:35 (Maya Khoury, other tab). Completed is final. Nothing was overwritten.'), st,
+      kv('Status', 'Completed · 10:35 (final)'), kv('Was due', 'Tue 20 Oct 2026 · 10:30'), kv('Your draft', 'Thu 22 Oct 2026 · 11:00')];
   }
-  put(b, kv('Current time', 'Tue 20 Oct 2026 · 10:30'));
-  put(b, dateF('Filled', 'Thu 22 Oct 2026 · 11:00'));
-  put(b, I('Select', { Type: 'Select', State: 'Filled' }, { Label: 'Reason', Value: 'Client asked for another time', Placeholder: 'Choose a reason', 'Show label': true, Required: true, 'Show helper': false }, 'Reason'));
-  put(b, I('Textarea', { State: 'Filled' }, { Label: 'Note', Value: 'Manager called back: owner returns Thursday morning.', 'Show label': true, Required: false, 'Show helper': false, Counter: '51 / 1000' }, 'Note'));
-  put(b, await T('Reschedule history', 'ds/H4', 'text/primary'));
+  const n = [kv('Current time', 'Tue 20 Oct 2026 · 10:30'), dateF('Filled', 'Thu 22 Oct 2026 · 11:00'),
+    I('Select', { Type: 'Select', State: 'Filled' }, { Label: 'Reason', Value: 'Client asked for another time', Placeholder: 'Choose a reason', 'Show label': true, Required: true, 'Show helper': false }, 'Reason'),
+    I('Textarea', { State: 'Filled' }, { Label: 'Note', Value: 'Manager called back: owner returns Thursday morning.', 'Show label': true, Required: false, 'Show helper': false, Counter: '51 / 1000' }, 'Note'),
+    await T('Reschedule history', 'ds/H4', 'text/primary')];
   const TLH = [['Follow-up', 'Scheduled for Tue 20 Oct 10:30 · Maya Khoury', '13 Oct, 15:10', 'Created in the call save (Needs another call).']];
-  for (const [ty, t, tm, bd] of TLH) put(b, I('Timeline/Item', { Type: ty }, { Title: t, Time: tm, Body: bd, 'Show connector': false }, 'History · ' + tm));
-  put(b, await T('Each reschedule adds a history row (previous time, new time, by, at, reason); pending reminders are replaced.', 'ds/Caption', 'text/muted', { w: 400 }));
+  for (const [ty, t, tm, bd] of TLH) n.push(I('Timeline/Item', { Type: ty }, { Title: t, Time: tm, Body: bd, 'Show connector': false }, 'History · ' + tm));
+  n.push(await T('Each reschedule adds a history row (previous time, new time, by, at, reason); pending reminders are replaced.', 'ds/Caption', 'text/muted', { w: 400 }));
+  return n;
 }
 const FOOT = (l) => [button('Secondary', 'Medium', 'Cancel'), button('Primary', 'Medium', l)];
-for (const [s, d] of [['Desktop — Light — Create', false], ['Desktop — Dark — Create', true]]) { const f = frame(s, false, d); await bg(f); await drawer(f, 'Schedule follow-up', 'Cedar Home Realty · Callback to be scheduled', b => createFields(b), FOOT('Save follow-up')); fitFrame(f); }
-{ const f = frame('Desktop — Light — Reschedule'); await bg(f); await drawer(f, 'Reschedule follow-up', 'Olive & Thyme Café · due today 10:30', b => rescheduleFields(b), FOOT('Save new time')); fitFrame(f); }
-{ const f = frame('Desktop — Light — Past time rejected'); await bg(f); await drawer(f, 'Schedule follow-up', 'Cedar Home Realty · Callback to be scheduled', b => createFields(b, true), FOOT('Save follow-up')); fitFrame(f); }
+for (const [s, d] of [['Desktop — Light — Create', false], ['Desktop — Dark — Create', true]]) { const f = frame(s, false, d); await bg(f); await drawer(f, 'Schedule follow-up', 'Cedar Home Realty · Callback to be scheduled', await createFields(), FOOT('Save follow-up')); fitFrame(f); }
+{ const f = frame('Desktop — Light — Reschedule'); await bg(f); await drawer(f, 'Reschedule follow-up', 'Olive & Thyme Café · due today 10:30', await rescheduleFields(), FOOT('Save new time')); fitFrame(f); }
+{ const f = frame('Desktop — Light — Past time rejected'); await bg(f); await drawer(f, 'Schedule follow-up', 'Cedar Home Realty · Callback to be scheduled', await createFields(true), FOOT('Save follow-up')); fitFrame(f); }
 newRow();
-{ const f = frame('Desktop — Light — Save conflict'); await bg(f); await drawer(f, 'Reschedule follow-up', 'Olive & Thyme Café · due today 10:30', b => rescheduleFields(b, true), [button('Secondary', 'Medium', 'Close'), button('Primary', 'Medium', 'Reload', 'refresh')]); fitFrame(f); }
+{ const f = frame('Desktop — Light — Save conflict'); await bg(f); await drawer(f, 'Reschedule follow-up', 'Olive & Thyme Café · due today 10:30', await rescheduleFields(true), [button('Secondary', 'Medium', 'Close'), button('Primary', 'Medium', 'Reload', 'refresh')]); fitFrame(f); }
 {
   const f = frame('Desktop — Light — Success'); await bg(f, true);
   const t = I('Toast', { Tone: 'Success' }, { Title: 'Follow-up scheduled', Body: 'Cedar Home Realty · Wed 21 Oct 09:30. It left Callback to be scheduled.', 'Show body': true }, 'Toast · Scheduled'); f.appendChild(t);
@@ -263,7 +282,7 @@ async function mob(suffix, err) {
   const h = I('Shell/Mobile/Header', { Back: 'True' }, { Title: 'Schedule follow-up', Subtitle: 'Cedar Home Realty', 'Show subtitle': true }, 'Header'); f.appendChild(h); h.x = 0; h.y = 0; h.resize(390, h.height);
   const av = nested(h, 'Avatar'); if (av) prop(av, { Initials: 'MK' });
   const c = AL('Content', 'VERTICAL', { gap: 12, pad: 16, clip: true }); f.appendChild(c); c.x = 0; c.y = 56; c.resize(390, 696); c.primaryAxisSizingMode = 'FIXED'; c.counterAxisSizingMode = 'FIXED';
-  await createFields(c, err);
+  for (const n of await createFields(err)) put(c, n);
   const ft = AL('Sticky footer', 'HORIZONTAL', { gap: 8, pad: [12, 16], align: 'CENTER', fill: 'surface/default' }); topRule(ft, 'border/default'); f.appendChild(ft);
   ft.x = 0; ft.y = 752; ft.resize(390, 92); ft.primaryAxisSizingMode = 'FIXED'; ft.counterAxisSizingMode = 'FIXED';
   const s = button('Primary', 'Large', 'Save follow-up'); add(ft, button('Ghost', 'Large', 'Cancel'), s); fillW(s);

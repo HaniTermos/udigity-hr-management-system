@@ -151,6 +151,8 @@ async function badge(label, tone, size, dot) { return I('Badge/Status', { Tone: 
 async function derived(label, amber) { return I('Chip/Derived', { Tone: amber ? 'Amber' : 'Neutral' }, { Label: label }, 'Derived · ' + label); }
 async function btn(variant, label, size, state, ic, layer) { return I('Button', { Variant: variant, Size: size || 'Medium', State: state || 'Default' }, { Label: label, 'Show icon': !!ic, Icon: ic || 'check' }, layer || label); }
 async function link(label, size, ic) { return I('Link', { Size: size || 'Small', State: 'Default' }, { Label: label, 'Show icon': !!ic, Icon: ic || 'arrow-right' }, 'Link · ' + label); }
+// Fix R40-08: standalone text links get a ≥44 px hit area (layout wrapper with minHeight 44, link centred; the instance itself is never resized).
+async function tapLink(label, size, ic) { const r = row('Hit · ' + label, 0); r.minHeight = 44; add(r, [await link(label, size, ic)]); return r; }
 async function banner(tone, size, title, body, layer) { return I('Banner', { Tone: tone, Size: size || 'Inline' }, { Title: title, Body: body, 'Show title': !!title, 'Show action': false, 'Show close': false }, layer || 'Banner · ' + tone); }
 async function toast(tone, title, body) { return I('Toast', { Tone: tone }, { Title: title, Body: body || ' ', 'Show body': !!body }, 'Toast · ' + title.slice(0, 24)); }
 async function kv(k, v, type) { return I('List/KeyValue', { Type: type || 'Default' }, { Key: k, Value: v }, 'KV · ' + k); }
@@ -462,7 +464,7 @@ const mkFactory = S => async (dev, dark, st, kidsFn) => {
   async function pw(label, state, err, helper) {
     return inp('Password', state, { Label: label, Value: '••••••••••••', Placeholder: 'Enter a new password', Helper: helper || 'Must meet the password rules.', 'Show helper': state !== 'Error', 'Error message': err || 'Passwords don’t match.', 'Show icon': true, Icon: 'lock' }, label);
   }
-  async function back() { const r = row('Back row', 8); add(r, [await link('Back to sign in', 'Small', 'chevron-left')]); return r; }
+  async function back() { const r = row('Back row', 8); add(r, [await tapLink('Back to sign in', 'Small', 'chevron-left')]); return r; }
   async function kids(st) {
     if (!st) return [...await title('Reset your password', 'Enter your work email. If an active account matches, we’ll email you a reset link.'),
       await inp('Text', 'Focus', { Label: 'Email', Value: 'maya.khoury@udigity.example', Placeholder: 'name@udigity.example', 'Show icon': true, Icon: 'mail', 'Error message': 'Enter a valid email address.' }, 'Email'),

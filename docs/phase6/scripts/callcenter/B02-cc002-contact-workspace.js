@@ -1,7 +1,7 @@
-// B02-cc002-contact-workspace.js — Call Center Screen Agent — Phase 6 Batch B — page 43 HiFi — Call Center (96:5)
-// Builds: SCR-CC-002 Contact workspace. Run order B01 → B07 (sections stack in inventory order; a section is positioned only when first created).
-// Spec: docs/phase6/screens/callcenter-spec.md. DS instances + Semantic/Primitive variables only. Idempotent: rebuilds frames inside its own section(s).
-// ---------- Call Center helper library (inlined in every Phase 6 Call Center script; derived from phase5 01-s3-workspace.js) ----------
+// B02-cc002-contact-workspace.js — Call Center agent — Phase 6 B — page 43 (96:5)
+// Builds: SCR-CC-002 Contact workspace. Run order B01 → B07.
+// Spec: docs/phase6/screens/callcenter-spec.md. DS instances + variables only. Idempotent.
+// ---------- Call Center helper library ----------
 const OUT = { created: {}, updated: {}, removed: [], fit: {}, warnings: [] };
 const PAGE_ID = '96:5', SEM_ID = 'VariableCollectionId:40:3', PRIM_ID = 'VariableCollectionId:40:2', LIGHT = '40:1', DARK = '40:2';
 const page = await figma.getNodeByIdAsync(PAGE_ID);
@@ -74,7 +74,7 @@ async function T(chars, style, color, o = {}) {
 function add(p, ...k) { for (const x of k) if (x) p.appendChild(x); return p; }
 function fillW(n) { if (n.type === 'TEXT') n.textAutoResize = 'HEIGHT'; n.layoutSizingHorizontal = 'FILL'; return n; }
 function fillH(n) { n.layoutSizingVertical = 'FILL'; return n; }
-function grow(n) { n.layoutGrow = 1; return n; }
+function grow(n) { try { if (n.name === 'Spacer' && 'children' in n && !n.children.length) { n.resize(n.width, 1); n.layoutSizingVertical = 'FIXED'; } n.layoutGrow = 1; } catch (e) { W('grow ' + n.name + ': ' + e.message); } return n; }
 function fixedCol(n, w) { n.resize(w, 100); n.layoutSizingHorizontal = 'FIXED'; return n; }
 function put(p, n) { p.appendChild(n); fillW(n); return n; }
 function reg(k, n) { if (n) OUT.created[k] = n.id; return n; }
@@ -97,6 +97,22 @@ async function slotCard(parent, compName, o) {
   else W('no SLOT in ' + o.name);
   return { card: c, body: c };
 }
+function hit44(n) { const h = AL('Hit area 44 · ' + n.name, 'HORIZONTAL', { align: 'CENTER' }); h.appendChild(n); h.resize(Math.max(44, n.width), 44); h.layoutSizingVertical = 'FIXED'; h.layoutSizingHorizontal = 'HUG'; return h; }
+function hasP(i, k) { return Object.keys(i.componentProperties).some(x => x.split('#')[0] === k); }
+// stage(): slot content built detached at slot width, then moved in.
+function inInst(n, root) { for (let a = n.parent; a && a !== root; a = a.parent) if (a.type === 'INSTANCE') return true; return false; }
+function kick(b) { if (!b || b.removed) return; try { const w = b.width, fill = b.layoutSizingHorizontal === 'FILL'; b.layoutSizingHorizontal = 'FIXED'; b.resize(w - 1, b.height); if (fill) b.layoutSizingHorizontal = 'FILL'; else b.resize(w, b.height); b.layoutSizingVertical = 'HUG'; } catch (e) { W('relayout ' + b.name + ': ' + e.message); } }
+function stage(f, s, name, gap, nodes, hug) {
+  if (!s) { W('no Content slot in ' + f.name); return null; }
+  const w = Math.max(200, Math.round(s.width - (s.paddingLeft || 0) - (s.paddingRight || 0))); for (const k of [...s.children]) k.remove(); try { s.itemSpacing = 0; } catch (e) { }
+  const b = AL(name, 'VERTICAL', { gap }); f.appendChild(b); b.resize(w, 10); b.counterAxisSizingMode = 'FIXED'; b.primaryAxisSizingMode = 'AUTO';
+  const H = new Set((hug || []).map(n => n.id));
+  for (const n of nodes) if (n) { b.appendChild(n); if (!H.has(n.id)) fillW(n); }
+  s.appendChild(b); try { b.layoutSizingHorizontal = 'FILL'; } catch (e) { b.layoutSizingHorizontal = 'FIXED'; } b.layoutSizingVertical = 'HUG';
+  for (const n of b.children) if (!H.has(n.id)) { try { n.layoutSizingHorizontal = 'FIXED'; n.layoutSizingHorizontal = 'FILL'; } catch (e) { } }
+  for (const t of b.findAll(n => n.type === 'TEXT' && !inInst(n, b))) if (t.parent === b || t.layoutSizingHorizontal === 'FILL') { try { t.layoutSizingHorizontal = 'FILL'; t.textAutoResize = 'HEIGHT'; } catch (e) { } }
+  kick(b); return b;
+}
 function relBottom(n, f) { return n.absoluteTransform[1][2] - f.absoluteTransform[1][2] + n.height; }
 // ---------- sections & frames ----------
 let SEC = null, CUR = { x: 80, y: 80, rowH: 0, n: 0 }, PREFIX = '', PART = '';
@@ -104,7 +120,7 @@ function getSection(name, part) {
   PREFIX = name.split(' — ')[0]; PART = part || '-';
   let s = page.children.find(n => n.type === 'SECTION' && n.name === name), y0 = 80;
   if (s) {
-    for (const k of [...s.children]) { const p = k.getPluginData('ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
+    for (const k of [...s.children]) { const p = k.getSharedPluginData('udigity.cc', 'ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
     for (const k of s.children) y0 = Math.max(y0, k.y + k.height + 160);
     OUT.updated['section ' + PREFIX] = s.id;
   } else {
@@ -119,7 +135,7 @@ function newRow() { if (CUR.n) { CUR.y += CUR.rowH + 160; CUR.x = 80; CUR.rowH =
 function frame(suffix, mobile, dark) {
   const name = SEC.name + ' — ' + suffix; const w = mobile ? 390 : 1440, h = mobile ? 844 : 900;
   if (CUR.n >= (mobile ? 6 : 4)) newRow();
-  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setPluginData('ccPart', PART);
+  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setSharedPluginData('udigity.cc', 'ccPart', PART);
   f.fills = [paint('surface/page')]; f.setExplicitVariableModeForCollection(semCol, dark ? DARK : LIGHT);
   CUR.x += w + 80; CUR.rowH = Math.max(CUR.rowH, h); CUR.n++;
   OUT.created[PREFIX + ' ' + suffix] = f.id; return f;
@@ -209,7 +225,7 @@ function fitFrame(f) {
 async function annotations(notes, w) {
   newRow();
   const a = AL(PREFIX + ' — Annotations' + (PART !== '-' ? ' (' + PART + ')' : ''), 'VERTICAL', { gap: 12, pad: 24, fill: 'surface/page', stroke: 'border/default', radius: 'xl' });
-  SEC.appendChild(a); a.setPluginData('ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
+  SEC.appendChild(a); a.setSharedPluginData('udigity.cc', 'ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
   a.setExplicitVariableModeForCollection(semCol, LIGHT);
   a.appendChild(await T(PREFIX + ' annotations (designer notes and intended interactions, not product UI)', 'ds/H3', 'text/primary'));
   for (const [type, title, body] of notes) put(a, I('Annotation', { Type: type }, { Title: title, Body: body }, 'Annotation · ' + title));
@@ -218,26 +234,27 @@ async function annotations(notes, w) {
 function finishSection() { let mx = 0, my = 0; for (const c of SEC.children) { mx = Math.max(mx, c.x + c.width); my = Math.max(my, c.y + c.height); } SEC.resizeWithoutConstraints(mx + 80, my + 80); OUT.fit['section ' + PREFIX] = [Math.round(SEC.x), Math.round(SEC.y), Math.round(SEC.width), Math.round(SEC.height)]; }
 // ---------- end helper library ----------
 
-// ---------- workspace module (queue column + business detail column + contact panel; approved S3 layout) ----------
+// ---------- workspace module (approved S3 layout) ----------
 const QB = [
   { label: 'Callbacks due today', count: '2', exp: true, rows: [
     { name: 'Olive & Thyme Café', cat: 'Café', out: 'Needs another call', meta: 'Due 10:30 · last attempt 13 Oct 15:10' },
-    { name: 'Nova Dental Clinic', cat: 'Clinic', out: 'Needs another call', meta: 'Due 14:00 · last attempt 16 Oct 11:45' }] },
+    { name: 'Nova Dental Clinic', cat: 'Clinic', out: 'Needs another call', meta: 'Due 14:00 · held by Omar Nassar since 10:24', resv: 'Reserved' }] },
   { label: 'Overdue follow-ups', count: '1', exp: true, rows: [
     { name: 'Sunrise Bakery', cat: 'Shop', out: 'On hold', meta: 'Was due 19 Oct 16:00 · last attempt 15 Oct', flag: ['Danger', 'Overdue'] }] },
   { label: 'New assignments', count: '2', exp: false, rows: [] },
   { label: 'Callback to be scheduled', count: '1', exp: true, rows: [
     { name: 'Cedar Home Realty', cat: 'Real estate', out: 'Needs another call', meta: 'Time not set yet · last attempt 16 Oct' }] },
   { label: 'Data correction requested', count: '1', exp: true, rows: [
-    { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30', flag: ['Warning', 'Correction requested 14 Oct'] }] },
+    { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30', flag: ['Warning', 'Correction submitted · 14 Oct'] }] },
   { label: 'Requires contact', count: '1', exp: false, rows: [] },
 ];
 function qRow(r, sel) {
-  const row = I('Queue/Row', { State: sel ? 'Selected' : 'Default' }, { Name: r.name, Meta: r.cat + ' · ' + r.meta, 'Show flag': !!r.flag }, 'Row · ' + r.name);
+  const row = I('Queue/Row', { State: sel ? 'Selected' : 'Default' }, { Name: r.name, Meta: r.cat + ' · ' + r.meta, 'Show flag': !!(r.flag || r.resv) }, 'Row · ' + r.name);
   const cat = nested(row, 'Category'); if (cat) cat.visible = false;
   for (const tn of ['Name', 'Meta']) { const t = row.findAllWithCriteria({ types: ['TEXT'] }).find(n => n.name === tn); if (t) { try { t.maxLines = 2; } catch (e) { } } }
   prop(nested(row, 'Outcome'), { Outcome: r.out });
   if (r.flag) prop(nested(row, 'Flag'), { Tone: r.flag[0], Label: r.flag[1] });
+  if (r.resv) { const fl = nested(row, 'Flag'); try { fl.swapComponent(variantOf('Chip/Derived', { Tone: 'Amber' })); prop(fl, { Label: r.resv }); } catch (e) { W('Reserved flag: ' + e.message); if (fl) prop(fl, { Tone: 'Warning', Label: r.resv }); } } // N43-11
   return row;
 }
 function bucketHeader(b) { const bh = I('Queue/BucketHeader', { Expanded: b.exp ? 'True' : 'False' }, { Label: b.label }, 'Bucket · ' + b.label); prop(nested(bh, 'Count'), { Count: b.count }); return bh; }
@@ -276,7 +293,7 @@ const TL_OLIVE = [
 async function dColumn(parent, o) {
   const b = BIZ[o.biz || 'olive'];
   const col = AL('Business detail column', 'VERTICAL', { gap: 8 }); parent.appendChild(col); fixedCol(col, 400); fillH(col);
-  const D = AL('Detail scroll area', 'VERTICAL', { gap: 12, clip: true }); put(col, D); fillH(D);
+  const D = AL('Detail scroll area (scrolls)', 'VERTICAL', { gap: 12, clip: true }); put(col, D); fillH(D);
   if (o.top) await o.top(D);
   const biz = await slotCard(D, 'Card/Section', { name: 'Business · ' + b.name, title: b.name, subtitle: o.bizSub || (b.cat + ' · Assigned to you'), action: { label: 'Request correction', icon: 'flag' } });
   for (const [num, lab] of b.phones) {
@@ -312,7 +329,7 @@ async function panelTitle(pb, title, sub, actionLabel) {
   ph.appendChild(tt); if (actionLabel) ph.appendChild(button('Ghost', 'Small', actionLabel)); put(pb, ph); grow(tt); return ph;
 }
 async function workspace(f, o) {
-  const c = await deskShell(f, { user: o.user, active: o.active || 'Calling Queue' });
+  const c = await deskShell(f, { user: o.user, active: o.active || 'Calling Queue', qCount: o.navQ, fCount: o.navF });
   await pageHeader(c, { crumb: o.crumb || ['Calling Queue', BIZ[o.biz || 'olive'].name], title: o.title || 'Contact workspace', actions: o.actions || [button('Secondary', 'Medium', 'Follow-ups & Calendar', 'calendar'), button('Ghost', 'Medium', 'Do-not-call list (1)', 'ban')] });
   const work = AL('Workspace', 'HORIZONTAL', { gap: 16 }); put(c, work); fillH(work); work.counterAxisAlignItems = 'MIN';
   const Q = o.noQueue ? null : await qColumn(work, { sel: o.sel === undefined ? BIZ[o.biz || 'olive'].name : o.sel, key: o.key, buckets: o.buckets, title: o.qTitle, count: o.qCount });
@@ -323,10 +340,10 @@ async function workspace(f, o) {
 const OUTCOMES = [['On hold — no answer', 'status/warning/solid'], ['Needs another call — call later', 'status/info/solid'], ['Rejected — do not call', 'status/danger/solid'], ['Accepted — creates opportunity', 'status/success/solid']];
 // ---------- end workspace module ----------
 
-// ================= SCR-CC-002 Contact workspace (read mode, before / between contacts) =================
+// ===== SCR-CC-002 Contact workspace (read mode) =====
 getSection('SCR-CC-002 — Contact workspace');
 const TL_HARBOR = [
-  { type: 'Status change', title: 'Outcome set to Rejected · Maya Khoury', time: '15 Oct, 16:22', body: 'Reason: Not interested — asked not to be called again.' },
+  { type: 'Status change', title: 'Outcome set to Rejected', time: '15 Oct, 16:22', body: 'Reason: Not interested — asked not to be called again.' },
   { type: 'Call attempt', title: 'Call attempt · Maya Khoury', time: '15 Oct, 16:20', body: 'Owner said they handle bookings by phone only. Asked us not to call again.', out: 'Rejected' },
   { type: 'Call attempt', title: 'Call attempt · Maya Khoury', time: '12 Oct, 10:05', body: 'No answer at the workshop line.', out: 'On hold' },
 ];
@@ -337,7 +354,7 @@ async function readPanel(pb, pf, o) {
   if (o.top) await o.top(pb);
   if (o.next !== false) {
     pb.appendChild(await T('Next follow-up', 'ds/Label', 'text/primary'));
-    const li = I('List/Item', { State: 'Default' }, { Title: 'Follow-up due today · 10:30', Meta: 'Owner back from supplier visit — discuss menu website', Icon: 'calendar', 'Show leading': true, 'Show badge': true, 'Show chevron': false }, 'Next follow-up'); put(pb, li);
+    const li = I('List/Item', { State: 'Default' }, { Title: 'Due today · 10:30', Meta: 'Discuss menu website', Icon: 'calendar', 'Show leading': true, 'Show badge': true, 'Show chevron': false }, 'Next follow-up'); put(pb, li);
     const b = nested(li, 'Badge'); if (b) prop(b, { Tone: 'Warning', Label: 'Due now', 'Show dot': false });
   }
   pb.appendChild(await T('Latest note', 'ds/Label', 'text/primary'));
@@ -358,14 +375,14 @@ async function desk(suffix, dark, o = {}) {
 await desk('Desktop — Light', false, { bizSub: 'Café · Assigned to you since 6 Oct' });
 await desk('Desktop — Dark', true, { bizSub: 'Café · Assigned to you since 6 Oct' });
 await desk('Desktop — Light — Start Contact disabled (Rejected)', false, {
-  biz: 'harbor', sel: null, active: 'Do-not-call List', crumb: ['Do-not-call List', 'Harbor Auto Care'], history: TL_HARBOR, histSub: '2 attempts · 1 outcome change', bizSub: 'Services · Assigned to you · Do not call',
+  biz: 'harbor', sel: null, active: 'Do-not-call List', crumb: ['Do-not-call List', 'Harbor Auto Care'], history: TL_HARBOR, histSub: '2 attempts · 1 outcome change', bizSub: 'Services · Do not call',
   top: async D => put(D, banner('Error', 'Inline', 'Do not call — Rejected', 'Rejected on 15 Oct by Maya Khoury. Start Contact and new follow-ups are blocked. Request correction stays available.')),
   panel: { out: 'Rejected', disabled: true, next: false, sub: 'Do not call · view only', noteTime: '15 Oct, 16:20', note: 'Asked not to be called again. Handles bookings by phone only.',
     notices: [['DEC-016', 'Who may reopen a Rejected business, and to which outcome, is undecided.'], ['D4', 'What happens to open follow-ups when a business is Rejected is undecided.']],
     footCap: 'Start Contact is disabled: this business is on the do-not-call list (WF-REJECT-001).' },
 });
 await desk('Desktop — Light — Start Contact disabled (not assignee)', false, {
-  user: 'omar', noQueue: true, crumb: ['Search results', 'Olive & Thyme Café'], bizSub: 'Café · Assigned to Maya Khoury',
+  user: 'omar', navQ: '5', navF: '2', noQueue: true, crumb: ['Search results', 'Olive & Thyme Café'], bizSub: 'Café · Assigned to Maya Khoury',
   actions: [button('Secondary', 'Medium', 'Follow-ups & Calendar', 'calendar')],
   panel: { disabled: true, sub: 'Read only for you',
     top: async pb => put(pb, banner('Info', 'Inline', 'Assigned to Maya Khoury', 'Only the assigned agent or the Owner can start a contact on this business.')),
@@ -388,17 +405,33 @@ async function mob(suffix, dark, rej) {
   const c = await mobShell(f, { back: true, title: b.name, subtitle: rej ? 'Services · Rejected' : 'Café · Needs another call', tab: 2, h: 632 });
   const view = AL('Detail (scrolls)', 'VERTICAL', { gap: 12 }); put(c, view); fillH(view); view.clipsContent = true; view.name = 'Detail viewport';
   if (rej) put(view, banner('Error', 'Inline', 'Do not call — Rejected', 'Rejected 15 Oct by Maya Khoury. Start Contact and follow-ups are blocked.'));
-  const card = await slotCard(view, 'Card/Section', { name: 'Business card', title: 'Contact details', subtitle: rej ? 'Read-only' : 'Read-only · call outside the app', action: { label: 'Request correction', icon: 'flag' } });
-  for (const [num, lab] of b.phones) { const ph = I('Row/Phone', null, { Number: num, 'Show copy': true }, 'Phone · ' + lab); prop(nested(ph, 'Label tag'), { Label: lab }); card.body.appendChild(ph); try { ph.resize(ph.width, 44); ph.clipsContent = true; } catch (e) { } fillW(ph); try { ph.layoutSizingVertical = 'FIXED'; } catch (e) { } }
-  put(card.body, kv('Website', b.web));
-  if (!rej) { const li = I('List/Item', { State: 'Default' }, { Title: 'Follow-up due today · 10:30', Meta: 'Owner back from supplier visit', Icon: 'calendar', 'Show leading': true, 'Show badge': true, 'Show chevron': false }, 'Next follow-up'); put(view, li); const bd = nested(li, 'Badge'); if (bd) prop(bd, { Tone: 'Warning', Label: 'Due now', 'Show dot': false }); }
+  const card = await slotCard(view, 'Card/Section', { name: 'Business card', title: 'Contact details', subtitle: 'Read-only', action: { label: 'Request correction', icon: 'flag' } });
+  // CC-1: DS-13e touch action.
+  if (hasP(card.card, 'Show action (touch)')) { prop(card.card, { 'Show action': false, 'Show action (touch)': true }); const at = nested(card.card, 'Action touch'); if (at) prop(at, { Label: 'Request correction', 'Show icon': true, Icon: 'flag' }); else W('Action touch missing: ' + suffix); }
+  else W('DS-13e not run: Card/Section action < 44 px on ' + suffix);
+  // N43-1 (2nd): one ~56 px line per number; extra numbers behind a 44 px "+n more" row.
+  const rows = [], more = b.phones.length - 1;
+  for (const [num, lab] of b.phones.slice(0, 1)) {
+    const ph = AL('Phone · ' + lab, 'HORIZONTAL', { gap: 8, pad: [6, 0], align: 'CENTER' }), lt = await T(lab, 'ds/Caption', 'text/muted', { name: 'Label tag' });
+    add(ph, await T(num, 'ds/Label', 'text/primary', { name: 'Number' }), lt, hit44(button('Ghost', 'Small', 'Copy', 'copy'))); grow(lt); rows.push(ph);
+  }
+  const mr = more > 0 ? hit44(link(`+${more} more number${more > 1 ? 's' : ''}`, 'phone')) : null; if (mr) { mr.name = 'More numbers'; rows.push(mr); reg(PREFIX + ' ' + suffix + ' more numbers', mr); }
+  stage(f, card.body, 'Contact body', 4, rows, mr ? [mr] : []);
+  OUT.fit[PREFIX + ' ' + suffix + ' phone rows'] = rows.map(p => Math.round(p.height)); for (const p of rows) if (p.height > 60) W(`${suffix}: ${p.name} is ${Math.round(p.height)} px tall (expects ~56)`);
+  if (!rej) { const li = I('List/Item', { State: 'Default' }, { Title: 'Due today · 10:30', Meta: 'Discuss menu website', Icon: 'calendar', 'Show leading': true, 'Show badge': true, 'Show chevron': false }, 'Next follow-up'); put(view, li); const bd = nested(li, 'Badge'); if (bd) prop(bd, { Tone: 'Warning', Label: 'Due now', 'Show dot': false }); }
   const t = (rej ? TL_HARBOR : TL_OLIVE)[1];
+  put(view, await T('History & notes', 'ds/Label', 'text/primary', { name: 'History label' }));
   const it = I('Timeline/Item', { Type: t.type }, { Title: t.title, Time: t.time, Body: t.body, 'Show connector': false }, 'Latest attempt'); prop(nested(it, 'Outcome'), { Outcome: t.out }); put(view, it);
+  const hl = hit44(link('Open full history & notes (3)', 'list')); hl.name = 'History link'; view.appendChild(hl); reg(PREFIX + ' ' + suffix + ' history link', hl); // R43-04
+  put(view, kv('Website', b.web)); // N43-1: secondary content below History & notes
+  put(view, I('ListItem/Note', { Accent: 'Neutral' }, { Author: 'Maya Khoury', Time: rej ? '15 Oct, 16:20' : '13 Oct, 15:10', Body: rej ? 'Asked not to be called again. Handles bookings by phone only.' : 'Owner decides; call back 20 Oct morning. Interested in an online menu.' }, 'Latest note'));
   const pc = AL('Policy row', 'HORIZONTAL', { gap: 6 }); put(view, pc);
   if (rej) add(pc, notice('Chip', 'DEC-016', null, 'Reopen pending'), notice('Chip', 'D4', null, 'Follow-ups pending')); else pc.appendChild(notice('Chip', 'DEC-004', null, 'Reservation rules pending'));
   put(view, I('Row/Social', { Metrics: 'Recorded' }, { Platform: 'Instagram', Handle: b.handle }, 'Social · Instagram'));
   const cue = await cueStrip(c, c.children.length, '↓ More below', 'Scroll cue · mobile detail', true);
-  clipTo(PREFIX + ' ' + suffix + ' detail', view, cue, k => ({ 'Next follow-up': 'Next follow-up', 'Latest attempt': 'Latest attempt', 'Policy row': 'Policy labels', 'Social · Instagram': 'Social accounts' })[k.name] || null);
+  clipTo(PREFIX + ' ' + suffix + ' detail', view, cue, k => ({ 'Next follow-up': 'Next follow-up', 'History label': 'History & notes', 'Latest attempt': 'Latest attempt', 'History link': 'Full history link', 'KV · Website': 'Website', 'Latest note': 'Latest note', 'Policy row': 'Policy labels', 'Social · Instagram': 'Social accounts' })[k.name] || null);
+  if (!OUT.fit[PREFIX + ' ' + suffix + ' detail'].hiddenBelow.length) cue.cue.visible = false;
+  for (const k of ['Latest attempt', 'Full history link']) if (OUT.fit[PREFIX + ' ' + suffix + ' detail'].hiddenBelow.includes(k)) W(`${suffix}: ${k} below the fold (N43-1/R43-04)`);
   const ft = AL('Sticky footer', 'VERTICAL', { gap: 6, pad: [12, 16], fill: 'surface/default' }); topRule(ft, 'border/default'); f.appendChild(ft);
   ft.x = 0; ft.y = 56 + 632; ft.resize(390, 92); ft.primaryAxisSizingMode = 'FIXED'; ft.counterAxisSizingMode = 'FIXED';
   put(ft, button('Primary', 'Large', 'Start Contact', 'phone', rej ? 'Disabled' : 'Default'));
@@ -410,11 +443,11 @@ await mob('Mobile — Light', false, false);
 await mob('Mobile — Dark', true, false);
 await mob('Mobile — Light — Rejected', false, true);
 await annotations([
-  ['Interaction', 'Start Contact', 'Acquires the contact reservation (WF-CALL-002) and opens SCR-CC-003 in "Reserved by you" mode. A collision opens SCR-CC-005 "Reserved by another agent". Re-entry by the same user (second tab) returns the existing reservation.'],
-  ['Note', 'Read-only master data', 'Call Center never edits business data. "Request correction" opens SCR-SHR-009 (page 42) and the request goes to Data Entry (WF-BIZ-002). Unknown social metrics show "Not recorded".'],
-  ['Note', 'Disabled Start Contact', 'Rejected: do-not-call state everywhere (WF-REJECT-001); reopening DEC-016 pending; follow-up handling D4 pending. Not assignee: read view with the assignee named; acquire permission is DEC-004 (proposed).'],
-  ['Note', 'Hidden by policy', 'Opened through a stale link: no business data, name or counts are shown (DEC-001/002 pending).'],
-  ['Interaction', 'Mobile', 'Start Contact sits in a sticky footer (Large, 48 px). Phone rows are 44 px; copy the number and call outside the app.'],
+  ['Interaction', 'Start Contact', 'Acquires the reservation (WF-CALL-002) and opens SCR-CC-003 "Reserved by you". A collision opens SCR-CC-005; a row held by another agent shows the derived amber "Reserved" flag (O-2). A second tab of the same user returns the existing reservation.'],
+  ['Note', 'Read-only master data', 'Call Center never edits business data. "Request correction" opens SCR-SHR-009 (page 42, 175:10802) → Data Entry (WF-BIZ-002). Unknown social metrics: "Not recorded".'],
+  ['Note', 'Disabled Start Contact', 'Rejected = do not call (WF-REJECT-001); reopening DEC-016, follow-ups D4 pending. Not assignee: read view naming the assignee; acquire permission DEC-004 (proposed).'],
+  ['Note', 'Hidden by policy', 'Stale link: no business data, name or counts (DEC-001/002 pending). Canonical hidden state: X-3 frame 113:992.'],
+  ['Interaction', 'Mobile', 'Sticky Start Contact (Large, 48 px); copy the number and call outside the app. "Open full history & notes" (44 px) = the desktop Call history card. Header "Request correction" uses DS-13e (44 px, CC-1). First number is one 56 px line; others behind "+n more numbers". History & notes sit above the footer.'],
 ]);
 finishSection();
 return OUT;

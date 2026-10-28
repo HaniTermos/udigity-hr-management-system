@@ -66,7 +66,9 @@ function nested(root, name) { return root.findOne(n => n.type === 'INSTANCE' && 
 function layerText(root, name, txt, quiet) { const t = root.findOne(n => n.type === 'TEXT' && n.name === name); if (!t) { if (!quiet) warn(`no text layer ${name} in ${root.name}`); return; } try { t.characters = txt; } catch (e) { warn(`text ${name}: ${e.message}`); } }
 function slotOf(i, name) { const s = i.findAll(n => n.type === 'SLOT'); return s.find(x => x.name === name) || s[0] || null; }
 function clearSlot(s) { if (!s) return; for (const ch of [...s.children]) { try { ch.remove(); } catch (e) { ch.visible = false; } } }
-function fillSlot(i, nodes, name, gap) { const s = slotOf(i, name || 'Content'); if (!s) { warn('no slot in ' + i.name); return null; } clearSlot(s); if (gap != null) num(s, 'itemSpacing', gap); for (const n of nodes) if (n) put(s, n, 'FILL'); return s; }
+function fillSlot(i, nodes, name, gap) { const s = slotOf(i, name || 'Content'); if (!s) { warn('no slot in ' + i.name); return null; } clearSlot(s); if (gap != null) num(s, 'itemSpacing', gap); for (const n of nodes) if (n) put(s, n, hugK(n)); return s; }
+// M-6: badges, chips and policy chips HUG inside slots; everything else FILL
+function hugK(n) { return n.type === 'INSTANCE' && (/^(Badge|Badge\/Flag|Chip\/Derived) · /.test(n.name) || (n.name.startsWith('Policy · ') && n.variantProperties && n.variantProperties.Size === 'Chip')) ? 'HUG' : 'FILL'; }
 // ---- DS builders (every visible text set explicitly)
 async function badge(tone, label, size, dot) { const b = await inst('Badge', { Tone: tone, Size: size || 'Small' }, 'Badge · ' + label); setP(b, { Label: label, 'Show dot': dot !== false }); return b; }
 async function chip(tone, label) { const c = await inst('Chip', { Tone: tone }, 'Chip/Derived · ' + label); setP(c, { Label: label }); return c; }
@@ -121,7 +123,7 @@ async function desk(S, name, who, nav, search) {
   if (GS['ds/Grid/Desktop content 12-col']) await c.setGridStyleIdAsync(GS['ds/Grid/Desktop content 12-col'].id);
   rec(name, f); return { f, c };
 }
-const MTABS = [['My Day', 'clock'], ['Tasks', 'board'], ['Meetings', 'calendar'], ['More', 'menu']];
+const MTABS = [['My Day', 'clock'], ['Projects', 'board'], ['Meetings', 'calendar'], ['More', 'menu']];
 async function mob(S, name, o) {
   const f = figma.createFrame(); f.name = name; S.s.appendChild(f); f.resize(390, 844); f.x = S.X; S.X += 510; f.y = 200; f.fills = [P('surface/page')]; f.clipsContent = true;
   f.setExplicitVariableModeForCollection(SEMC, '40:1');
@@ -138,29 +140,24 @@ async function mob(S, name, o) {
 function dark(S, f, name) { const d = f.clone(); d.name = name; S.s.appendChild(d); d.x = S.X; S.X += f.width + 120; d.y = 200; d.setExplicitVariableModeForCollection(SEMC, '40:2'); rec(name, d); return d; }
 function cloneF(S, f, name) { const d = f.clone(); d.name = name; S.s.appendChild(d); d.x = S.X; S.X += f.width + 120; d.y = 200; d.setExplicitVariableModeForCollection(SEMC, '40:1'); rec(name, d); return d; }
 async function scrim(f, mobile) { const s = await inst('Scrim', { Size: mobile ? 'Mobile' : 'Desktop' }, 'Overlay/Scrim'); f.appendChild(s); s.x = 0; s.y = 0; return s; }
-async function drawer(f, title, sub, nodes, footer) {
-  await scrim(f); const dr = await inst('Drawer', null, 'Drawer · ' + title); f.appendChild(dr); dr.x = 960; dr.y = 0;
-  setP(dr, { Title: title, Subtitle: sub || ' ', 'Show subtitle': !!sub });
-  const bs = slotOf(dr, 'Content'); clearSlot(bs); num(bs, 'itemSpacing', 0);
-  const body = AL('Drawer body', 'VERTICAL', { gap: 16 }); bs.appendChild(body);
-  try { body.layoutSizingHorizontal = 'FILL'; } catch (e) { body.resize(Math.max(1, bs.width - (bs.paddingLeft || 0) - (bs.paddingRight || 0)), 10); body.layoutSizingHorizontal = 'FIXED'; } body.layoutSizingVertical = 'HUG';
-  for (const n of nodes) if (n) put(body, n, 'FILL');
-  const fs = dr.findAll(n => n.type === 'SLOT').find(s => s.name === 'Footer');
-  if (fs) { clearSlot(fs); const fr = AL('Drawer actions', 'HORIZONTAL', { gap: 8, align: 'CENTER' }); fs.appendChild(fr); try { fr.layoutSizingHorizontal = 'FILL'; } catch (e) { fr.resize(Math.max(1, fs.width - 48), 40); } fr.layoutSizingVertical = 'HUG'; for (const b of footer) { if (b === 'spacer') spacer(fr); else fr.appendChild(b); } } else warn('drawer footer slot not found');
-  meta(f).drawer = { dr, bs, body }; return dr;
+const _META = {}; function meta(f) { return _META[f.id] || (_META[f.id] = {}); }
+function relayout(f) { for (const i of f.findAll(n => n.type === 'INSTANCE' && n.name.startsWith('Field · '))) { try { if (i.layoutSizingHorizontal === 'FILL') { i.layoutSizingHorizontal = 'FIXED'; i.layoutSizingHorizontal = 'FILL'; } } catch (e) { } } const M = meta(f); kick(M.drawer && M.drawer.body); kick(M.dbody); }
+// N44-1/2: drawer(), dialog() and stage() are omitted here (no overlays in C06; C06b draws the dialogs). See C06b.
+function kick(b) { if (!b || b.removed) return; try { const w = b.width, fill = b.layoutSizingHorizontal === 'FILL'; b.layoutSizingHorizontal = 'FIXED'; b.resize(w - 1, b.height); if (fill) b.layoutSizingHorizontal = 'FILL'; else b.resize(w, b.height); b.layoutSizingVertical = 'HUG'; } catch (e) { warn('relayout ' + b.name + ': ' + e.message); } }
+// fit: FILL layers inside slot instances that kept an old width, or that render past their instance box
+function stale(b) {
+  const o = []; if (!b || b.removed) return o; const inner = p => p.width - (p.paddingLeft || 0) - (p.paddingRight || 0);
+  for (const i of b.findAll(n => n.type === 'INSTANCE' && !lockedIn(n, b) && shown(n, b))) {
+    const ib = i.absoluteBoundingBox; if (!ib) continue; let m = null;
+    for (const k of i.findAll(x => shown(x, i))) {
+      const p = k.parent; if (p && p.layoutMode === 'VERTICAL' && k.layoutSizingHorizontal === 'FILL' && Math.abs(k.width - inner(p)) > 1.5) { m = k.name + ' ' + Math.round(k.width) + '/' + Math.round(inner(p)); break; }
+      const kb = k.absoluteRenderBounds; if (kb && kb.x + kb.width > ib.x + ib.width + 1.5) { m = k.name + ' +' + Math.round(kb.x + kb.width - ib.x - ib.width) + 'w'; break; }
+    }
+    if (m) o.push(i.name + ' › ' + m);
+  }
+  return o;
 }
-async function dialog(f, title, desc, nodes, sec, pri, o) {
-  o = o || {}; await scrim(f, o.mobile); const d = await inst('Dialog', null, 'Dialog · ' + title); f.appendChild(d);
-  setP(d, { Title: title, Description: desc || ' ', 'Show description': !!desc, 'Show footer': !!(sec || pri), 'Show close': true });
-  if (o.w) d.resize(o.w, d.height);
-  fillSlot(d, nodes, 'Content', 12);
-  const sb = nested(d, 'Secondary action'), pb = nested(d, 'Primary action');
-  if (sb) { if (sec) setP(sb, { Label: sec, 'Show icon': false }); else sb.visible = false; }
-  if (pb) { if (pri) { setP(pb, { Label: pri, 'Show icon': false }); if (o.destructive) setP(pb, { Variant: 'Destructive' }); if (o.disabled) setP(pb, { State: 'Disabled' }); } else pb.visible = false; }
-  const W = o.mobile ? 390 : 1440, H = o.mobile ? 844 : 900; d.x = Math.round((W - d.width) / 2); d.y = Math.max(o.mobile ? 16 : 40, Math.round((H - d.height) / 2));
-  meta(f).dialog = d; return d;
-}
-function relayout(f) { for (const i of f.findAll(n => n.type === 'INSTANCE' && n.name.startsWith('Field · '))) { try { if (i.layoutSizingHorizontal === 'FILL') { i.layoutSizingHorizontal = 'FIXED'; i.layoutSizingHorizontal = 'FILL'; } } catch (e) { } } }
+function lockedIn(p, root) { for (let a = p.parent; a && a !== root; a = a.parent) if (a.type === 'INSTANCE') return true; return false; } // D-5: p sits inside another instance, so scripts cannot resize it
 function shown(n, root) { for (let p = n; p && p !== root; p = p.parent) if (p.visible === false) return false; return true; }
 function fit(f, o) {
   o = o || {}; relayout(f); const r = { size: [Math.round(f.width), Math.round(f.height)] }, over = [];
@@ -171,12 +168,13 @@ function fit(f, o) {
     const pb = p.absoluteBoundingBox, b = n.absoluteBoundingBox; if (!pb || !b || b.width < 1) continue;
     const dx = b.x + b.width - (pb.x + pb.width - (p.paddingRight || 0)); if (dx > 1.5) over.push(`${n.name} ⊄ ${p.name} +${Math.round(dx)}w`);
     const fixedH = p.layoutMode === 'VERTICAL' ? p.primaryAxisSizingMode === 'FIXED' : p.counterAxisSizingMode === 'FIXED';
-    if (fixedH && p.clipsContent && !(o.scroll && p === c)) { const dy = b.y + b.height - (pb.y + pb.height - (p.paddingBottom || 0)); if (dy > 1.5) over.push(`${n.name} ⊄ ${p.name} +${Math.round(dy)}h`); }
+    if (fixedH && p.clipsContent && !(o.scroll && p === c)) { const dy = b.y + b.height - (pb.y + pb.height - (p.paddingBottom || 0)); if (dy > 1.5) { const m = `${n.name} ⊄ ${p.name} +${Math.round(dy)}h`; if (p.type === 'INSTANCE' && lockedIn(p, f) && dy <= (p.paddingBottom || 0) + 0.5) (r.padOnly = r.padOnly || []).push(m + ' (bottom padding only, not clipped; component geometry)'); else over.push(m); } }
   }
   const M = meta(f);
-  for (const k of ['dialog', 'drawer']) if (M[k]) { const d = M[k].dr || M[k]; r[k] = [Math.round(d.width), Math.round(d.height)]; if (d.y + d.height > f.height - 8) warn(`${f.name}: ${k} taller than the frame`); }
+  for (const k of ['dialog', 'drawer']) if (M[k]) { const d = k === 'drawer' ? M[k].dr : M[k]; r[k] = [Math.round(d.width), Math.round(d.height)]; if (d.y + d.height > f.height - (k === 'drawer' ? 0 : 8) + 0.5) warn(`${f.name}: ${k} taller than the frame`); }
   if (M.drawer) { const { bs, body } = M.drawer; const free = Math.round(bs.absoluteBoundingBox.y + bs.height - (bs.paddingBottom || 0) - (body.absoluteBoundingBox.y + body.height)); r.drawerBodyFree = free; if (free < 0) warn(`${f.name}: drawer body taller than its slot by ${-free} px`); }
   if (o.mobile) { const small = []; for (const n of f.findAll(x => x.type === 'INSTANCE' && /^(Button|IconButton|Link|Chip\/Filter) · /.test(x.name) && shown(x, f))) if (n.height < 44) small.push(`${n.name} ${Math.round(n.height)}px`); const bk = f.findOne(x => x.type === 'INSTANCE' && x.name === 'Back'); if (bk && shown(bk, f)) r.backButton = Math.round(bk.height); if (bk && shown(bk, f) && bk.height < 44) small.push('Header Back ' + Math.round(bk.height) + 'px (Component request: Shell/Mobile/Header)'); r.tapTargetsUnder44 = small; if (small.length) warn(`${f.name}: ${small.length} tap target(s) < 44 px`); }
+  { const M = meta(f), st = stale(M.drawer && M.drawer.body).concat(stale(M.dbody)); r.stale = st.slice(0, 8); if (st.length) warn(`${f.name}: ${st.length} stale/overrunning layer(s) in the overlay, e.g. ${st[0]}`); }
   r.overflow = over.slice(0, 12); if (over.length) warn(`${f.name}: ${over.length} overflow(s), e.g. ${over[0]}`);
   OUT.fit[f.name] = r; return r;
 }
@@ -188,25 +186,25 @@ const GLOW = { who: 'SF', crumbs: ['Projects', 'Glow Beauty Salon (Downtown bran
   meta: [['Brand', 'Project · In progress'], ['Info', 'Deal · Closed deal']], mine: true, dev: ['SF', 'Sami Fares'], code: 'PRJ-0014 · Salon · glowbeauty.example.com',
   status: ['Brand', 'In progress'], since: 'since 15 Oct 2026 · by Sami Fares',
   moves: [['Secondary', 'Waiting for client…'], ['Secondary', 'Blocked…'], ['Ghost', 'Back to Scheduled'], ['Secondary', 'Record delivered']], rule: 'Non-linear · Completed only from Delivered',
-  range: 'Start 14 Oct 2026 → Target delivery 20 Nov 2026', left: '31 days to target', prog: 3 / 11, today: true,
+  range: 'Start 14 Oct 2026 → Target delivery 20 Nov 2026', left: '31 days to target', prog: 1 / 11, today: true,
   ms: [['Achieved', 'Wireframes approved', '17 Oct · achieved'], ['Current', 'Content received', '28 Oct · client'], ['Upcoming', 'Booking flow ready', '3 Nov'], ['Final', 'Delivery (target)', '20 Nov']],
   cols: [['To do', [{ title: 'Content upload', sub: 'Logo, price list and 12 photos from the client', short: 'Logo, prices, 12 photos', due: 'Due 28 Oct', chip: 'Client dependency' }, { title: 'Payment page', sub: 'Scope held until the payment policy is decided', short: 'Scope held for DEC-018', due: 'Due 7 Nov', notice: 'DEC-018' }]],
     ['In progress', [{ title: 'Booking flow', sub: 'Service → time slot → confirmation', short: 'Service → slot → confirm', due: 'Due 3 Nov' }]],
     ['Done', [{ title: 'Wireframes approved', sub: 'Milestone achieved', short: 'Milestone achieved', due: '17 Oct', done: true }]], ['Cancelled', []]],
   deal: 'DL-0031', facts: [['Accepted', '2 Oct · Maya Khoury'], ['Signed', '9 Oct · AGR-0109'], ['Paid', '12 Oct · PAY-0112'], ['Closed', '13 Oct · Sami Fares']], proj: 'Provisioned 13 Oct (Scheduled)',
   note: ['Amber', 'Sami Fares · open', '20 Oct, 10:12', 'Client content needed (logo, price list, 12 photos) for Content upload. Project stays In progress.'],
-  act: [['Note', 'Client dependency added', '20 Oct, 10:12', 'Sami Fares · task Content upload'], ['Status change', 'Project → In progress', '15 Oct, 11:00', 'From Scheduled · Sami Fares']] };
+  act: [['Note', 'Dependency added', '20 Oct, 10:12', 'Sami Fares · task Content upload'], ['Status change', 'Project → In progress', '15 Oct, 11:00', 'From Scheduled · Sami Fares']] };
 const URBAN = { who: 'SF', crumbs: ['Projects', 'Urban Cuts Barbershop', 'Online booking'], title: 'Urban Cuts Barbershop — Online booking', ro: true,
   meta: [['Success', 'Project · Completed'], ['Info', 'Deal · Closed deal']], mine: false, dev: ['LA', 'Lina Aoun'], code: 'PRJ-0012 · Salon · urbancuts.example.com',
   status: ['Success', 'Completed'], since: 'since 14 Oct 2026 · by Lina Aoun', moves: null, rule: 'Completed is final · reopening is not modelled (OQ-15)',
-  range: 'Start 21 Sep 2026 → Delivered 10 Oct 2026', left: 'Completed 14 Oct', prog: 1, today: false,
-  ms: [['Achieved', 'Design approved', '24 Sep · achieved'], ['Achieved', 'Booking live', '6 Oct · achieved'], ['Achieved', 'Delivered', '10 Oct · achieved'], ['Final', 'Completed', '14 Oct']],
-  cols: [['To do', []], ['In progress', []], ['Done', [{ title: 'Booking calendar', sub: 'Chair and barber availability', short: 'Chair availability', due: '6 Oct', done: true }, { title: 'Staff profiles', sub: 'Five barbers with photos', short: 'Five barbers', due: '8 Oct', done: true }]], ['Cancelled', [{ title: 'Gift cards', sub: 'Cancelled · client removed it from scope', short: 'Cancelled · out of scope', due: 'Cancelled 2 Oct' }]]],
+  range: 'Start 28 Sep 2026 → Delivered 10 Oct 2026', left: 'Completed 14 Oct', prog: 1, today: false,
+  ms: [['Achieved', 'Design approved', '1 Oct · achieved'], ['Achieved', 'Booking live', '6 Oct · achieved'], ['Achieved', 'Delivered', '10 Oct · achieved'], ['Final', 'Completed', '14 Oct']],
+  cols: [['To do', []], ['In progress', []], ['Done', [{ title: 'Site design', sub: 'Design approved by the client', short: 'Design approved', due: '1 Oct', done: true }, { title: 'Booking calendar', sub: 'Chair and barber availability', short: 'Chair availability', due: '6 Oct', done: true }, { title: 'Staff profiles', sub: 'Five barbers with photos', short: 'Five barbers', due: '8 Oct', done: true }]], ['Cancelled', [{ title: 'Gift cards', sub: 'Cancelled · client removed it from scope', short: 'Cancelled · out of scope', due: 'Cancelled 2 Oct' }]]],
   deal: 'DL-0024', facts: [['Accepted', '3 Sep · Omar Nassar'], ['Signed', '15 Sep · AGR-0098'], ['Paid', '20 Sep · PAY-0102'], ['Closed', '28 Sep · Lina Aoun']], proj: 'Provisioned 28 Sep (Scheduled)',
   note: ['Neutral', 'Lina Aoun', '14 Oct, 16:20', 'Client confirmed the booking site is live. Project completed.'],
   act: [['Status change', 'Project → Completed', '14 Oct, 16:20', 'From Delivered · Lina Aoun'], ['Status change', 'Project → Delivered', '10 Oct, 12:00', 'From In progress · Lina Aoun']] };
 async function sectionHead(t, l) { const h = AL('Header · ' + t, 'HORIZONTAL', { gap: 8, align: 'CENTER' }); h.appendChild(await T(t, 'ds/H4', 'text/primary')); spacer(h); if (l) h.appendChild(await link(l)); return h; }
-async function board(name, D, ban) {
+async function board(name, D, ban, stale) {
   const { f, c } = await desk(S, name, D.who, 'Projects', 'Search projects, tasks…');
   const hdr = AL('R1 Page header', 'VERTICAL', { gap: 6 }); put(c, hdr, 'FILL');
   const bc = await inst('Breadcrumb', null, 'Breadcrumb'); setP(bc, { 'Level 1': D.crumbs[0], 'Level 2': D.crumbs[1], Current: D.crumbs[2], 'Show level 2': true }); hdr.appendChild(bc);
@@ -223,17 +221,17 @@ async function board(name, D, ban) {
   // R2 project status bar — distinct from task status
   const sb = AL('R2 Project status bar', 'VERTICAL', { gap: 10, pad: [12, 16], fill: 'surface/default', stroke: 'border/default', radius: 'lg' }); put(left, sb, 'FILL');
   const s1 = AL('Current status', 'HORIZONTAL', { gap: 12, align: 'CENTER' }); put(sb, s1, 'FILL');
-  s1.appendChild(await T('PROJECT STATUS', 'ds/Overline', 'text/muted')); s1.appendChild(await badge(D.status[0], D.status[1], 'Large')); s1.appendChild(await T(D.since, 'ds/Caption', 'text/muted')); spacer(s1);
+  s1.appendChild(await T('PROJECT STATUS', 'ds/Overline', 'text/muted')); s1.appendChild(await badge(D.status[0], D.status[1], 'Large')); if (stale) s1.appendChild(await chip('Amber', 'Out of date · reload')); else s1.appendChild(await T(D.since, 'ds/Caption', 'text/muted')); spacer(s1); // D-5: stale → chip replaces the since caption (was DEC-019 chip +125w)
   s1.appendChild(await nchip('DEC-019', 'Policy pending · statuses proposed'));
   const s2 = AL('Allowed next statuses', 'HORIZONTAL', { gap: 8, align: 'CENTER' }); put(sb, s2, 'FILL');
-  if (D.moves) { s2.appendChild(await T('Move project to:', 'ds/Label Small', 'text/secondary')); for (const [v, l] of D.moves) s2.appendChild(await button(v, 'Small', l)); }
+  if (D.moves) { s2.appendChild(await T('Move project to:', 'ds/Label Small', 'text/secondary')); for (const [v, l] of D.moves) s2.appendChild(await button(v, 'Small', l, null, stale ? 'Disabled' : null)); }
   else s2.appendChild(await badge('Neutral', 'Read-only', 'Small', false));
-  const rc = await T(D.rule, 'ds/Caption', 'text/muted', { name: 'Rule caption', w: 160 }); s2.appendChild(rc); rc.layoutSizingHorizontal = 'FILL';
+  const rc = await T(stale ? 'Status actions are paused until you reload the project.' : D.rule, 'ds/Caption', 'text/muted', { name: 'Rule caption', w: 160 }); s2.appendChild(rc); rc.layoutSizingHorizontal = 'FILL';
   // R3 schedule & milestones
   const sched = await card('Surface', 'R3 Schedule & milestones'); put(left, sched, 'FILL');
   { const sl = fillSlot(sched, [], 'Content');
     const h = AL('Schedule header', 'HORIZONTAL', { gap: 12, align: 'CENTER' }); h.appendChild(await T('Schedule & milestones', 'ds/H4', 'text/primary')); h.appendChild(await T(D.range, 'ds/Body Small', 'text/secondary')); spacer(h); h.appendChild(await chip('Neutral', D.left)); put(sl, h, 'FILL');
-    const W = 760, step = (W - 132) / 3, tx = Math.round(66 + (W - 132) * D.prog);
+    const W = 756, step = (W - 132) / 3, tx = Math.round(66 + (W - 132) * D.prog);
     const trk = figma.createFrame(); trk.name = 'Milestone track'; trk.fills = []; trk.resize(W, 92); trk.clipsContent = false; sl.appendChild(trk);
     const a = figma.createRectangle(); a.name = 'Track'; trk.appendChild(a); a.resize(W - 132, 4); a.x = 66; a.y = 34; a.fills = [P('surface/sunken')]; rad(a, 'full');
     const b = figma.createRectangle(); b.name = 'Progress'; trk.appendChild(b); b.resize(Math.max(1, tx - 66), 4); b.x = 66; b.y = 34; b.fills = [P('brand/accent')]; rad(b, 'full');
@@ -273,6 +271,7 @@ async function board(name, D, ban) {
     for (const [k, v] of D.facts) put(dl, await kv('Check', k, v), 'FILL');
     put(dl, await ninline('DEC-006 / R-12', 'Closure authority pending: Developer vs Owner verification not decided.'), 'FILL');
     put(dl, await kv('Default', 'Project', D.proj), 'FILL');
+    put(dl, await row('Correction entry', [await T('Business details wrong?', 'ds/Caption', 'text/muted'), await link('Request correction')], 8), 'FILL'); // M-1 → SCR-SHR-009
     put(sl, await divider(), 'FILL');
     const nb = AL('Notes', 'VERTICAL', { gap: 8 }); put(sl, nb, 'FILL');
     put(nb, await sectionHead(D.ro ? 'Notes' : 'Client dependencies & notes', D.ro ? null : 'Add note'), 'FILL'); put(nb, await note(...D.note), 'FILL');
@@ -282,39 +281,28 @@ async function board(name, D, ban) {
     const lim = rail.absoluteBoundingBox.y + rail.height - 16; const its = () => ac.children.filter(n => n.type === 'INSTANCE');
     while (its().length > 1 && its()[its().length - 1].absoluteBoundingBox.y + its()[its().length - 1].height > lim) its()[its().length - 1].remove();
     const l = its(); if (l.length) setP(l[l.length - 1], { 'Show connector': false });
+    // P6 review fix: if even one activity item would be clipped by the rail, hide the Activity block and its divider
+    if (l.length && l[l.length - 1].absoluteBoundingBox.y + l[l.length - 1].height > lim) { ac.visible = false; const dv = sl.children[sl.children.indexOf(ac) - 1]; if (dv) dv.visible = false; OUT.fit[name + ' · rail activity hidden (no room)'] = true; }
     OUT.fit[name + ' · rail activity shown'] = l.length; }
   // kanban fit: never cut a card at the column bottom; overflow → "+n more"
   for (const k of COLS) {
     const cb = k.col.absoluteBoundingBox, lim = cb.y + cb.height - 8, hid = [];
     while (k.cards.length > 1) { const last = k.cards[k.cards.length - 1], b = last.absoluteBoundingBox; if (b.y + b.height <= lim) break; hid.unshift(k.cards.pop()); }
-    if (hid.length) { const names = hid.map(x => x.name.slice(12)).join(', '); for (const x of hid) x.remove(); const m = AL('More cards', 'VERTICAL', { gap: 6, pad: [4, 4] }); put(k.sl, m, 'FILL'); m.appendChild(await link('+' + hid.length + ' more · ' + names)); }
+    if (hid.length) { const names = hid.map(x => x.name.slice(12)).join(', '); for (const x of hid) x.remove(); const m = AL('More cards', 'VERTICAL', { gap: 6, pad: [4, 4] }); put(k.sl, m, 'FILL'); const ml = await link('+' + hid.length + ' more'); ml.name = 'Link · +' + hid.length + ' more · ' + names; m.appendChild(ml); OUT.fit[name + ' · ' + k.title + ' hidden cards'] = names; } // D-5: label only (names were +71w)
     OUT.fit[name + ' · column ' + k.title] = 'h ' + Math.round(cb.height) + ', hidden ' + hid.length;
   }
   fit(f); return f;
 }
 const L = await board(N + 'Desktop — Light', GLOW);
 dark(S, L, N + 'Desktop — Dark');
-{ // P7 — "Record delivered" open-task warning (warn, do not block — OQ-10, Proposed)
-  const f = cloneF(S, L, N + 'Desktop — Light — Record delivered: open-task warning');
-  const tk = async (tone, st, t, extra) => { const r = AL('Open task · ' + t, 'HORIZONTAL', { gap: 8, align: 'CENTER', pad: [8, 12], fill: 'surface/subtle', radius: 'md' }); r.appendChild(await badge(tone, st)); const x = await T(t, 'ds/Body Strong', 'text/primary'); r.appendChild(x); x.layoutGrow = 1; if (extra) r.appendChild(extra); return r; };
-  await dialog(f, 'Record delivered with open tasks?', 'Glow Beauty Salon — Booking website · PRJ-0014', [
-    await banner('Warning', null, '3 tasks are not Done or Cancelled. Recording Delivered changes the project status only — the tasks stay as they are.', null, 'Inline'),
-    await tk('Neutral', 'To do', 'Content upload', await chip('Amber', 'Client dependency')),
-    await tk('Neutral', 'To do', 'Payment page', await nchip('DEC-018', 'pending')),
-    await tk('Brand', 'In progress', 'Booking flow', null),
-    await kv('Default', 'Project status', 'In progress → Delivered'),
-    await T('Warning only: you can still record Delivered (OQ-10, Proposed). Completed is recorded later, from Delivered.', 'ds/Caption', 'text/muted', { w: 460 }),
-    await row('Dialog extras', [await link('Review open tasks'), await nchip('DEC-019', 'statuses proposed')], 12)
-  ], 'Cancel', 'Record delivered');
-  fit(f);
-}
+// P7 "Record delivered" warning + Waiting for client… / Blocked… dialogs: C06b (clones the Light board)
 await board(N + 'Desktop — Light — Completed (read-only)', URBAN, ['Info', 'This project is completed and read-only', 'Tasks, schedule and status can no longer change. Reopening a completed project is an open question (OQ-15).', null]);
-await board(N + 'Desktop — Light — Save conflict', GLOW, ['Warning', 'Project status changed by someone else', 'Rana Haddad set the project to Waiting for client at 10:05. Your change to Blocked was not saved. Nothing was overwritten.', 'Reload project']);
+await board(N + 'Desktop — Light — Save conflict', GLOW, ['Warning', 'Project status changed by someone else', 'Rana Haddad set the project to Waiting for client at 10:05. Your change to Blocked was not saved. Nothing was overwritten.', 'Reload project'], true);
 { // Hidden by policy
   const { f, c } = await desk(S, N + 'Desktop — Light — Hidden by policy', 'SF', 'Projects', 'Search projects, tasks…');
   const bc = await inst('Breadcrumb', null, 'Breadcrumb'); setP(bc, { 'Level 1': 'Projects', 'Level 2': 'Projects', Current: 'Project not available', 'Show level 2': false }); put(c, bc);
   const a = AL('State area', 'VERTICAL', { gap: 16, align: 'CENTER', justify: 'CENTER', fill: 'surface/default', stroke: 'border/default', radius: 'lg' }); put(c, a, 'FILL', 'FILL');
-  a.appendChild(await access('Hidden by policy', 'Page', 'This project is not visible to you', 'It may exist, but the visibility policy hides it from your role (for example after the 15-day window). No details are shown.', 'Back to projects'));
+  const aw = AL('Access wrap', 'VERTICAL'); a.appendChild(aw); aw.resize(480, 10); aw.layoutSizingHorizontal = 'FIXED'; aw.layoutSizingVertical = 'HUG'; put(aw, await access('Hidden by policy', 'Page', 'This project is not visible to you', 'It may exist, but the visibility policy hides it from your role (for example after the 15-day window). No details are shown.', 'Back to projects'), 'FILL');
   a.appendChild(await nchip('DEC-002', '15-day visibility · active / completed project'));
   fit(f);
 }
@@ -326,6 +314,7 @@ await board(N + 'Desktop — Light — Save conflict', GLOW, ['Warning', 'Projec
   await TF(sl, 'since 15 Oct · Sami Fares · target 20 Nov', 'ds/Caption', 'text/muted');
   const br = AL('Actions', 'HORIZONTAL', { gap: 8 }); put(sl, br, 'FILL'); put(br, await button('Secondary', 'Large', 'Change status'), 'FILL'); put(br, await button('Primary', 'Large', 'Add task', 'plus'), 'FILL');
   put(sl, await nchip('DEC-019', 'statuses proposed'), null);
+  const lr = AL('Deal links', 'VERTICAL', { gap: 4 }); put(sl, lr, 'FILL'); put(lr, await button('Ghost', 'Large', 'Open deal DL-0031'), 'FILL'); put(lr, await button('Ghost', 'Large', 'Request correction', 'flag'), 'FILL');
   for (const [g, cards] of GLOW.cols) {
     put(c, await T(g.toUpperCase() + ' · ' + cards.length, 'ds/Overline', 'text/muted'), 'FILL');
     for (const d of cards) { const t = await inst('Task', { State: d.done ? 'Done' : 'Default' }, 'Card/Task · ' + d.title); put(c, t, 'FILL'); setP(t, { Title: d.title, Due: d.due, Project: d.short, 'Show chip': !!d.chip, 'Show notice': !!d.notice }); setP(nested(t, 'Avatar'), { Initials: 'SF' }); const ch = nested(t, 'Derived chip'); if (ch) setP(ch, { Label: 'Client dependency' }); const nt = nested(t, 'Policy'); if (nt) { setP(nt, { DEC: 'DEC-018' }); layerText(nt, 'Title', 'pending', true); } }

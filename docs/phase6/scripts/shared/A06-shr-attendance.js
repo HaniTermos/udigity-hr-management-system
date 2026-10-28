@@ -380,7 +380,8 @@ const FN = (scr, nm, dev, th, st) => `${scr} — ${nm} — ${dev} — ${th}${st 
 function screen(scr, nm) { const sec = getSection(`${scr} — ${nm}`); clearScreen(sec, scr); return { sec, L: lay(), scr, nm }; }
 // ---------- end helper library ----------
 // ---- My Attendance building blocks (shared by A06/A07)
-const COLS = [['Date', 180], ['Check-in', 110], ['Check-out', 140], ['Duration', 120, 'Right'], ['Punctuality', 180], ['Status', 232], ['', 190]];
+// Fix R40-06: Check-out 140→180 so "Corrected · was 17:20" shows the original time in full (Punctuality 180→160, action 190→170; total 1152 unchanged).
+const COLS = [['Date', 180], ['Check-in', 110], ['Check-out', 180], ['Duration', 120, 'Right'], ['Punctuality', 160], ['Status', 232], ['', 170]];
 async function cell(spec, w) {
   if (typeof spec === 'string') spec = { t: 'text', v: spec };
   if (spec.t === 'chip' || spec.t === 'flag') {
@@ -455,10 +456,11 @@ async function attMob(f) {
   const c = mobContent(f, 56, 724, 12);
   const fr = row('Period filters', 8, { wrap: true }); for (const l of ['This week', 'October 2026']) add(fr, [await I('Chip/Filter', { State: l === 'October 2026' ? 'Active' : 'Default' }, { Label: l }, 'Filter · ' + l)]);
   add(c, [fr, await inset([await kv('Hours (closed)', '54h 27m'), await kv('Average day', '9h 04m · vs 9 h')], 'Stats', 4), await chips([['DEC-011', 'Correction route'], ['DEC-026', 'Review states']])], true);
-  const list = [['Tue 20 Oct · open', '08:58 – now · 5h 34m · On time (derived)', ['Open', 'Info']], ['Mon 19 Oct', '08:52 – 18:01 · 9h 09m · On time (derived)', ['Closed', 'Neutral']], ['Fri 16 Oct', '09:14 – 18:20 · 9h 06m · Late (derived)', ['Closed', 'Neutral']], ['Thu 15 Oct', '08:55 – 17:40 · 8h 45m · On time (derived)', ['Closed', 'Neutral']], ['Wed 14 Oct', '08:50 – 18:00 · 9h 10m · On time (derived)', ['Closed', 'Neutral']]];
+  // Fix R40-05: punctuality moves into the row title (never truncated); meta keeps times + duration only; "derived" stated once under the list.
+  const list = [['Tue 20 Oct · On time', '08:58 – now · 5h 34m', ['Open', 'Info']], ['Mon 19 Oct · On time', '08:52 – 18:01 · 9h 09m', ['Closed', 'Neutral']], ['Fri 16 Oct · Late', '09:14 – 18:20 · 9h 06m', ['Closed', 'Neutral']], ['Thu 15 Oct · On time', '08:55 – 17:40 · 8h 45m', ['Closed', 'Neutral']], ['Wed 14 Oct · On time', '08:50 – 18:00 · 9h 10m', ['Closed', 'Neutral']]];
   const card0 = await card('Card/Surface', 'Sessions', {}, 0);
   const items = []; for (const [t, m, b] of list) items.push(await li(t, m, 'clock', b, false));
-  fillBody(card0, items); add(c, [card0.node], true);
+  fillBody(card0, items); add(c, [card0.node, await TX('On time / Late are derived from check-in; schedule start and grace are pending (DEC-007/008).', 'ds/Caption', 'text/muted', { name: 'Derived note' })], true);
   FOLD_OK.add(f.name);
 }
 

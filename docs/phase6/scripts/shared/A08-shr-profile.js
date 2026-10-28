@@ -414,14 +414,14 @@ async function prefs() {
 async function profDesk(f, st) {
   await deskShell(f, 'Call Center', 'My Profile');
   const c = await deskContent(f, 16);
-  await pageHead(c, 'My Profile', 'Your account, password and preferences');
-  if (st === 'Save conflict') {
-    add(c, [await banner('Warning', 'Default', 'Your profile changed since you opened it', 'Rana Haddad updated your phone at 10:12. Nothing was overwritten — review the changes, then re-apply yours or reload.')], true);
-    const r = row('Conflict actions', 8); add(r, [await btn('Secondary', 'Review changes', 'Medium', 'Default', 'refresh', 'Review changes'), await btn('Ghost', 'Reload latest', 'Medium')]); add(c, [r]);
-  }
+  // Fix P6-40a: in Save conflict the conflict actions sit in the page header (right) and the password card is omitted (not part of the conflict) so both columns fit the 900 px frame.
+  let right = null;
+  if (st === 'Save conflict') { right = row('Conflict actions', 8); add(right, [await btn('Secondary', 'Review changes', 'Medium', 'Default', 'refresh', 'Review changes'), await btn('Ghost', 'Reload latest', 'Medium')]); }
+  await pageHead(c, 'My Profile', 'Your account, password and preferences', right);
+  if (st === 'Save conflict') add(c, [await banner('Warning', 'Default', 'Your profile changed since you opened it', 'Rana Haddad updated your phone at 10:12. Nothing was overwritten — review the changes, then re-apply yours or reload.')], true);
   const [a, b] = columns(c, 564);
   add(a, [await details(st)], true);
-  add(b, [await password(st), await prefs()], true);
+  add(b, st === 'Save conflict' ? [await prefs()] : [await password(st), await prefs()], true);
   if (st === 'Success') { const t = await toast('Success', 'Profile saved', 'Your mobile phone was updated.'); f.appendChild(t); t.x = 1440 - 24 - t.width; t.y = 900 - 24 - t.height; }
 }
 async function profMob(f) {
@@ -430,7 +430,8 @@ async function profMob(f) {
   const d = await card('Card/Surface', 'Personal details', {}, 12);
   fillBody(d, [await who(false), await ro('Work email', 'maya.khoury@udigity.example'), await phone('Filled'), await policy('Inline', 'OQ-13', 'Which fields you can edit is not decided (proposed: photo and phone).'), await btn('Primary', 'Save changes', 'Large', 'Default', null, 'Save changes')]);
   const l = await card('Card/Surface', 'Account', {}, 0);
-  fillBody(l, [await li('Change password', 'Signs out your other sessions (Proposed)', 'lock', null, true), await li('Appearance', 'Light', 'settings', null, true)]);
+  // Fix R40-07: the "Proposed" marker leads the subtitle so it is never truncated (List/Item meta is single-line; 30 chars fit at 390).
+  fillBody(l, [await li('Change password', 'Proposed · ends other sessions', 'lock', null, true), await li('Appearance', 'Light', 'settings', null, true)]);
   add(c, [d.node, l.node, await btn('Secondary', 'Sign out', 'Large', 'Default', 'log-out', 'Sign out')], true);
   FOLD_OK.add(f.name);
 }

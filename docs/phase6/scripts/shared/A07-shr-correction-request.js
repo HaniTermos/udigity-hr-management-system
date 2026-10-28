@@ -473,7 +473,7 @@ async function attMob(f) {
     const err = st === 'Validation error';
     return [await policy('Block', 'DEC-011', 'This screen exists only if DEC-011 Alt B (employee request) is selected. Not selected.'),
       await inset([await kv('Session', 'Mon 19 Oct 2026'), await kv('Recorded check-in', '08:47'), await kv('Recorded check-out', 'Not recorded', 'Not recorded')], 'Original record', 2),
-      await dt('Time', 'Filled', { Label: 'Proposed check-in', Value: '08:47', Helper: 'Keep it if it is right.', 'Show helper': true, 'Error message': 'Enter a time.' }),
+      await dt('Time', 'Filled', { Label: 'Proposed check-in', Value: '08:47', Helper: 'Keep it if it is right.', 'Show helper': false, 'Error message': 'Enter a time.' }),
       await dt('Time', err ? 'Error' : 'Focus', { Label: 'Proposed check-out', Value: err ? '07:30' : '18:05', 'Error message': 'Check-out must be after check-in (08:47).' }),
       await ta(err ? 'Error' : 'Filled', { Label: 'Reason', Value: err ? ' ' : 'Forgot to check out; left the office at 18:05 after the team call.', Placeholder: 'Tell the Owner what happened', Helper: 'The Owner sees this with your request.', 'Show helper': !err, 'Error message': 'Add a reason for the Owner.', Counter: err ? '0 / 500' : '66 / 500' }),
       await TX('The original record is kept beside any correction.', 'ds/Caption', 'text/muted', { name: 'Original kept' }),
@@ -486,6 +486,8 @@ async function attMob(f) {
       closed ? null : await btn(pend ? 'Secondary' : 'Ghost', pend ? 'Withdraw request' : 'Cancel', 'Medium', 'Default', null, pend ? 'Withdraw' : 'Cancel'),
       [await btn('Primary', pend || closed ? 'Close' : 'Submit request', 'Medium', 'Default', null, 'Primary action')]);
     OUT.created[f.name + ' › drawer'] = d.id;
+    // Fix P6-40c: since DS-13c the field Error variants always show the error row; tighten the drawer gap 12→11 so the Validation error state fits.
+    if (st === 'Validation error') { const sl = d.findAll(x => x.type === 'SLOT')[0]; if (sl) sl.itemSpacing = 11; }
     if (pend) { const t = await toast('Success', 'Correction request submitted', 'Rana Haddad will review it.'); f.appendChild(t); t.x = 576; t.y = 900 - 24 - t.height; }
   }
   async function mobF(f) {

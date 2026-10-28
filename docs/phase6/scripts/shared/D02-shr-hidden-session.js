@@ -271,13 +271,40 @@ function mobFooter(f, h) {
   f.appendChild(ft); ft.x = 0; ft.y = 844 - h; ft.resize(390, h); ft.layoutSizingHorizontal = 'FIXED'; ft.layoutSizingVertical = 'FIXED';
   rule(ft, true, false); return ft;
 }
-// ---- overlays (Dialog / Drawer fill their native slots)
+// ---- overlays (X-10, same root cause as D-6): an instance created at its 320 default and then moved into another instance's slot
+// keeps its stale internal layout. stage() builds the slot body at the slot's inner width, then: 1 append to slot,
+// 2 wrapper FILL, 3 field FILL, 4 text HEIGHT + FILL, 5 relayout (kick: the wrapper width really changes).
+const STAGED = [];
+function stage(f, s, name, gap, kids) {
+  if (!s) { warn('no slot for ' + name + ' in ' + f.name); return null; }
+  const W = Math.max(200, Math.round(s.width - (s.paddingLeft || 0) - (s.paddingRight || 0)));
+  for (const ch of [...s.children]) ch.remove(); try { s.itemSpacing = 0; } catch (e) {}
+  const b = AL(name, 'VERTICAL', { gap }); f.appendChild(b); b.resize(W, 10); b.counterAxisSizingMode = 'FIXED'; b.primaryAxisSizingMode = 'AUTO';
+  add(b, kids, true);
+  s.appendChild(b); try { b.layoutSizingHorizontal = 'FILL'; } catch (e) { warn('stage FILL ' + name + ': ' + e.message); } b.layoutSizingVertical = 'HUG';
+  for (const k of b.children) if (k.type !== 'TEXT') { try { k.layoutSizingHorizontal = 'FILL'; } catch (e) {} }
+  for (const t of b.children) if (t.type === 'TEXT') { try { t.textAutoResize = 'HEIGHT'; t.layoutSizingHorizontal = 'FILL'; } catch (e) {} }
+  kick(b); STAGED.push([f, b]); return b;
+}
+function kick(b) { if (!b || b.removed) return; try { const w = b.width, fl = b.layoutSizingHorizontal === 'FILL'; b.layoutSizingHorizontal = 'FIXED'; b.resize(w - 1, b.height); if (fl) b.layoutSizingHorizontal = 'FILL'; else b.resize(w, b.height); b.layoutSizingVertical = 'HUG'; } catch (e) { warn('relayout ' + b.name + ': ' + e.message); } }
+// stale: a FILL layer inside a staged instance whose width differs from its parent, or a layer rendering past its instance box
+function stale(b) {
+  const o = []; if (!b || b.removed) return o;
+  for (const i of b.findAll(n => n.type === 'INSTANCE' && shown(n, b))) {
+    const ib = i.absoluteBoundingBox; if (!ib) continue;
+    for (const k of i.findAll(x => shown(x, i))) {
+      const p = k.parent, w = p ? p.width - (p.paddingLeft || 0) - (p.paddingRight || 0) : 0;
+      if (p && p.layoutMode === 'VERTICAL' && k.layoutSizingHorizontal === 'FILL' && Math.abs(k.width - w) > 1.5) { o.push(i.name + ' › ' + k.name + ' ' + Math.round(k.width) + '/' + Math.round(w)); break; }
+      const kb = k.absoluteRenderBounds; if (kb && kb.x + kb.width > ib.x + ib.width + 1.5) { o.push(i.name + ' › ' + k.name + ' +' + Math.round(kb.x + kb.width - ib.x - ib.width) + 'w'); break; }
+    }
+  }
+  return o;
+}
 async function scrim(f, mobile) { const s = await I('Overlay/Scrim', { Size: mobile ? 'Mobile' : 'Desktop' }, {}, 'Scrim'); f.appendChild(s); s.x = 0; s.y = 0; return s; }
 async function dialog(f, title, desc, kids, sec, pri, w) {
   const d = await I('Dialog', null, { Title: title, Description: desc || ' ', 'Show description': !!desc, 'Show footer': !!(sec || pri), 'Show close': true }, 'Dialog · ' + title);
   f.appendChild(d); if (w) d.resize(w, d.height);
-  const slot = d.findOne(n => n.type === 'SLOT');
-  if (slot) { for (const ch of [...slot.children]) ch.remove(); add(slot, kids, true); } else warn('Dialog slot not found');
+  stage(f, d.findOne(n => n.type === 'SLOT'), 'Dialog body', 12, kids);
   const s = nested(d, 'Secondary action'), p = nested(d, 'Primary action');
   if (s) { if (sec) setProps(s, Object.assign({ 'Show icon': false }, sec)); else s.visible = false; } else warn('Dialog secondary not found');
   if (p) { if (pri) setProps(p, Object.assign({ 'Show icon': false }, pri)); else p.visible = false; } else warn('Dialog primary not found');
@@ -285,18 +312,7 @@ async function dialog(f, title, desc, kids, sec, pri, w) {
   if (d.height > 852) OUT.overflow.push(f.name + ': dialog taller than frame (' + Math.round(d.height) + ')');
   return d;
 }
-async function drawer(f, title, sub, kids, left, right) {
-  const d = await I('Drawer', null, { Title: title, Subtitle: sub || ' ', 'Show subtitle': !!sub }, 'Drawer · ' + title);
-  f.appendChild(d); d.x = 960; d.y = 0;
-  const slots = d.findAll(n => n.type === 'SLOT');
-  if (slots.length < 2) { warn('Drawer slots not found'); return d; }
-  for (const s of slots) for (const ch of [...s.children]) ch.remove();
-  add(slots[0], kids, true);
-  if (left) add(slots[1], [left]);
-  const grp = row('Footer actions', 8, { justify: 'MAX' }); add(slots[1], [grp]); grow(grp); add(grp, right || []);
-  FITS.push([f.name + ' › drawer', slots[0]]);
-  return d;
-}
+// (drawer helper dropped: no drawer on D02's screens)
 // ---- auth layout (signed-out screens: S1 visual direction)
 async function authDesk(f, kids) {
   f.layoutMode = 'HORIZONTAL'; f.primaryAxisSizingMode = 'FIXED'; f.counterAxisSizingMode = 'FIXED'; f.itemSpacing = 0;
@@ -343,6 +359,7 @@ function frame(sec, name, w, h, dark) {
 }
 function shown(n, root) { for (let p = n; p && p !== root; p = p.parent) if (p.visible === false) return false; return true; }
 function fitReport(f) {
+  const st = []; for (const [g, b] of STAGED) if (g === f) { kick(b); st.push(...stale(b)); }
   const fb = f.absoluteBoundingBox, r = { size: Math.round(f.width) + '×' + Math.round(f.height), right: [], fold: 0, rows: [] };
   for (const t of f.findAllWithCriteria({ types: ['TEXT'] })) {
     if (!shown(t, f)) continue; const b = t.absoluteBoundingBox; if (!b) continue;
@@ -360,6 +377,7 @@ function fitReport(f) {
     r[nm === f.name ? 'content' : 'drawer'] = Math.round(used) + '/' + Math.round(c.height);
     if (used > c.height + 1) { const m = `${nm}: content ${Math.round(used - c.height)}px past the bottom` + (FOLD_OK.has(f.name) ? ' (scroll intended, annotated)' : ''); OUT.overflow.push(m); }
   }
+  r.stale = st.slice(0, 8); if (st.length) OUT.warnings.push(`${f.name}: ${st.length} stale/overrunning layer(s) in a staged slot, e.g. ${st[0]}`);
   OUT.fit[f.name] = r;
   if (r.right.length) OUT.overflow.push(f.name + ': text past right edge: ' + r.right.slice(0, 3).join(' | '));
   if (r.rows.length) OUT.overflow.push(f.name + ': row overflow ' + r.rows.slice(0, 3).join(', '));
@@ -379,6 +397,15 @@ function overlapCheck() {
 const FN = (scr, nm, dev, th, st) => `${scr} — ${nm} — ${dev} — ${th}${st ? ' — ' + st : ''}`;
 function screen(scr, nm) { const sec = getSection(`${scr} — ${nm}`); clearScreen(sec, scr); return { sec, L: lay(), scr, nm }; }
 // ---------- end helper library ----------
+// Touch IconButton workaround (P6 review): IconButton Size=Touch variants render Icon/more because their Icon child is not linked to the Icon
+// instance-swap property (Component request filed). Override only: swap the nested Icon of Close/Back to the intended glyph. No x/y/size change.
+const _TI = { Close: await node(ICONS['x']), Back: await node(ICONS['chevron-left']) };
+function fixTouchIcons(root) {
+  for (const b of root.findAllWithCriteria({ types: ['INSTANCE'] }).filter(n => _TI[n.name])) {
+    const ic = b.findOne(n => n.type === 'INSTANCE' && n.name === 'Icon'); if (!ic) continue;
+    try { ic.swapComponent(_TI[b.name]); OUT.touchIconFix = (OUT.touchIconFix || 0) + 1; } catch (e) { warn('touch icon swap ' + b.name + ': ' + e.message); }
+  }
+}
 // ================= SCR-SHR-012 Record hidden by policy + SCR-SHR-013 Session expired / signed out (page 45) =================
 // ---------- SCR-SHR-012 (non-owner roles; Call Center shell shown). Never shows business data or a record name.
 async function hiddenDesk(f, stale) {
@@ -439,7 +466,9 @@ async function endKids(st, mob) {
   await deskShell(f4, 'Call Center', 'Calling Queue');
   const c = await deskContent(f4, 16);
   await pageHead(c, 'Olive & Thyme Café', 'Contact workspace · Café', null, ['Calling Queue', 'Olive & Thyme Café']);
-  add(c, [await sectionCard('Log this call', 'Attempt 2 · today', [await ta('Filled', { Label: 'Call notes', Value: 'Owner asked to call back after 17:00; interested in a booking page.', Placeholder: 'Add a note about this call…', Helper: 'Visible to your team.', 'Show helper': true, 'Error message': ' ', Counter: '68 / 1000' })])], true);
+  // X-6/X-10: the card goes into Content (FILL) first; its body is then staged at the card slot's real width
+  const lc = await sectionCard('Log this call', 'Attempt 2 · today', []); add(c, [lc], true);
+  stage(f4, lc.findOne(n => n.type === 'SLOT'), 'Card body', 12, [await ta('Filled', { Label: 'Call notes', Value: 'Owner asked to call back after 17:00; interested in a booking page.', Placeholder: 'Add a note about this call…', Helper: 'Visible to your team.', 'Show helper': true, 'Error message': ' ', Counter: '68 / 1000' })]);
   await scrim(f4);
   const d = await dialog(f4, 'Your session has expired', 'Sign in again to continue.', [await banner('Warning', 'Inline', 'Your unsaved note was not saved', 'Copy it somewhere before signing in if you still need it.'), await impl('How unsaved input is handled on expiry is a UX/implementation choice (WF-AUTH-001 L3).')], null, { Label: 'Sign in again' }, 520);
   OUT.created[f4.name + ' › dialog'] = d.id;
@@ -448,7 +477,7 @@ async function endKids(st, mob) {
     ['Interaction', 'Intended interactions', 'Any request after expiry or revocation → this page (or the dialog if the user is mid-edit). Sign in again → SCR-AUTH-001 with the “session ended” return notice, then back to the original page if still allowed. Deactivated → Back to sign in only.'],
     ['Note', 'Reasons', 'Expired (idle/absolute; lifetime = implementation decision) · Revoked (Owner action, password reset, 2FA recovery, role change) · Deactivated (all sessions revoked). The page never reveals more than the reason class.']
   ]);
-  for (const f of [...prim, ...states]) fitReport(f);
+  for (const f of [...prim, ...states]) { fixTouchIcons(f); fitReport(f); }
   finishSection(S.sec);
 }
 overlapCheck();
