@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Nightly encrypted PostgreSQL backup for the production compose stack.
 #
-#   Cron (02:30 server time):  30 2 * * * /opt/udigity/devops/backup/pg-backup.sh >> /var/log/udigity-backup.log 2>&1
+# Normally run by the "backup" compose service (devops/backup/backupd.sh): it sets PGHOST/PGUSER/PGPASSWORD and the
+# dump connects directly as the read-only backup role. Without PGHOST it falls back to the old host-cron mode
+# (docker compose exec into the db service as the owner).
 #
 # Retention (policy C1): 14 daily / 8 weekly (Sunday) / 6 monthly (1st of month).
 # The dump is piped straight into the encryptor: no plaintext dump ever touches the disk.
@@ -43,20 +45,25 @@ OUT="$BACKUP_DIR/daily/udigity-$STAMP.$EXT"
 TMP="$OUT.partial"
 trap 'rm -f "$TMP"; log "FAILED at line $LINENO"' ERR
 
-log "dumping database from service '$DB_SERVICE'"
-# -Fc: compressed custom format (pg_restore-able, selective restore). Credentials come from the container env.
-docker compose -f "$COMPOSE_FILE" exec -T "$DB_SERVICE" \
-  sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc --no-owner --no-privileges' \
-  | encrypt > "$TMP"
+# -Fc: compressed custom format (pg_restore-able, selective restore).
+if [ -n "${PGHOST:-}" ]; then
+  log "dumping database ${PGDATABASE:-} from $PGHOST as ${PGUSER:-}"
+  dump() { pg_dump -Fc --no-owner --no-privileges; }
+else
+  log "dumping database from service '$DB_SERVICE'"
+  dump() { docker compose -f "$COMPOSE_FILE" exec -T "$DB_SERVICE" \
+    sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc --no-owner --no-privileges'; }
+fi
+dump | encrypt > "$TMP"
 
 [ -s "$TMP" ] || die "empty backup"
 mv "$TMP" "$OUT"
-sha256sum "$OUT" > "$OUT.sha256"
+(cd "$(dirname "$OUT")" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256")
 log "wrote $OUT ($(du -h "$OUT" | cut -f1))"
 
-# Promote copies (hard links: no extra space).
-if [ "$(date -u +%u)" = "7" ]; then ln -f "$OUT" "$BACKUP_DIR/weekly/";  ln -f "$OUT.sha256" "$BACKUP_DIR/weekly/";  fi
-if [ "$(date -u +%d)" = "01" ]; then ln -f "$OUT" "$BACKUP_DIR/monthly/"; ln -f "$OUT.sha256" "$BACKUP_DIR/monthly/"; fi
+# Promote copies (hard links: no extra space). Local calendar (TZ), so "Sunday" is the company's Sunday.
+if [ "$(date +%u)" = "7" ]; then ln -f "$OUT" "$BACKUP_DIR/weekly/";  ln -f "$OUT.sha256" "$BACKUP_DIR/weekly/";  fi
+if [ "$(date +%d)" = "01" ]; then ln -f "$OUT" "$BACKUP_DIR/monthly/"; ln -f "$OUT.sha256" "$BACKUP_DIR/monthly/"; fi
 
 prune() { # dir keep
   local dir="$1" keep="$2"

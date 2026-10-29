@@ -121,46 +121,22 @@ Per-IP connection cap is 200 for the same reason. The backend keeps its own per-
 **Update:** `git pull && docker compose -f docker-compose.prod.yml build && docker compose -f docker-compose.prod.yml --profile tools run --rm migrate && docker compose -f docker-compose.prod.yml up -d`.
 Take a backup first. Migrations are forward-only; rollback = previous image tag + restore if a migration was involved.
 
-## 5. Backups (policy C1: RPO 24 h, RTO 4 h, 14/8/6 retention, quarterly drill)
+## 5. Backups (policy D19: nightly dump + WAL archiving, RPO 15 min / RTO 4 h objectives, 14/8/6 retention)
+
+The `backup` service in `docker-compose.prod.yml` does it all: nightly encrypted `pg_dump` at `BACKUP_TIME` (`TZ`),
+weekly encrypted base backup, WAL archived by `db` at least every 15 min and encrypted by `backup` within a minute,
+failures written to `ops_alerts` (emailed by the worker). Stored in the `backups` volume on the same server
+(Owner-approved exception, 2026-10-29: losing the server loses the backups too).
 
 ```sh
-cp devops/env/backup.env.example devops/env/backup.env && chmod 600 devops/env/backup.env   # set AGE_RECIPIENT
-crontab -e
-30 2 * * * /opt/udigity/devops/backup/pg-backup.sh >> /var/log/udigity-backup.log 2>&1
+cp devops/env/backup.env.example devops/env/backup.env && chmod 600 devops/env/backup.env   # AGE_RECIPIENT, BACKUP_DB_PASSWORD, TZ
+docker compose -f docker-compose.prod.yml exec backup backupd nightly                       # dump now
+AGE_IDENTITY=~/keys/udigity-backup.agekey devops/backup/restore-drill.sh backups/daily/udigity-<stamp>.dump.age
+AGE_IDENTITY=~/keys/udigity-backup.agekey devops/backup/restore-drill.sh pitr backups/base/base-<stamp>.tar.gz.age backups/wal
 ```
 
-- `pg_dump -Fc` from the `db` container, piped straight into `age` (or `gpg`), so no plaintext dump touches disk.
-- Layout: `$BACKUP_DIR/{daily,weekly,monthly}/udigity-<UTC stamp>.dump.age` + `.sha256`. Sunday's dump is
-  hard-linked into `weekly/`, the 1st of the month's into `monthly/`; older files are pruned (14/8/6).
-- Off-site copy: set `RCLONE_REMOTE` (S3-compatible provider: **NEEDS VALUE**). Files are already encrypted.
-- Encryption options and key handling: `devops/backup/README.md`. The private key never lives on the VPS.
-- Quote values containing spaces in `backup.env` (it is sourced by the shell).
-
-### Restore drill (quarterly, on the operator workstation)
-
-```sh
-AGE_IDENTITY=~/keys/udigity-backup.agekey devops/backup/restore-drill.sh udigity-<stamp>.dump.age
-```
-
-Verifies the checksum, restores into a throwaway `postgres:17-alpine` container (tmpfs, no published port), prints
-migration/table/row counts and removes the container. Record date, file and duration. Verified 2026-10-23 against
-the test DB (age): 2 migrations, 7 tables, 9 employees restored in 54 s; 2026-10-26 (gpg): 28 migrations, 51 tables, 201 employees in 86 s (log in DEPLOY.md). On Git Bash for Windows run it with
-`MSYS_NO_PATHCONV=1`.
-
-### Real restore (production)
-
-```sh
-docker compose -f docker-compose.prod.yml stop backend frontend nginx
-age -d -i ~/keys/udigity-backup.agekey < udigity-<stamp>.dump.age > /dev/shm/restore.dump   # RAM only
-docker compose -f docker-compose.prod.yml exec -T db sh -c \
-  'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner --no-privileges' < /dev/shm/restore.dump
-shred -u /dev/shm/restore.dump
-# The restore drops privileges (--no-privileges): recreate the limited runtime role and its grants (idempotent).
-docker compose -f docker-compose.prod.yml exec -T db sh /docker-entrypoint-initdb.d/10-app-role.sh
-docker compose -f docker-compose.prod.yml up -d
-```
-
-Take a fresh backup of the current (broken) state first if it can still be dumped.
+Layout, keys and alerts: `devops/backup/README.md`. Setup, drills, real restore (dump or point in time) and the drill
+log: `devops/DEPLOY.md` section 11. On Git Bash for Windows run the drill with `MSYS_NO_PATHCONV=1`.
 
 ## 6. CI (`.github/workflows/ci.yml`, not pushed)
 

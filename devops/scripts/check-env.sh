@@ -66,7 +66,17 @@ if [ ! -f "$B" ]; then err "backend.env not found (copy backend.env.example)"; e
   check_perms "$B"; check_unknown "$B" "$EX_DIR/backend.env.example"
 
   [ "$(get "$B" NODE_ENV)" = "production" ] || err "backend.env: NODE_ENV must be production"
-  [ "$(get "$B" TRUST_PROXY)" = "true" ]    || err "backend.env: TRUST_PROXY must be true (one nginx hop; needed for the office-IP check)"
+  # D2: forwarding headers are trusted only from explicitly listed proxies (the nginx container network).
+  TPC="$(get "$B" TRUSTED_PROXY_CIDRS)"
+  if [ -z "$TPC" ]; then err "backend.env: TRUSTED_PROXY_CIDRS is required (the nginx proxy IP/CIDR; needed for the office-IP check)"
+  else
+    IFS=',' read -ra parts <<< "$TPC"
+    for p in "${parts[@]}"; do
+      p="${p// /}"
+      [[ "$p" =~ ^(loopback|linklocal|uniquelocal)$ || "$p" =~ ^[0-9.]+(/[0-9]{1,2})?$ || "$p" =~ ^[0-9A-Fa-f:]+(/[0-9]{1,3})?$ ]] \
+        || err "backend.env: TRUSTED_PROXY_CIDRS entries must be IPs, CIDR ranges or loopback/linklocal/uniquelocal"
+    done
+  fi
 
   DBURL="$(get "$B" DATABASE_URL)"
   if is_placeholder "$DBURL"; then
@@ -103,7 +113,7 @@ if [ ! -f "$B" ]; then err "backend.env not found (copy backend.env.example)"; e
   # Company timezone (BL-16): required, must be an IANA zone.
   TZV="$(get "$B" POLICY_COMPANY_TIMEZONE)"
   [ -z "$TZV" ] && TZV="$(get "$B" COMPANY_TIMEZONE)"
-  if [ -z "$TZV" ]; then err "backend.env: POLICY_COMPANY_TIMEZONE is required (BL-16), e.g. Asia/Beirut"
+  if [ -z "$TZV" ]; then err "backend.env: POLICY_COMPANY_TIMEZONE is required (BL-16): the company-confirmed IANA zone"
   elif command -v node >/dev/null 2>&1; then
     node -e "try{new Intl.DateTimeFormat('en-US',{timeZone:process.argv[1]})}catch(e){process.exit(1)}" "$TZV" \
       || err "backend.env: POLICY_COMPANY_TIMEZONE is not an IANA time zone"
@@ -112,10 +122,10 @@ if [ ! -f "$B" ]; then err "backend.env not found (copy backend.env.example)"; e
   fi
 
   enum OWNER_PENDING_2FA_SCOPE R11-a R11-b
-  enum POLICY_ATTENDANCE_VERIFICATION_MODE ip geofence ipOrLocation ipAndLocation disabled
+  enum POLICY_ATTENDANCE_VERIFICATION_MODE ip
   enum EMAIL_TRANSPORT log smtp
-  enum POLICY_ATTENDANCE_FAILED_CHECKOUT provisional block hold
-  enum POLICY_VISIBILITY_TIMER_BASIS creation inactivity
+  enum POLICY_ATTENDANCE_FAILED_CHECKOUT provisional
+  enum POLICY_VISIBILITY_TIMER_BASIS creation
   enum POLICY_ACCESS_DATA_ENTRY_SCOPE DE-1 DE-2
   enum POLICY_DEALS_DEVELOPER_PRE_CLOSURE assigned closedOnly
   enum POLICY_DEALS_CLOSURE_MODE ownerVerify direct
@@ -123,8 +133,8 @@ if [ ! -f "$B" ]; then err "backend.env not found (copy backend.env.example)"; e
   enum POLICY_CALLS_SAVE_AFTER_RESERVATION_LOSS keepAttemptOnly reject
   enum POLICY_NOTIFICATIONS_LATE_REMINDER sendIfEventFuture skip
 
-  for k in POLICY_ATTENDANCE_REMOTE_SELF_REQUEST POLICY_ATTENDANCE_EMPLOYEE_REQUESTS POLICY_ATTENDANCE_SUMMARY_REQUIRED \
-           POLICY_WORK_AUTOFILL_SCHEDULED POLICY_ACCESS_AUDIT_OWNER_HIDDEN_READS POLICY_CATEGORIES_DATA_ENTRY_MANAGE \
+  for k in POLICY_ATTENDANCE_REMOTE_SELF_REQUEST POLICY_ATTENDANCE_EMPLOYEE_REQUESTS POLICY_ATTENDANCE_BREAKS_ENABLED \
+           POLICY_WORK_AUTOFILL_SCHEDULED POLICY_ACCESS_AUDIT_OWNER_HIDDEN_READS \
            POLICY_RESERVATION_OWNER_OVERRIDE POLICY_PROJECTS_AUTO_PROVISION POLICY_NOTIFICATIONS_IN_APP \
            POLICY_NOTIFICATIONS_NOTIFY_PREVIOUS_ASSIGNEE POLICY_AUDIT_EXPORT_ENABLED SMTP_SECURE EMAIL_ALLOW_REAL_SEND \
            ALLOW_MISSING_ORIGIN COOKIE_SECURE; do
@@ -137,7 +147,7 @@ if [ ! -f "$B" ]; then err "backend.env not found (copy backend.env.example)"; e
            PASSWORD_MIN_LENGTH PASSWORD_RESET_TTL_MINUTES POLICY_AUTH_RECOVERY_CODE_COUNT \
            POLICY_RETENTION_SESSIONS_DAYS POLICY_RETENTION_RESERVATIONS_DAYS POLICY_RETENTION_NOTIFICATIONS_DAYS \
            POLICY_RETENTION_JOBS_DAYS POLICY_RETENTION_TOKENS_DAYS POLICY_RETENTION_IDEMPOTENCY_HOURS \
-           POLICY_ATTENDANCE_GRACE_MINUTES POLICY_ATTENDANCE_SUMMARY_MIN_LENGTH POLICY_ATTENDANCE_MISSING_CHECKOUT_FLAG_HOURS \
+           POLICY_ATTENDANCE_GRACE_MINUTES POLICY_ATTENDANCE_MISSING_CHECKOUT_FLAG_HOURS \
            POLICY_WORK_AUTOFILL_PER_AGENT_PER_DAY POLICY_RESERVATION_LEASE_SECONDS POLICY_RESERVATION_HEARTBEAT_SECONDS \
            POLICY_RESERVATION_IDLE_MINUTES POLICY_RESERVATION_IDLE_WARNING_MINUTES POLICY_RESERVATION_MAX_TOTAL_MINUTES \
            POLICY_CALLS_ACCEPTED_NOTE_MIN_LENGTH POLICY_FOLLOWUPS_OVERDUE_MINUTES POLICY_VISIBILITY_CALLBACK_GRACE_HOURS \
@@ -168,9 +178,8 @@ if [ ! -f "$B" ]; then err "backend.env not found (copy backend.env.example)"; e
     [ "$(get "$B" EMAIL_ALLOW_REAL_SEND)" = "true" ] && warn "backend.env: EMAIL_ALLOW_REAL_SEND=true but no SMTP_HOST: no email is sent; every invitation/reset email is recorded as failed on the Delivery monitor"
   fi
 
-  if [ -z "$(get "$B" POLICY_ATTENDANCE_OFFICE_IPS)$(get "$B" OFFICE_IP_ALLOWLIST)" ] \
-     && [ "$(get "$B" POLICY_ATTENDANCE_VERIFICATION_MODE)" != "disabled" ]; then
-    warn "backend.env: POLICY_ATTENDANCE_OFFICE_IPS is empty (VAL-IP): the office-IP check stays 'Not configured' until the Owner saves it"
+  if [ -z "$(get "$B" POLICY_ATTENDANCE_OFFICE_IPS)$(get "$B" OFFICE_IP_ALLOWLIST)" ]; then
+    warn "backend.env: POLICY_ATTENDANCE_OFFICE_IPS is empty (VAL-IP): attendance stays 'Not configured' until the Owner saves the office IPs"
   fi
 fi
 
@@ -236,9 +245,26 @@ if [ -f "$K" ]; then
     age|'') v="$(get "$K" AGE_RECIPIENT)"; [[ "$v" == age1* && "$v" != age1CHANGE_ME ]] || err "backup.env: AGE_RECIPIENT must be a real age public key (age1...)";;
     *) err "backup.env: BACKUP_ENCRYPTION must be age or gpg";;
   esac
-  [ -n "$(get "$K" RCLONE_REMOTE)" ] || warn "backup.env: RCLONE_REMOTE is empty: backups stay on this server only (no off-site copy)"
+  # Backup container (policy D19): its own read-only DB role, never the owner or the app role.
+  require "$K" BACKUP_DB_PASSWORD
+  BU="$(get "$K" BACKUP_DB_USER)"; BU="${BU:-udigity_backup}"; BPW="$(get "$K" BACKUP_DB_PASSWORD)"
+  if [ -f "$P" ]; then
+    case "$BU" in "$(get "$P" POSTGRES_USER)"|"$(get "$P" APP_DB_USER)"|udigity_app) err "backup.env: BACKUP_DB_USER must be its own role (not the owner or the app role)";; esac
+    [ -n "$BPW" ] && { [ "$BPW" = "$(get "$P" POSTGRES_PASSWORD)" ] || [ "$BPW" = "$(get "$P" APP_DB_PASSWORD)" ]; } \
+      && err "backup.env: BACKUP_DB_PASSWORD must differ from the owner and app passwords"
+  fi
+  bt="$(get "$K" BACKUP_TIME)"; [ -z "$bt" ] || [[ "$bt" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || err "backup.env: BACKUP_TIME must be HH:MM (24 h)"
+  bd="$(get "$K" BASE_BACKUP_DAY)"; [ -z "$bd" ] || [[ "$bd" =~ ^[1-7]$ ]] || err "backup.env: BASE_BACKUP_DAY must be 1..7"
+  for k in KEEP_DAILY KEEP_WEEKLY KEEP_MONTHLY KEEP_BASE; do
+    v="$(get "$K" $k)"; [ -z "$v" ] || { is_int "$v" && [ "$v" -gt 0 ]; } || err "backup.env: $k must be a positive integer"
+  done
+  if [ -f "$B" ]; then
+    ctz="$(get "$B" POLICY_COMPANY_TIMEZONE)"; btz="$(get "$K" TZ)"
+    [ -n "$ctz" ] && [ "${btz:-UTC}" != "$ctz" ] && warn "backup.env: TZ (${btz:-UTC}) differs from POLICY_COMPANY_TIMEZONE: BACKUP_TIME is read in TZ"
+  fi
+  warn "backup.env: backups are stored on this server only (Owner-approved exception): copy them off-server when possible (devops/DEPLOY.md section 11)"
 else
-  warn "backup.env not found: create it before enabling the backup cron (devops/DEPLOY.md, backups section)"
+  err "backup.env not found: the backup service needs it (copy backup.env.example; devops/DEPLOY.md section 11)"
 fi
 
 echo
