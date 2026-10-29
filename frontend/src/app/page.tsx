@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { AppShell } from '@/components/layout/AppShell';
 import { ApiErrorView } from '@/components/states/ApiErrorView';
 import { Icon } from '@/components/ui/Icon';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
+import { AttendanceTodayBar, BusinessStatusChart, CallingDailyChart, DeveloperWorkloadChart, PipelineStageChart } from '@/components/dashboard/DashboardCharts';
 import { Skeleton } from '@/components/ui/State';
 import { ACTIONS } from '@/lib/actions';
 import { useApi } from '@/lib/hooks/useApi';
@@ -396,13 +396,18 @@ function DashboardBody({ m, periodSubtitle }: { m: DashboardMetrics; periodSubti
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <section className={`${CARD} lg:col-span-2`} aria-label="Calling activity">
+          <CardHead title={`Calling activity · ${m.period === 'custom' ? 'Custom' : PERIOD_LABEL[m.period]}`} href="/reports" link="Open report" />
+          <CallingDailyChart daily={m.calling.daily ?? []} />
+          <div className="grid grid-cols-2 gap-3">
+            <Stat label="Call attempts" value={num(m.calling.callAttemptsInPeriod)} />
+            <Stat label="Businesses contacted" value={num(m.calling.businessesContactedInPeriod)} />
+          </div>
+        </section>
+
         <section className={CARD} aria-label="Attendance today">
           <CardHead title="Attendance today" href="/attendance/monitor" link="Open attendance" />
-          <div className="flex flex-wrap gap-1.5">
-            <PolicyPendingChip dec="DEC-007" />
-            <PolicyPendingChip dec="DEC-008" />
-            <PolicyPendingChip dec="DEC-022" />
-          </div>
+          <AttendanceTodayBar a={m.attendance} />
           <div className="grid grid-cols-3 gap-2">
             <Stat label="Checked in" value={num(m.attendance.checkedInToday)} />
             <Stat label="Not checked in" value={num(m.attendance.absentOrMissingCheckin)} />
@@ -414,24 +419,31 @@ function DashboardBody({ m, periodSubtitle }: { m: DashboardMetrics; periodSubti
             <span className="font-medium text-text-primary">{num(m.attendance.checkedOutToday)}</span>
           </div>
         </section>
+      </div>
 
-        <section className={CARD} aria-label="Calling activity">
-          <CardHead title={`Calling activity · ${m.period === 'custom' ? 'Custom' : PERIOD_LABEL[m.period]}`} href="/reports" link="Open report" />
-          <div className="grid grid-cols-2 gap-3 my-auto">
-            <Stat label="Call attempts" value={num(m.calling.callAttemptsInPeriod)} />
-            <Stat label="Businesses contacted" value={num(m.calling.businessesContactedInPeriod)} />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <section className={CARD} aria-label="Businesses by status">
+          <CardHead title="Businesses · status" href="/businesses" link="Open list" />
+          <BusinessStatusChart b={m.businesses} />
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+            <Fact label="Total businesses" value={num(m.businesses.total)} />
+            <Fact label="Added in period" value={num(m.businesses.addedInPeriod)} />
           </div>
-          <p className="text-xs text-text-muted leading-4">
-            Totals for the selected period. A per-day breakdown is not available yet.
-          </p>
+        </section>
+
+        <section className={CARD} aria-label="Pipeline">
+          <CardHead title="Pipeline · by stage" href="/deals" link="Deals & meetings" />
+          <PipelineStageChart byStage={m.commercial.byStage ?? {}} />
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+            <Fact label="Accepted in period" value={num(m.commercial.acceptedInPeriod)} />
+            <Fact label="Closed in period" value={num(m.commercial.closedInPeriod)} />
+            <Fact label="Payment pending verification" value={num(m.commercial.pendingVerification)} />
+            <Fact label="Projects completed" value={num(m.delivery.completedCount)} />
+          </div>
         </section>
 
         <section className={CARD} aria-label="Exceptions">
           <CardHead title={`Exceptions · ${num(exceptions)}`} href="/delivery-monitor" link="Delivery monitor" />
-          <div className="flex flex-wrap gap-1.5">
-            <PolicyPendingChip dec="AR-13" />
-            <PolicyPendingChip dec="DEC-026" />
-          </div>
           <div className="space-y-2.5 my-auto">
             <ExceptionRow icon="clock" tone="text-status-warning-fg" title="Missing checkouts" detail={`${num(m.attendance.missingCheckouts)} employees flagged`} href="/attendance/monitor" action="Review" />
             <ExceptionRow icon="alert-triangle" tone="text-status-danger-fg" title="Failed deliveries" detail={`${num(m.deliveryMonitor.failedDeliveriesCount)} need attention`} href="/delivery-monitor" action="Monitor" />
@@ -441,42 +453,13 @@ function DashboardBody({ m, periodSubtitle }: { m: DashboardMetrics; periodSubti
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <section className={CARD} aria-label="Businesses by status">
-          <CardHead title="Businesses · status" href="/businesses" link="Open list" />
-          <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 my-auto">
-            <Fact label="Total businesses" value={num(m.businesses.total)} />
-            <Fact label="Added in period" value={num(m.businesses.addedInPeriod)} />
-            <Fact label="Unassigned" value={num(m.businesses.unassigned)} />
-            <Fact label="Pending" value={num(m.businesses.pending)} />
-            <Fact label="On hold" value={num(m.businesses.onHold)} />
-            <Fact label="Callback requests" value={num(m.businesses.callbackRequests)} />
-            <Fact label="Rejected" value={num(m.businesses.rejected)} />
-            <Fact label="Needing corrections" value={num(m.businesses.needingCorrections)} />
-          </div>
-        </section>
-
-        <section className={CARD} aria-label="Pipeline">
-          <CardHead title="Pipeline" href="/deals" link="Deals & meetings" />
-          <div className="flex flex-wrap gap-1.5">
-            <PolicyPendingChip dec="DEC-018" />
-            <PolicyPendingChip dec="DEC-019" />
-          </div>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 my-auto">
-            <Fact label="Accepted (now)" value={num(m.commercial.acceptedOpportunities)} />
-            <Fact label="Accepted in period" value={num(m.commercial.acceptedInPeriod)} />
-            <Fact label="Closed deals (total)" value={num(m.commercial.closedDeals)} />
-            <Fact label="Closed in period" value={num(m.commercial.closedInPeriod)} />
-            <Fact label="Delivered" value={num(m.delivery.deliveredCount)} />
-            <Fact label="Completed" value={num(m.delivery.completedCount)} />
-          </div>
+        <section className={`${CARD} lg:col-span-2`} aria-label="Developer workload">
+          <CardHead title="Developer workload" href="/projects" link="Projects" />
+          <DeveloperWorkloadChart items={m.workload.developerWorkload} />
         </section>
 
         <section className={CARD} aria-label="Targets and milestones">
           <CardHead title="Targets & milestones" href="/targets" link="Targets & work lists" />
-          <div className="flex flex-wrap gap-1.5">
-            <PolicyPendingChip dec="DEC-020" />
-            <PolicyPendingChip dec="DEC-025" />
-          </div>
           <div className="space-y-3.5 my-auto">
             {(m.targets?.items ?? []).length === 0 ? (
               <p className="text-sm text-text-secondary">No target set</p>

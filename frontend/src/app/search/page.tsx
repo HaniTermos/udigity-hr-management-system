@@ -7,7 +7,6 @@ import { AppShell } from '@/components/layout/AppShell';
 import type { SearchMatchType } from '@/lib/api/businesses';
 import { SearchInput } from '@/components/ui/Input';
 import { NoticeAccess } from '@/components/ui/NoticeAccess';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { StateView } from '@/components/ui/State';
 import { ErrorState } from '@/components/businesses/AsyncState';
 import { useBusinessAccess, useBusinessSearch } from '@/components/businesses/hooks';
@@ -51,12 +50,6 @@ function SearchBody({ q }: { q: string }) {
       <PageHeader
         title={q ? `Search results for “${q}”` : 'Search'}
         subtitle={subtitle}
-        chips={
-          <>
-            <PolicyPendingChip dec="DEC-001/002" demo />
-            <PolicyPendingChip dec="DEC-003" demo />
-          </>
-        }
       />
 
       {q.length < 2 ? (

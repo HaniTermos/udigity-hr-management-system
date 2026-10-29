@@ -6,7 +6,6 @@ import { ACTIONS } from '@/lib/actions';
 import { AppShell } from '@/components/layout/AppShell';
 import { ApiError, newIdempotencyKey } from '@/lib/api/client';
 import { createBusiness, duplicateMatchFrom, similarNamesFrom, type DuplicateMatch, type SimilarName } from '@/lib/api/businesses';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { NoticeAccess } from '@/components/ui/NoticeAccess';
 import { useToast } from '@/components/ui/Toast';
 import { BusinessForm } from '@/components/businesses/BusinessForm';
@@ -95,12 +94,6 @@ function CreateBusiness() {
         breadcrumb={[{ label: 'Businesses', href: '/businesses' }, { label: 'New business' }]}
         title="New business"
         subtitle="Duplicates are checked across all stored businesses when you save."
-        chips={
-          <>
-            <PolicyPendingChip dec="DEC-003" demo />
-            <PolicyPendingChip dec="DEC-013" demo />
-          </>
-        }
       />
 
       {categoriesError ? (

@@ -4,7 +4,6 @@ import React, { useCallback, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AppShell } from '@/components/layout/AppShell';
 import { Alert } from '@/components/ui/Alert';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { LoadErrorState } from '@/components/states';
 import { AttendanceCard, AttendanceCardSkeleton, CheckInNote, TargetsCard, WorkListCard } from '@/components/attendance/MyDayCards';
 import { BreakTimerCard } from '@/components/attendance/BreakTimer';
@@ -46,9 +45,6 @@ export default function MyDayPage() {
           </p>
         </div>
 
-        {!time.configured && (
-          <NoticePolicy dec="DEC-007" demo body="Company timezone is not configured; times show in your browser's timezone." />
-        )}
 
         {earlier && !today.data?.session && (
           <Alert
@@ -67,12 +63,11 @@ export default function MyDayPage() {
             ) : (
               <>
                 <AttendanceCard today={today.data} time={time} onCheckIn={() => setCheckInOpen(true)} onCheckOut={() => setCheckOutOpen(true)} />
-                {/* Fixed v1 scope "no break tracking": the timer only exists when the server enables breaks. */}
+                {/* Break timer while checked in, when the server has break tracking on (CFG attendance.breaksEnabled). */}
                 {today.data.breaksEnabled && today.data.session?.state === 'open' && <BreakTimerCard onBreakChanged={refresh} />}
                 <CheckInNote today={today.data} time={time} />
               </>
             )}
-            <NoticePolicy size="inline" dec="A1" demo body="Your work list works without checking in. Whether check-in should gate the work list is not decided." />
           </div>
           <div className="space-y-4">
             <TargetsCard data={targets.data} isLoading={targets.isLoading} error={targets.error} onRetry={() => void targets.mutate()} />

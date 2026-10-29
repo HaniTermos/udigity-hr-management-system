@@ -50,7 +50,8 @@ async function uniqueEmployee(role: string, isActive = true): Promise<{ id: stri
   return { id: rows[0].id, email };
 }
 
-describe.skipIf(!hasTestDb)('Identity API against TEST_DATABASE_URL', () => {
+// 60 s per test: relaying other files' backlog on the shared DB can exceed the 5 s default.
+describe.skipIf(!hasTestDb)('Identity API against TEST_DATABASE_URL', { timeout: 60_000 }, () => {
   afterAll(async () => {
     await pool.end();
   });
@@ -135,7 +136,8 @@ describe.skipIf(!hasTestDb)('Identity API against TEST_DATABASE_URL', () => {
     // E-03: outbox relay → security delivery → J-02 dispatch into the test mail sink (no real email).
     // Relay until the backlog is drained: earlier suites in the same DB may have left events queued.
     for (let i = 0; i < 500; i++) if ((await relayOutboxOnce()).claimed === 0) break;
-    await dispatchDueDeliveries();
+    // One J-02 pass claims only the 25 oldest due rows; drain so this test's email is sent on a reused DB.
+    for (let i = 0; i < 100; i++) if ((await dispatchDueDeliveries()).claimed === 0) break;
     const sent = mailSink.messages().filter((m) => m.to.toLowerCase() === emp.email.toLowerCase());
     expect(sent).toHaveLength(1);
     const link = sent[0].text.match(/https?:\/\/\S+reset-password\?token=[^\s"<]+/)![0];

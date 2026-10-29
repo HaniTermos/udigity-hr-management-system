@@ -8,7 +8,6 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { DateInput, Textarea } from '@/components/ui/Input';
-import { NoticePolicy, PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { SkeletonCard, StateView } from '@/components/ui/State';
 import { Tabs } from '@/components/ui/Tabs';
 import { useToast } from '@/components/ui/Toast';
@@ -22,8 +21,7 @@ import {
   type ReviewItem,
   type ReviewKind,
   type ReviewQueueResponse,
-  type VerificationState,
-} from '@/lib/api/attendanceOwner';
+  type VerificationState } from '@/lib/api/attendanceOwner';
 import { ApiError } from '@/lib/api/client';
 import { dateInZone, formatClock, formatDayTime, formatWeekdayDay, ROLE_LABEL, timeInZone, useCompanyTimezone, zonedToIso } from './format';
 
@@ -32,7 +30,7 @@ const linkButton =
   'hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring';
 
 const VERIFICATION_TEXT: Record<VerificationState, string> = {
-  recorded: 'Recorded · mode as configured',
+  recorded: 'Office check recorded',
   remote: 'remote',
   blocked: 'blocked',
   none: '—',
@@ -122,7 +120,6 @@ export function AttendanceCorrections() {
             kind={effectiveTab}
             selectedId={selected?.id ?? null}
             onSelect={setSelectedId}
-            previews={effectiveTab === 'missing_checkout' ? data.previews : []}
             timeZone={timeZone}
           />
           {selected && (
@@ -146,14 +143,12 @@ function QueueList({
   kind,
   selectedId,
   onSelect,
-  previews,
   timeZone,
 }: {
   items: ReviewItem[];
   kind: ReviewKind;
   selectedId: string | null;
   onSelect: (id: string) => void;
-  previews: ReviewQueueResponse['previews'];
   timeZone: string;
 }) {
   const heading = kind === 'corrected' ? 'Corrected' : kind === 'employee_request' ? 'Employee requests' : 'Needs review';
@@ -189,24 +184,11 @@ function QueueList({
                     Blocks next check-in
                   </Badge>
                 )}
-                {i.kind === 'employee_request' && <PolicyPendingChip dec="DEC-011" label="Alt B reading" demo />}
               </button>
             </li>
           );
         })}
       </ul>
-      {previews.length > 0 && (
-        <div className="rounded-lg border border-dashed border-border-strong p-3 space-y-3">
-          <p className="text-xs text-text-secondary">Preview · +{previews.length} if DEC-026 Alt B/C adopted (not counted)</p>
-          {previews.map((p) => (
-            <div key={p.id} className="space-y-1">
-              <div className="text-[13px] font-semibold text-text-primary">{p.title}</div>
-              <div className="text-xs text-text-secondary">{p.detail}</div>
-              <PolicyPendingChip dec="DEC-026" label={p.flagLabel.replace('DEC-026 ', '')} demo />
-            </div>
-          ))}
-        </div>
-      )}
     </Card>
   );
 }
@@ -253,12 +235,6 @@ function Detail({
           <RequestReview item={item} timeZone={timeZone} onDone={onDone} />
         ) : employeeRequests ? (
           <div className="space-y-3">
-            <NoticePolicy
-              size="block"
-              dec="DEC-011"
-              demo
-              body="Correction authority: under this reading the employee submits a request and you approve or reject it with a reason."
-            />
             <Button type="button" variant="secondary" onClick={onOpenRequests}>
               Open employee requests
             </Button>
@@ -345,7 +321,6 @@ function OwnerCorrection({ item, timeZone, onDone }: { item: ReviewItem; timeZon
     >
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-[13px] font-semibold text-text-primary">Correction</h3>
-        <PolicyPendingChip dec="DEC-011" label="Alt A reading — not selected" demo />
       </div>
       {msg?.conflict && (
         <StateView
@@ -408,7 +383,6 @@ function RequestReview({ item, timeZone, onDone }: { item: ReviewItem; timeZone:
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-[13px] font-semibold text-text-primary">Employee request</h3>
-        <PolicyPendingChip dec="DEC-011" label="Alt B reading — not selected" demo />
       </div>
       {msg?.conflict && (
         <StateView

@@ -5,7 +5,6 @@ import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Input } from '@/components/ui/Input';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { AuthTitle, SessionChip } from './AuthShell';
 
 /** SCR-AUTH-002: the 6-digit code from the Owner's second factor. */
@@ -39,7 +38,6 @@ export function TwoFactorChallenge({
         <Button fullWidth size="lg" onClick={onSignOut}>
           Back to sign in
         </Button>
-        <NoticePolicy tone="decision" dec="Impl. decision" body="After too many failed codes the session ends (threshold is an implementation decision)." />
       </div>
     );
   }
@@ -107,13 +105,6 @@ export function TwoFactorChallenge({
         </button>
       </div>
 
-      <div className="space-y-2">
-        <NoticePolicy
-          dec="R-11"
-          body="Not selected. R11-a: nothing is available until 2FA is complete. R11-b: only admin actions wait; My Day check-in is allowed."
-        />
-        <NoticePolicy tone="decision" dec="Impl. decision" body="2FA method is an implementation decision; the code entry is illustrative." />
-      </div>
     </form>
   );
 }

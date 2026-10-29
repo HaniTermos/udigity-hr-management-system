@@ -10,7 +10,6 @@ import { Alert } from '@/components/ui/Alert';
 import { Icon } from '@/components/ui/Icon';
 import { Checkbox, DateInput, Input, Textarea } from '@/components/ui/Input';
 import { Tabs } from '@/components/ui/Tabs';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { useToast } from '@/components/ui/Toast';
 import { ApiError } from '@/lib/api/client';
 import { useVersionedSave } from '@/lib/hooks/useVersionedSave';
@@ -23,8 +22,7 @@ import {
   type LogAttemptResultDto,
   type ReservationLostDetails,
   type ReservationLostReason,
-  type WorkspaceDto,
-} from '@/lib/api/calling';
+  type WorkspaceDto } from '@/lib/api/calling';
 import { OUTCOME_LABEL, useCallingFormat } from './format';
 import type { ContactSession } from './hooks';
 
@@ -299,8 +297,6 @@ export function LogAttemptPanel({
       <fieldset className="flex flex-col gap-2" disabled={busy}>
         <legend className="flex flex-wrap items-center gap-2 text-sm font-medium text-text-primary mb-1">
           Outcome <span aria-hidden>*</span>
-          <PolicyPendingChip dec="D4" demo />
-          <PolicyPendingChip dec="DEC-005" demo />
         </legend>
         {allowedOutcomes.map((c) => (
           <React.Fragment key={c.id}>
@@ -326,7 +322,7 @@ export function LogAttemptPanel({
             )}
             {outcome === c.id && c.id === 'rejected' && (
               <div className="rounded-lg border border-border-subtle bg-surface-subtle p-3 flex flex-col gap-2">
-                <Textarea label="Reason for rejecting" required rows={3} value={rejectionReason} onChange={(e) => setRejectionReason(e.target.value)} helperText="At least 3 characters. The business moves to the do-not-call list; open follow-ups are cancelled (D4)." />
+                <Textarea label="Reason for rejecting" required rows={3} value={rejectionReason} onChange={(e) => setRejectionReason(e.target.value)} helperText="At least 3 characters. The business moves to the do-not-call list; open follow-ups are cancelled." />
               </div>
             )}
             {outcome === c.id && c.id === 'accepted' && (
@@ -341,7 +337,7 @@ export function LogAttemptPanel({
                   counter={`${clientNeeds.trim().length}/${minLen}`}
                 />
                 <Input label="Service interest" value={serviceInterest} onChange={(e) => setServiceInterest(e.target.value)} />
-                <p className="text-[13px] text-text-muted">Developer not yet assigned (E3). The Owner or Call Center assigns one afterwards.</p>
+                <p className="text-[13px] text-text-muted">Developer not yet assigned. The Owner or Call Center assigns one afterwards.</p>
               </div>
             )}
           </React.Fragment>
@@ -454,7 +450,7 @@ function FollowUpFields({
           <Input label="Purpose" value={purpose} onChange={(e) => onPurpose(e.target.value)} placeholder="What will you discuss?" />
         </>
       )}
-      {mode === 'later' && <p className="text-[13px] text-text-muted">The business stays in “Callback to be scheduled” until you set a time (D2).</p>}
+      {mode === 'later' && <p className="text-[13px] text-text-muted">The business stays in “Callback to be scheduled” until you set a time.</p>}
     </div>
   );
 }
@@ -500,7 +496,7 @@ function SavedSummary({ r, onClose }: { r: LogAttemptResultDto; onClose: () => v
         </li>
         {r.followUp && <li>Follow-up scheduled for {f.weekdayTime(r.followUp.scheduledFor)}.</li>}
         {r.completedFollowUpId && <li>The follow-up this call fulfilled is completed.</li>}
-        {r.cancelledFollowUpIds.length > 0 && <li>{r.cancelledFollowUpIds.length} open follow-up(s) cancelled (D4).</li>}
+        {r.cancelledFollowUpIds.length > 0 && <li>{r.cancelledFollowUpIds.length} open follow-up(s) cancelled.</li>}
         {r.state.callbackMarker && <li>Callback to be scheduled: set a time from Follow-ups.</li>}
         {r.dealId && (
           <li className="flex flex-wrap items-center gap-2">
@@ -508,7 +504,7 @@ function SavedSummary({ r, onClose }: { r: LogAttemptResultDto; onClose: () => v
             <Badge tone={r.developerAssigned ? 'success' : 'warning'}>{r.developerAssigned ? 'Developer assigned' : 'Developer not yet assigned'}</Badge>
           </li>
         )}
-        {r.reservation === 'kept' && <li>Reservation kept (U-01).</li>}
+        {r.reservation === 'kept' && <li>Reservation kept.</li>}
         {r.reservation === 'released' && <li>Reservation released.</li>}
         {r.reservation === 'release_failed' && <li>The reservation could not be released and will lapse at the end of its lease.</li>}
       </ul>

@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { IconButton } from '@/components/ui/IconButton';
 import { Select } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { Skeleton, StateView } from '@/components/ui/State';
 import { useApi } from '@/lib/hooks/useApi';
 import { cn } from '@/lib/utils';
@@ -21,8 +20,7 @@ import {
   LoadError,
   MEETING_STATUS_LABEL,
   MEETING_TONE,
-  PageTitle,
-} from './shared';
+  PageTitle } from './shared';
 
 const DAY_MS = 86_400_000;
 const FIRST_HOUR = 9;
@@ -82,7 +80,6 @@ export function MeetingsView() {
         description="Meetings on deals you can access. Rescheduling keeps the previous time in the meeting history."
         aside={
           <>
-            <PolicyPendingChip dec="DEC-005" label="who may schedule" demo />
             <Button variant="secondary" leadingIcon={<Icon name="plus" size={16} />} onClick={() => setScheduling(true)}>
               Schedule meeting
             </Button>
@@ -181,18 +178,13 @@ export function MeetingsView() {
           Held
         </Badge>
         <Badge tone="danger" hasDot derived>
-          Outcome due = awaiting outcome (derived)
+          Outcome due: awaiting outcome
         </Badge>
         <Badge tone="neutral" derived>
-          Upcoming (derived)
+          Upcoming
         </Badge>
       </div>
-      <p className="text-[13px] text-text-muted">Cancelled and Missed meetings are listed in List view. Event kind is shown by icon and label, not colour only.</p>
-      <div className="flex flex-wrap gap-2">
-        <PolicyPendingChip dec="R-13" label="Missed is a proposed state" demo />
-        <PolicyPendingChip dec="No DEC ID" label="reminder timing" demo />
-        <PolicyPendingChip dec="DEC-005" demo />
-      </div>
+      <p className="text-[13px] text-text-muted">Cancelled and Missed meetings are listed in List view.</p>
 
       <MeetingDrawer
         meeting={open}

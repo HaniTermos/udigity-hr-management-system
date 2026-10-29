@@ -5,7 +5,6 @@ import { ACTIONS } from '@/lib/actions';
 import { AppShell } from '@/components/layout/AppShell';
 import type { CorrectionTab } from '@/lib/api/corrections';
 import { NoticeAccess } from '@/components/ui/NoticeAccess';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { SearchInput, Select } from '@/components/ui/Input';
 import { Tabs } from '@/components/ui/Tabs';
 import { ErrorState } from '@/components/businesses/AsyncState';
@@ -50,7 +49,6 @@ function CorrectionsContent() {
       <PageHeader
         title="Correction requests"
         subtitle="Requests from Call Center, Developers and the Owner to fix business master data. One shared queue."
-        chips={<PolicyPendingChip dec="DEC-002" demo />}
       />
 
       <Tabs
@@ -121,8 +119,7 @@ function CorrectionsContent() {
 
       {tab === 'open' && (
         <p className="flex flex-wrap items-center gap-2 text-[13px] leading-[18px] text-text-secondary">
-          <PolicyPendingChip dec="DEC-002" demo />
-          <span>The redacted row is not counted in Open ({counts?.open ?? 0}). Omitting the row instead is the other alternative — neither is selected.</span>
+          <span>The redacted row is not counted in Open ({counts?.open ?? 0}).</span>
         </p>
       )}
       {tab === 'withdrawn' && (

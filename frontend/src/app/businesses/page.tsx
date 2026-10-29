@@ -8,7 +8,6 @@ import { AppShell } from '@/components/layout/AppShell';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { BusinessFilters, EMPTY_FILTERS, filtersToQuery, type DirectoryFilterState } from '@/components/businesses/BusinessFilters';
 import { BusinessTable } from '@/components/businesses/BusinessTable';
 import { ErrorState } from '@/components/businesses/AsyncState';
@@ -45,13 +44,6 @@ function DirectoryContent() {
       <PageHeader
         title="Businesses"
         subtitle={isOwner ? 'All stored businesses, including those hidden from other roles.' : 'Businesses you can see. Lists and counts include only records you can open.'}
-        chips={
-          <>
-            <PolicyPendingChip dec="DEC-001" demo />
-            <PolicyPendingChip dec="DEC-002" demo />
-            <PolicyPendingChip dec="C-01" demo />
-          </>
-        }
         actions={
           allowed(ACTIONS.businessCreate) && (
             <Link href="/businesses/new" className="inline-flex">
@@ -67,7 +59,7 @@ function DirectoryContent() {
         <Alert
           tone="info"
           title="Owner view"
-          body="You see every business. “Hidden from other roles” marks records the visibility rules hide from other roles (DEC-001 / DEC-002, demonstration alternative — not approved). Duplicates are blocked for everyone."
+          body="You see every business. “Hidden from other roles” marks records the visibility rules hide from other roles. Duplicates are blocked for everyone."
         />
       )}
 

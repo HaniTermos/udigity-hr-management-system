@@ -8,7 +8,6 @@ import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Input } from '@/components/ui/Input';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { apiFetch } from '@/lib/api';
 
 /** SHR-015: status 0 means the request was not sent (offline) or the connection dropped. */
@@ -164,7 +163,6 @@ function ResetPasswordContent() {
               <Button type="submit" fullWidth isLoading={isSubmitting}>
                 Save password
               </Button>
-              <NoticePolicy tone="decision" size="chip" dec="Impl. decision" body="Password rules" />
             </form>
           ))}
 

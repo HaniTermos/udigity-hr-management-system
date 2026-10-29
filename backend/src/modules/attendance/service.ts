@@ -6,7 +6,7 @@
  * complete settings version activates enforcement; days off), D2 IP/CIDR office check only, D3 remote
  * exceptions (no self-grant), D4 corrections (no self-approval; effective values only after approval),
  * D5 provisional failed checkout and missing-checkout handling, D6 summary (10 non-whitespace
- * characters, pinned), D18 J-04 alerts, fixed v1 scope "no break tracking" (CFG
+ * characters, pinned), D18 J-04 alerts, breaks back on by Owner decision 2026-10-29 (CFG
  * `attendance.breaksEnabled`, default false). Still Demonstration alternatives: DEC-010 self request
  * (flag `attendance.remoteSelfRequest`), DEC-011 Alt B requests (flag `attendance.employeeRequests`).
  * Owner decisions 2026-10-29: per-employee start time / working days (`employee_schedules`, effective
@@ -117,7 +117,7 @@ export function attendanceFlags() {
   };
 }
 
-/** Fixed v1 scope "no break tracking": the break routes answer 404 while this is false. */
+/** Break tracking (Owner decision 2026-10-29: on by default): the break routes answer 404 while this is false. */
 export function breaksEnabled(): boolean {
   return flag('attendance.breaksEnabled');
 }
@@ -229,6 +229,7 @@ function versionDto(v: repo.SettingsVersionRow | null, s: Schedule, full: boolea
 export async function getSettingsView(db: Queryable, full: boolean) {
   const info = await currentSchedule(db);
   const missing = missingSettings(info.schedule);
+  const policy = await breakPolicy(db);
   const base = {
     label: DEMO_LABEL,
     configured: missing.length === 0,
@@ -236,6 +237,8 @@ export async function getSettingsView(db: Queryable, full: boolean) {
     requiredMinutes: REQUIRED_MINUTES,
     current: versionDto(info.version, info.schedule, full),
     flags: attendanceFlags(),
+    // Breaks do not reduce worked time (duration = checkout − check-in).
+    breaks: { enabled: breaksEnabled(), allowanceMinutes: policy.allowanceSeconds / 60, maxPerSession: policy.maxBreaks },
   };
   if (!full) return base;
   const versions = await repo.listSettingsVersions(db, 20);
@@ -325,6 +328,10 @@ export async function putSettings(ctx: CommandContext, patch: PutSettingsInput) 
   });
   // Keep company.timezone (read by other modules through getSetting) equal to the saved version.
   await setCompanyValue(ctx, 'company.timezone', timezone);
+  // Break limits are plain Owner settings (not versioned): they apply from now on.
+  const breaksBefore = await breakPolicy(ctx.tx);
+  if (patch.breakAllowanceMinutes !== undefined) await setCompanyValue(ctx, 'attendance.breakAllowanceMinutes', patch.breakAllowanceMinutes);
+  if (patch.maxBreaksPerSession !== undefined) await setCompanyValue(ctx, 'attendance.maxBreaksPerSession', patch.maxBreaksPerSession);
 
   const after: Schedule = {
     timezone,
@@ -341,6 +348,15 @@ export async function putSettings(ctx: CommandContext, patch: PutSettingsInput) 
   };
   const changedBefore: Record<string, unknown> = {};
   const changedAfter: Record<string, unknown> = {};
+  const breaksAfter = await breakPolicy(ctx.tx);
+  if (breaksAfter.allowanceSeconds !== breaksBefore.allowanceSeconds) {
+    changedBefore.breakAllowanceMinutes = breaksBefore.allowanceSeconds / 60;
+    changedAfter.breakAllowanceMinutes = breaksAfter.allowanceSeconds / 60;
+  }
+  if (breaksAfter.maxBreaks !== breaksBefore.maxBreaks) {
+    changedBefore.maxBreaksPerSession = breaksBefore.maxBreaks;
+    changedAfter.maxBreaksPerSession = breaksAfter.maxBreaks;
+  }
   for (const k of Object.keys(after) as (keyof Schedule)[]) {
     if (JSON.stringify(before.schedule[k]) !== JSON.stringify(after[k])) {
       changedBefore[k] = before.schedule[k];

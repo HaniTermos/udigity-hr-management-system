@@ -64,15 +64,20 @@ router.post('/read-all', authenticate, requireAction('notification.mark_read'), 
 
 export default router;
 
+/** Optional `state` filter of the delivery monitor (unknown values are ignored). */
+const MONITOR_STATES = ['pending', 'retry_pending', 'sent', 'accepted', 'captured', 'failed', 'suppressed', 'skipped', 'scheduled', 'cancelled'];
+
 /** Mounted at /api/delivery-monitor */
 export const deliveryMonitorRouter = Router();
 
 deliveryMonitorRouter.get('/', authenticate, requireAction('reminder.monitor.read'), async (req, res, next) => {
   try {
     const kind = req.query.kind as 'reminder' | 'notification' | 'provisioning' | undefined;
+    const state = typeof req.query.state === 'string' && MONITOR_STATES.includes(req.query.state) ? req.query.state : undefined;
     const pagination = PageQuerySchema.parse(req.query);
     const { items, total } = await service.listDeliveryMonitor(pool, {
       kind: kind && ['reminder', 'notification', 'provisioning'].includes(kind) ? kind : undefined,
+      state,
       limit: pagination.pageSize,
       offset: (pagination.page - 1) * pagination.pageSize,
     });

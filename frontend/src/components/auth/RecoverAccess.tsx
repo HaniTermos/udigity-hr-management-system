@@ -5,7 +5,6 @@ import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Input } from '@/components/ui/Input';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { AuthTitle, SessionChip } from './AuthShell';
 
 /** SCR-AUTH-003 "Recover lost factor": one single-use recovery code (POST /2fa/recover). */
@@ -36,7 +35,6 @@ export function RecoverAccess({
         <Button fullWidth size="lg" onClick={onSignOut}>
           Back to sign in
         </Button>
-        <NoticePolicy dec="OQ-12" body="Unresolved (no DEC ID): the operational recovery procedure when every recovery option fails." />
       </div>
     );
   }
@@ -92,7 +90,6 @@ export function RecoverAccess({
         </button>
       </div>
 
-      <NoticePolicy tone="decision" dec="Impl. decision" body="Recovery method is an implementation decision (WF-AUTH-002 E2)." />
     </form>
   );
 }

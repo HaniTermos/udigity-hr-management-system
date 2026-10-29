@@ -4,7 +4,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { DateInput, Input, Textarea } from '@/components/ui/Input';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { useVersionedSave } from '@/lib/hooks/useVersionedSave';
 import { runDealCommand, type Deal, type DealAdvanceTarget, type DealFactKey, type DealVerb } from '@/lib/api/deals';
 import { ActionError, DEAL_STAGE_LABEL, fieldMessage, fmtDate, todayInput } from './shared';
@@ -383,9 +382,6 @@ export function DealActionDialog({
             Closure evidence: agreement reference and payment date. The developer submits payment received; only the Owner&rsquo;s
             verification closes the deal. A first payment or deposit is enough; it does not mean the full contract is settled.
           </p>
-        )}
-        {action.kind === 'reopen' && (
-          <NoticePolicy tone="policy" size="block" dec="OQ-15" demo body="Reopening a lost deal is a demonstration flag. Closed deals never reopen." />
         )}
 
         <ActionError route={route} error={error} onRetry={() => void retry()} />

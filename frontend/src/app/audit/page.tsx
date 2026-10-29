@@ -4,13 +4,11 @@ import React, { useDeferredValue, useState } from 'react';
 import useSWR from 'swr';
 import { AppShell } from '@/components/layout/AppShell';
 import { Alert } from '@/components/ui/Alert';
-import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Drawer } from '@/components/ui/Drawer';
 import { Icon } from '@/components/ui/Icon';
 import { IconButton } from '@/components/ui/IconButton';
 import { DateInput, Input, Select } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { SkeletonTableRow, StateView } from '@/components/ui/State';
 import { Pagination, Table, TableContainer, TBody, TD, TH, THead, TR } from '@/components/ui/Table';
 import { formatDay, formatDayTime, ROLE_LABEL, useCompanyTimezone } from '@/components/owner/format';
@@ -20,6 +18,15 @@ import { ACTIONS } from '@/lib/actions';
 import { ApiError } from '@/lib/api/client';
 import { useCapability } from '@/lib/hooks/useCapability';
 import { employeesListKey, listEmployees } from '@/lib/api/employees';
+
+/** "deal.closure_requested" → "Deal · Closure requested": readable audit event names, raw ids never shown. */
+function eventLabel(name: string): string {
+  const [area, ...rest] = name.split('.');
+  const words = (t: string) => t.replace(/[_-]+/g, ' ').trim();
+  const cap = (t: string) => (t ? t[0].toUpperCase() + t.slice(1) : t);
+  const action = words(rest.join(' '));
+  return action ? `${cap(words(area))} · ${cap(action)}` : cap(words(area));
+}
 
 const PAGE_SIZE = 25;
 
@@ -141,12 +148,11 @@ export default function AuditLogPage() {
           </div>
           <div className="flex flex-col items-start sm:items-end gap-1">
             <div className="flex items-center gap-2">
-              <PolicyPendingChip dec="OQ-18" label="audit export open" />
               <Button variant="secondary" disabled leadingIcon={<Icon name="download" size={16} />}>
                 Export
               </Button>
             </div>
-            <span className="text-xs text-text-muted">Only if OQ-18 is adopted</span>
+            <span className="text-xs text-text-muted">Export is not available</span>
           </div>
         </div>
 
@@ -162,7 +168,7 @@ export default function AuditLogPage() {
 
         <Alert
           tone="info"
-          title="Read-only, append-only (G3)"
+          title="Read-only, append-only"
           body="Entries cannot be edited, deleted or hidden. Passwords, reset tokens and 2FA secrets are never recorded."
         />
 
@@ -219,14 +225,14 @@ export default function AuditLogPage() {
                           <div className="text-xs text-text-muted">{formatDay(e.occurredAt, timeZone).split(' ').pop()}</div>
                         </TD>
                         <TD meta={actor.role} className="whitespace-nowrap">{actor.name}</TD>
-                        <TD meta={e.placeholderName ? 'Placeholder name (§5)' : undefined}>{e.eventName}</TD>
+                        <TD>{eventLabel(e.eventName)}</TD>
                         <TD className="text-text-secondary whitespace-nowrap" title={e.entityId ?? undefined}>
                           {e.entityType.replace(/_/g, ' ')}
                           {e.entityId ? ` · ${shortId(e.entityId)}` : ''}
                         </TD>
                         <TD className="text-text-secondary max-w-[320px] truncate" title={summarize(e)}>{summarize(e)}</TD>
                         <TD>
-                          <IconButton icon="chevron-right" label={`Open ${e.eventName} details`} variant="ghost" size="sm" onClick={(ev) => { ev.stopPropagation(); setOpen(e); }} />
+                          <IconButton icon="chevron-right" label={`Open ${eventLabel(e.eventName)} details`} variant="ghost" size="sm" onClick={(ev) => { ev.stopPropagation(); setOpen(e); }} />
                         </TD>
                       </TR>
                     );
@@ -244,12 +250,9 @@ export default function AuditLogPage() {
           </div>
         )}
 
-        <div className="flex justify-end">
-          <PolicyPendingChip dec="OQ-19" label="retention open" />
-        </div>
       </div>
 
-      <Drawer isOpen={open !== null} onClose={() => setOpen(null)} title="Event detail" subtitle={open?.eventName} width="lg">
+      <Drawer isOpen={open !== null} onClose={() => setOpen(null)} title="Event detail" subtitle={open ? eventLabel(open.eventName) : undefined} width="lg">
         {open && <EventDetail event={open} timeZone={timeZone} />}
       </Drawer>
     </AppShell>
@@ -261,10 +264,9 @@ function EventDetail({ event: e, timeZone }: { event: AuditEventRow; timeZone: s
   const rows: [string, React.ReactNode][] = [
     ['Time', formatDayTime(e.occurredAt, timeZone) + ' (company time)'],
     ['Actor', `${actor.name}${actor.role ? ` · ${actor.role}` : ''}`],
-    ['Event', <>{e.eventName} {e.placeholderName && <Badge tone="policy">Placeholder name</Badge>}</>],
+    ['Event', eventLabel(e.eventName)],
     ['Entity', `${e.entityType.replace(/_/g, ' ')}${e.entityId ? ` · ${e.entityId}` : ''}`],
     ['Summary', summarize(e)],
-    ['Workflow', e.sourceWorkflow ?? '—'],
     ['Reason', e.reason ?? '—'],
     ['Request', e.requestId ?? '—'],
   ];

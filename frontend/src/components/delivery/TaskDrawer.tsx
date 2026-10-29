@@ -7,7 +7,6 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Drawer } from '@/components/ui/Drawer';
 import { Checkbox, DateInput, Input, Select, Textarea } from '@/components/ui/Input';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { useToast } from '@/components/ui/Toast';
 import { useVersionedSave } from '@/lib/hooks/useVersionedSave';
 import { updateTask, type ProjectDetail, type Task, type TaskStatus } from '@/lib/api/projects';
@@ -175,7 +174,7 @@ export function TaskDrawer({
           onChange={(e) => set('status', e.target.value as TaskStatus)}
           disabled={locked}
           options={statusOptions.map((s) => ({ value: s, label: TASK_STATUS_LABEL[s] }))}
-          helperText={`Task status only (proposed, no DEC ID). Project status stays ${PROJECT_STATUS_LABEL[project.status]}.`}
+          helperText={`Changes the task status only. Project status stays ${PROJECT_STATUS_LABEL[project.status]}.`}
           error={err('status')}
         />
 
@@ -250,7 +249,6 @@ export function TaskDrawer({
           </Button>
         )}
 
-        <NoticePolicy size="chip" dec="Task statuses" demo />
         <ActionError route={conflict ? null : route} error={conflict ? null : error} onRetry={() => void retry()} />
       </div>
     </Drawer>

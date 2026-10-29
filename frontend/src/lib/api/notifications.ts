@@ -12,14 +12,20 @@ export const notificationsPaths = {
   readAll: '/api/notifications/read-all',
 } as const;
 
+/** Backend `NotificationDto` (in-app rows; newest first). `title` / `message` are plain-English text. */
 export interface NotificationItem {
   id: string;
   template: string;
-  family: 'security' | 'business';
   channel: 'email' | 'in_app';
   state: string;
+  sourceType: string | null;
+  sourceId: string | null;
   readAt: string | null;
   createdAt: string;
+  title: string;
+  message: string;
+  /** App path of the related screen, when there is one. */
+  link?: string;
 }
 
 export async function listNotifications(options: {

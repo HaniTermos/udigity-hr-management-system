@@ -8,7 +8,6 @@ import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Drawer } from '@/components/ui/Drawer';
 import { Input, Select, Textarea } from '@/components/ui/Input';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { useToast } from '@/components/ui/Toast';
 import { formatDay } from './format';
 
@@ -143,7 +142,6 @@ function OpenDrawer({ onClose, business, openRequests = [], fields = DEFAULT_FIE
           helperText="Checked only when Data Entry applies it."
           autoComplete="off"
         />
-        <NoticePolicy size="inline" demo dec="No DEC ID" body="Who receives the request and how they are notified are not decided." />
       </form>
     </Drawer>
   );

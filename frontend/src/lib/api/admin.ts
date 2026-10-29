@@ -139,6 +139,8 @@ export interface AttendanceSettingsDto {
   configured: boolean;
   missing?: string[];
   current: AttendanceSettingsCurrent;
+  /** Break tracking (Owner decision 2026-10-29): on/off and the per-session limits. */
+  breaks?: { enabled: boolean; allowanceMinutes: number; maxPerSession: number };
 }
 
 /**
@@ -158,6 +160,8 @@ export interface AttendanceSettingsPut {
   officeHostnames?: string[];
   holidays?: string[];
   holidaysConfirmed?: boolean;
+  breakAllowanceMinutes?: number;
+  maxBreaksPerSession?: number;
   reason?: string;
 }
 

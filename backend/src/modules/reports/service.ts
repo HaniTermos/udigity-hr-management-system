@@ -39,6 +39,28 @@ export function dashboardRange(
   return { since: daysBack(6), todayStart };
 }
 
+/** Longest custom range charted per day; longer ranges keep their totals but get no daily series. */
+export const DAILY_SERIES_MAX_DAYS = 92;
+
+/**
+ * One row per company-timezone day of the dashboard period (up to today), zero-filled for days without calls.
+ */
+async function dailyCalling(
+  db: Queryable,
+  range: { since: Date; until?: Date },
+  now: Date,
+  tz: string
+): Promise<DashboardMetricsDto['calling']['daily']> {
+  const end = range.until && range.until < now ? range.until : now;
+  const first = workDateOf(range.since, tz);
+  const last = workDateOf(new Date(end.getTime() - 1), tz);
+  const days: string[] = [];
+  for (let d = first; d <= last && days.length <= DAILY_SERIES_MAX_DAYS; d = addDays(d, 1)) days.push(d);
+  if (days.length === 0 || days.length > DAILY_SERIES_MAX_DAYS) return [];
+  const rows = new Map((await repo.queryDailyCalling(db, range.since, end, tz)).map((r) => [r.day, r]));
+  return days.map((day) => ({ day, attempts: rows.get(day)?.attempts ?? 0, contacted: rows.get(day)?.contacted ?? 0 }));
+}
+
 /**
  * D7: Owner-set targets whose period contains company today, with server-computed progress. No target →
  * an empty list (the UI says "No target set"); nothing here is an invented quota.
@@ -77,6 +99,8 @@ export async function getDashboardMetrics(
 
   const stats = await repo.queryDashboardStats(db, range.since, range.until, range.todayStart);
   const devWorkload = await repo.queryDeveloperWorkload(db);
+  const daily = await dailyCalling(db, range, now, tz);
+  const stages = await repo.queryDealsByStage(db);
   const targets = await activeTargets(db, now);
 
   const closedVsCompRatio =
@@ -105,6 +129,8 @@ export async function getDashboardMetrics(
       closedDeals: stats.closedDeals,
       closedInPeriod: stats.closedInPeriod,
       closedVsCompletedRatio: closedVsCompRatio,
+      byStage: stages.byStage,
+      pendingVerification: stages.pendingVerification,
     },
     delivery: {
       deliveredCount: stats.deliveredProjects,
@@ -115,6 +141,7 @@ export async function getDashboardMetrics(
     calling: {
       callAttemptsInPeriod: stats.callAttemptsInPeriod,
       businessesContactedInPeriod: stats.businessesContactedInPeriod,
+      daily,
     },
     attendance: {
       checkedInToday: stats.checkedInToday,

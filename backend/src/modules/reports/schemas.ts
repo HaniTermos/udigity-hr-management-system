@@ -50,6 +50,10 @@ export interface DashboardMetricsDto {
     closedDeals: number;
     closedInPeriod: number;
     closedVsCompletedRatio: number;
+    /** Current deal count per stage (internal stage ids). */
+    byStage: Record<string, number>;
+    /** Open deals with a payment waiting for Owner verification. */
+    pendingVerification: number;
   };
   delivery: {
     deliveredCount: number;
@@ -60,6 +64,8 @@ export interface DashboardMetricsDto {
   calling: {
     callAttemptsInPeriod: number;
     businessesContactedInPeriod: number;
+    /** Per company day of the period (zero-filled); empty when the range is longer than 92 days. */
+    daily: Array<{ day: string; attempts: number; contacted: number }>;
   };
   attendance: {
     checkedInToday: number;

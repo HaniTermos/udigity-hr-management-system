@@ -1,7 +1,6 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
 import { Icon } from './Icon';
-import { NoticePolicy } from './NoticePolicy';
 
 export function Card({
   className,
@@ -112,9 +111,6 @@ export function CardMetric({
           <span className="h-9 w-20 rounded-md bg-surface-skeleton animate-pulse" aria-label="Loading" />
         ) : (
           <span className="ds-number-lg text-text-primary">{trend === 'pending' ? '—' : value}</span>
-        )}
-        {trend === 'pending' && (
-          <NoticePolicy size="chip" tone="policy" dec="DEC-020" />
         )}
       </div>
 

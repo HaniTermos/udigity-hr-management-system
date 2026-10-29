@@ -17,7 +17,7 @@ export function SummaryTiles({ summary }: { summary: MySessionsSummary }) {
     { label: 'Sessions', value: String(summary.sessions) },
     { label: 'Hours recorded', value: formatHM(summary.totalMinutes) },
     {
-      label: 'Punctuality (derived)',
+      label: 'Punctuality',
       value: `On time ${summary.onTime} · Late ${summary.late}${summary.unclassified ? ` · Unclassified ${summary.unclassified}` : ''}`,
     },
     { label: 'Missing checkout', value: String(summary.missingCheckout) },

@@ -6,7 +6,6 @@ import { CardInset, CardSection } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { IconButton } from '@/components/ui/IconButton';
 import { Checkbox, DateInput, FieldShell, Input, Select, Textarea } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import {
   COUNTRY_CODES,
   FIELD_IDS,
@@ -15,8 +14,7 @@ import {
   type BusinessFormErrors,
   type BusinessFormValues,
   type PhoneFormRow,
-  type SocialFormRow,
-} from './businessFormModel';
+  type SocialFormRow } from './businessFormModel';
 
 export interface CategoryChoice {
   id: string;
@@ -63,7 +61,6 @@ export function BusinessDetailsCard({
           maxLength={120}
           autoComplete="off"
         />
-        <PolicyPendingChip dec="DEC-013" demo className="self-start" />
 
         <Select
           id={FIELD_IDS.category}
@@ -79,7 +76,6 @@ export function BusinessDetailsCard({
           <Link href="/categories" className="text-[13px] leading-[18px] font-medium text-text-link hover:underline underline-offset-2">
             View categories
           </Link>
-          <PolicyPendingChip dec="DEC-015" demo />
         </div>
 
         <Checkbox
@@ -145,7 +141,6 @@ export function PhoneNumbersCard({
         </Button>
       }
     >
-      <PolicyPendingChip dec="B2" demo className="self-start" />
       {rows.length === 0 && <p className="text-[13px] leading-[18px] text-text-muted">No phone yet. A business without a phone is not eligible for calling.</p>}
       <div className="flex flex-col gap-3">
         {rows.map((p, i) => {
@@ -340,7 +335,6 @@ export function SocialAccountsCard({
         <span className={listError ? 'text-status-danger-fg font-medium' : undefined}>
           {listError ?? 'At least one account is required.'}
         </span>
-        <PolicyPendingChip dec="DEC-014/023" demo />
       </div>
       <div className="flex flex-col gap-3">
         {rows.map((r, i) => (

@@ -4,7 +4,6 @@ import React, { useMemo, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Drawer } from '@/components/ui/Drawer';
 import { DateInput, Input, Select, Textarea } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { useToast } from '@/components/ui/Toast';
 import { useAuth } from '@/lib/auth';
 import { useApi, usePage } from '@/lib/hooks/useApi';
@@ -59,27 +58,17 @@ export function ScheduleMeetingDrawer({
   const [agenda, setAgenda] = useState('');
   const [local, setLocal] = useState<Record<string, string>>({});
 
-  // 1. Search the directory (server side, 20 per search) instead of loading the first 100.
-  const [bizSearch, setBizSearch] = useState('');
-  const [bizQuery, setBizQuery] = useState('');
-  React.useEffect(() => {
-    const t = setTimeout(() => setBizQuery(bizSearch.trim()), 300);
-    return () => clearTimeout(t);
-  }, [bizSearch]);
-  const businessesRes = useApi<{ items: { id: string; name: string }[]; total?: number }>(
-    deal ? null : `/api/businesses${buildQuery({ pageSize: 20, q: bizQuery || undefined, sort: 'name' })}`
-  );
-  const allBusinesses = useMemo(() => businessesRes.data?.items ?? [], [businessesRes.data?.items]);
-  const businessTotal = businessesRes.data?.total ?? allBusinesses.length;
-
-  // 2. Load open deals for pre-closure matching
+  // 1. A meeting needs an open deal (the server rejects a business without one), so the picker lists exactly
+  //    the open deals the user can see, by business name. No free search.
   const choices = usePage<DealListItem>(deal ? null : dealsPaths.list, { tab: 'accepted', pageSize: 100 });
-  const openDeals = choices.items.filter((d) => d.stage !== 'closed' && d.stage !== 'not_proceeding');
+  const openDeals = useMemo(
+    () => choices.items.filter((d) => d.stage !== 'closed' && d.stage !== 'not_proceeding'),
+    [choices.items]
+  );
 
-  // 3. Staff picker. The employee list is Owner-only today, so for other roles the picker is optional: the host
+  // 2. Staff picker. The employee list is Owner-only today, so for other roles the picker is optional: the host
   //    defaults to the signed-in user and the form never depends on the list.
-  const [staffSearch, setStaffSearch] = useState('');
-  const employeesRes = useApi<{ items: EmployeeRow[] }>(`/api/employees${buildQuery({ pageSize: 50, status: 'active', q: staffSearch.trim() || undefined })}`, {
+  const employeesRes = useApi<{ items: EmployeeRow[] }>(`/api/employees${buildQuery({ pageSize: 100, status: 'active' })}`, {
     shouldRetryOnError: false,
   });
   const activeEmployees = useMemo(
@@ -88,36 +77,17 @@ export function ScheduleMeetingDrawer({
   );
   const staffAvailable = Boolean(employeesRes.data) && !employeesRes.error;
 
-  // Combined business / deal options
+  // One option per open deal, sorted by business name. The deal code is added only when a business has
+  // more than one open deal, so every option names exactly one business and deal.
   const targetOptions = useMemo(() => {
-    if (deal) {
-      return [{ value: `deal:${deal.id}`, label: deal.label }];
-    }
-
-    const seenBusinessIds = new Set<string>();
-    const options: { value: string; label: string }[] = [];
-
-    // Open deals first
-    for (const d of openDeals) {
-      if (d.businessId) seenBusinessIds.add(d.businessId);
-      options.push({
-        value: `deal:${d.id}`,
-        label: `${d.businessName ?? d.code} (Deal: ${d.code})`,
-      });
-    }
-
-    // Then businesses without open deals
-    for (const b of allBusinesses) {
-      if (!seenBusinessIds.has(b.id)) {
-        options.push({
-          value: `biz:${b.id}`,
-          label: `${b.name} (Direct / New Meeting)`,
-        });
-      }
-    }
-
-    return options;
-  }, [deal, openDeals, allBusinesses]);
+    if (deal) return [{ value: `deal:${deal.id}`, label: deal.label }];
+    const nameOf = (d: DealListItem) => d.businessName ?? d.code;
+    const perName = new Map<string, number>();
+    for (const d of openDeals) perName.set(nameOf(d), (perName.get(nameOf(d)) ?? 0) + 1);
+    return [...openDeals]
+      .sort((a, b) => nameOf(a).localeCompare(nameOf(b)))
+      .map((d) => ({ value: `deal:${d.id}`, label: (perName.get(nameOf(d)) ?? 0) > 1 ? `${nameOf(d)} · ${d.code}` : nameOf(d) }));
+  }, [deal, openDeals]);
 
   const { status, fieldErrors, error, route, save, retry } = useVersionedSave<ScheduleMeetingInput, Meeting>(
     (input, ctx) => scheduleMeeting(input, ctx.idempotencyKey),
@@ -133,7 +103,7 @@ export function ScheduleMeetingDrawer({
 
   function submit() {
     const next: Record<string, string> = {};
-    if (!selectedTarget) next.target = 'Choose a business or deal.';
+    if (!selectedTarget) next.target = 'Choose a business.';
     if (!hostId) next.hostId = 'Select the employee responsible for this meeting.';
     if (!start) next.startsAt = 'Choose a start time.';
     else if (new Date(start).getTime() < Date.now()) next.startsAt = 'The start time cannot be in the past.';
@@ -142,18 +112,7 @@ export function ScheduleMeetingDrawer({
     setLocal(next);
     if (Object.keys(next).length > 0 || !user) return;
 
-    let targetDealId: string | undefined;
-    let targetBusinessId: string | undefined;
-
-    if (deal) {
-      targetDealId = deal.id;
-    } else if (selectedTarget.startsWith('deal:')) {
-      targetDealId = selectedTarget.replace('deal:', '');
-      const matchedDeal = openDeals.find((d) => d.id === targetDealId);
-      if (matchedDeal?.businessId) targetBusinessId = matchedDeal.businessId;
-    } else if (selectedTarget.startsWith('biz:')) {
-      targetBusinessId = selectedTarget.replace('biz:', '');
-    }
+    const targetDealId = deal ? deal.id : selectedTarget.replace('deal:', '');
 
     // Attendees: Current user scheduling + selected host employee
     const attendeeIds = Array.from(new Set([user.id, hostId]));
@@ -161,7 +120,6 @@ export function ScheduleMeetingDrawer({
     void save(
       {
         dealId: targetDealId,
-        businessId: targetBusinessId,
         title: title.trim() || undefined,
         startsAt: new Date(start).toISOString(),
         endsAt: end ? new Date(end).toISOString() : undefined,
@@ -180,7 +138,7 @@ export function ScheduleMeetingDrawer({
       isOpen
       onClose={busy ? () => undefined : onClose}
       title="Schedule meeting"
-      subtitle={deal?.label ?? 'Schedule a meeting for a business or deal'}
+      subtitle={deal?.label ?? 'Schedule a meeting with a business that has an open deal'}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
@@ -193,49 +151,24 @@ export function ScheduleMeetingDrawer({
       }
     >
       <div className="space-y-4 text-sm">
-        <PolicyPendingChip dec="DEC-005" demo />
 
         {!deal && (
           <Select
-            label="Business / Client"
+            label="Business"
             required
             value={selectedTarget}
             onChange={(e) => setSelectedTarget(e.target.value)}
-            placeholder={
-              businessesRes.isLoading || choices.isLoading
-                ? 'Loading directory businesses…'
-                : targetOptions.length === 0
-                ? 'No businesses found'
-                : 'Choose a business or client'
-            }
+            placeholder={choices.isLoading ? 'Loading businesses…' : targetOptions.length === 0 ? 'No business has an open deal' : 'Choose a business'}
             options={targetOptions}
             error={err('target', 'dealId', 'businessId')}
-            helperText={
-              businessTotal > allBusinesses.length
-                ? `Showing ${allBusinesses.length} of ${businessTotal} matches. Type in the search box to narrow the list.`
-                : 'Select any business from the directory to book a meeting directly.'
-            }
-          />
-        )}
-        {!deal && (
-          <Input
-            label="Search businesses"
-            placeholder="Search by name, phone or handle…"
-            value={bizSearch}
-            onChange={(e) => setBizSearch(e.target.value)}
+            helperText="Businesses with an open deal. A business gets a deal when a call is logged as Accepted."
           />
         )}
 
         {staffAvailable ? (
           <>
-            <Input
-              label="Search staff"
-              placeholder="Search staff by name…"
-              value={staffSearch}
-              onChange={(e) => setStaffSearch(e.target.value)}
-            />
             <Select
-              label="Assigned Host / Person Doing the Meeting"
+              label="Meeting host"
               required
               value={hostId}
               onChange={(e) => setHostId(e.target.value)}

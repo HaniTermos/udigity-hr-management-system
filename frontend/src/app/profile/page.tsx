@@ -10,7 +10,6 @@ import { CardSection, CardInset } from '@/components/ui/Card';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
 import { Input } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { useToast } from '@/components/ui/Toast';
 import { api, ApiError } from '@/lib/api';
 import type { EmployeeRow } from '@/lib/api/employees';
@@ -250,8 +249,6 @@ function ProfileContent() {
               helperText={canEditProfile ? 'Used by your team to reach you.' : `${NOT_AVAILABLE}. Your phone is shown as recorded.`}
               wrapperClassName="w-full"
             />
-            <PolicyPendingChip dec="OQ-13" demo />
-            <p className="text-[13px] text-text-muted -mt-2">Which fields you can edit yourself is not decided. No DEC ID.</p>
             <div className="flex items-center justify-end gap-3">
               <Button type="button" variant="ghost" disabled={!dirty || saving} onClick={() => setPhoneDraft(null)}>
                 Discard
@@ -302,9 +299,8 @@ function ProfileContent() {
               </Button>
               {!canChangePassword && <p className="text-[13px] text-text-muted -mt-2">{NOT_AVAILABLE}. Use the reset link from the sign-in page meanwhile.</p>}
               <CardInset className="flex flex-wrap items-center gap-2">
-                <PolicyPendingChip dec="Impl. decision" tone="decision" label="" />
                 <span className="text-[13px] text-text-secondary">
-                  Proposed: a password change signs out your other sessions; password rules are an implementation decision.
+                  Changing your password signs you out of your other sessions.
                 </span>
               </CardInset>
             </CardSection>
@@ -343,10 +339,6 @@ function ProfileContent() {
               </Button>
               {!canRevokeAll && <span className="text-[13px] text-text-muted">{NOT_AVAILABLE}</span>}
             </div>
-            <CardInset className="flex flex-wrap items-center gap-2">
-              <PolicyPendingChip dec="Impl. decision" tone="decision" label="" />
-              <span className="text-[13px] text-text-secondary">Offering &ldquo;Sign out of all sessions&rdquo; to employees is an implementation decision.</span>
-            </CardInset>
           </CardSection>
         </div>
       </div>

@@ -61,13 +61,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {/* Mobile Header (56px high) */}
         <MobileHeader />
 
-        {/* R-11 notice if Owner 2FA pending (R11-a: Demonstration alternative — not approved) */}
+        {/* R-11: Owner 2FA pending → restricted session until 2FA is completed */}
         {isOwner2faPending && (
           <div className="bg-status-warning-bg border-b border-status-warning-border px-6 py-3 flex items-center justify-between text-xs text-status-warning-fg">
             <div className="flex items-center gap-2.5">
               <Icon name="alert-triangle" size={16} className="text-status-warning-fg shrink-0" />
               <span>
-                <strong>Restricted Owner Session (R11-a: Demonstration alternative — not approved):</strong> You must complete 2FA authentication to access business records, calling lists, deals, and reports.
+                <strong>Restricted Owner session:</strong> You must complete 2FA authentication to access business records, calling lists, deals, and reports.
               </span>
             </div>
             <Link href="/login?step=2fa">

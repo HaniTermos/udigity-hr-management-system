@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { Badge, CountBadge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { SearchInput, Select } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { SkeletonTableRow, StateView } from '@/components/ui/State';
 import { Table, TableContainer, TBody, TD, TH, THead, TR } from '@/components/ui/Table';
 import { useAuth } from '@/lib/auth';
@@ -20,8 +19,7 @@ import {
   PageTitle,
   PersonCell,
   ProjectStatusBadge,
-  PROJECT_STATUS_OPTION_LABEL,
-} from './shared';
+  PROJECT_STATUS_OPTION_LABEL } from './shared';
 
 const PAGE_SIZE = 50;
 const SCOPE_OPTIONS = [
@@ -92,7 +90,6 @@ export function DealsList() {
           className="h-10 px-1 -mb-px border-b-2 border-transparent text-text-disabled flex items-center gap-2 whitespace-nowrap"
         >
           Accepted opportunities
-          <PolicyPendingChip dec="DEC-005" label="tab only if Alt 1" demo />
         </button>
       </div>
 
@@ -190,27 +187,21 @@ export function DealsList() {
       )}
 
       <p className="text-xs text-text-muted">
-        Closed deals only · no pre-closure or unassigned rows · rows you cannot access are omitted and not counted (WF-ACCESS-001).
+        Closed deals only · no pre-closure or unassigned rows · rows you cannot access are omitted and not counted.
       </p>
-      <div className="flex flex-wrap gap-2">
-        <PolicyPendingChip dec="DEC-002" label="15-day visibility pending" demo />
-        <PolicyPendingChip dec="DEC-017" label="one or many deals per business" demo />
-        <PolicyPendingChip dec="Proposed" label="stage names, no DEC ID" demo />
-      </div>
     </div>
   );
 }
 
 function ProjectCell({ deal }: { deal: DealListItem }) {
   if (isProjectStatus(deal.projectStatus)) return <ProjectStatusBadge status={deal.projectStatus} />;
-  // Closed and no project row yet: derived "Project provisioning pending" (F2).
+  // Closed and no project row yet: derived "Project setup pending" (F2).
   if (deal.stage === 'closed' && !deal.projectId) {
     return (
       <div className="flex flex-wrap gap-1.5">
         <Badge tone="warning" derived>
-          Project provisioning pending
+          Project setup pending
         </Badge>
-        <PolicyPendingChip dec="F2" demo />
       </div>
     );
   }

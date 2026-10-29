@@ -7,7 +7,6 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardInset, CardSection } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
-import { NoticePolicy, PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { ProgressBar } from '@/components/ui/Progress';
 import { Skeleton } from '@/components/ui/State';
 import { EmptyState, LoadErrorState } from '@/components/states';
@@ -109,9 +108,6 @@ export function AttendanceCard({
         </p>
       )}
 
-      <div>
-        <PolicyPendingChip dec="DEC-009" demo />
-      </div>
     </Card>
   );
 }
@@ -121,19 +117,7 @@ export function CheckInNote({ today, time }: { today: AttendanceTodayDto; time: 
   const session = today.session;
   const earlier = today.openSessionFromEarlierDay;
 
-  if (earlier && !session) {
-    return (
-      <NoticePolicy
-        dec="DEC-011"
-        demo
-        body={
-          today.employeeRequestsEnabled
-            ? 'Demonstration setting: you can send a correction request from My Attendance. The Owner decides it.'
-            : 'Demonstration setting: the Owner corrects the open session and you are notified.'
-        }
-      />
-    );
-  }
+  if (earlier && !session) return null;
 
   return (
     <CardInset className="flex flex-col gap-3">
@@ -146,28 +130,14 @@ export function CheckInNote({ today, time }: { today: AttendanceTodayDto; time: 
               · {PUNCTUALITY_LABEL[session.punctuality]}
               {session.punctuality === 'late' ? ` (${session.lateMinutes} min)` : ''}
             </span>
-            <Badge derived>Derived</Badge>
           </>
         ) : (
-          <span>Punctuality is derived when you check in</span>
+          <span>Punctuality is shown when you check in</span>
         )}
       </div>
-      <NoticePolicy
-        dec="DEC-007/008"
-        demo
-        body={
-          today.configured && today.schedule.shiftStart
-            ? `Schedule start ${today.schedule.shiftStart} and ${today.schedule.graceMinutes ?? '—'} min grace are demonstration values. The 9 h workday is confirmed; "On time" is derived.`
-            : 'Schedule start and grace are not configured, so punctuality shows Unclassified. The 9 h workday is confirmed.'
-        }
-      />
       <p className="text-[13px] text-text-muted">
         {today.summaryRule.required ? 'At checkout you add a work summary.' : 'At checkout a work summary is optional.'}
       </p>
-      <div className="flex flex-wrap gap-2">
-        <PolicyPendingChip dec="DEC-012" demo />
-        <PolicyPendingChip dec="DEC-022" demo />
-      </div>
     </CardInset>
   );
 }
@@ -198,10 +168,6 @@ export function TargetsCard({
 }) {
   return (
     <CardSection title="Today’s targets" subtitle="Set by the Owner">
-      <div className="flex flex-wrap gap-2">
-        <PolicyPendingChip dec="DEC-020" demo />
-        <PolicyPendingChip dec="DEC-025" demo />
-      </div>
       {isLoading ? (
         <div className="space-y-3" aria-busy="true">
           <Skeleton className="h-8 w-full" />
@@ -247,7 +213,7 @@ export function WorkListCard({
   return (
     <CardSection
       title="My work list"
-      subtitle={data ? (data.total > shown ? `Showing ${shown} of ${data.total} items · works without check-in` : `${data.total} items · works without check-in`) : 'Works without check-in'}
+      subtitle={data ? (data.total > shown ? `Showing ${shown} of ${data.total} items · works without check-in` : `${data.total} ${data.total === 1 ? 'item' : 'items'} · works without check-in`) : 'Works without check-in'}
       action={
         <Link href="/queue" className="text-text-link hover:underline">
           Open queue
@@ -290,9 +256,6 @@ export function WorkListCard({
           ))}
         </ul>
       )}
-      <div>
-        <PolicyPendingChip dec="DEC-021" demo />
-      </div>
     </CardSection>
   );
 }

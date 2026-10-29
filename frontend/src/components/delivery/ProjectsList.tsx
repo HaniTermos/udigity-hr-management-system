@@ -6,7 +6,6 @@ import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Select } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { SkeletonCard, SkeletonTableRow, StateView } from '@/components/ui/State';
 import { Table, TableContainer, TBody, TD, TH, THead, TR } from '@/components/ui/Table';
 import { useToast } from '@/components/ui/Toast';
@@ -21,8 +20,7 @@ import {
   type ProjectList,
   type ProjectStatus,
   type ProvisionRetryResult,
-  type UnprovisionedDeal,
-} from '@/lib/api/projects';
+  type UnprovisionedDeal } from '@/lib/api/projects';
 import { ActionError, AssignedChip, fmtDate, LoadError, OverdueChip, PageTitle, PersonCell, ProjectStatusBadge, PROJECT_STATUS_OPTION_LABEL } from './shared';
 
 const STATUS_OPTIONS = [
@@ -66,19 +64,18 @@ export function ProjectsList() {
       <PageTitle
         title="Projects"
         description="Delivery of closed deals. Project status is separate from task status; a closed deal is not a completed project."
-        aside={<PolicyPendingChip dec="DEC-019" label="project statuses proposed" demo />}
       />
 
       {data && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <Metric
-            label="Development workload — Proposed"
+            label="Development workload"
             value={`${data.workload.activeProjects} · ${data.workload.openTasks}`}
-            hint="SB-3 §11 definition"
+            hint="Active projects and their open tasks"
             sub="Active projects · Open tasks"
           />
           <Metric label="Active projects" value={data.workload.activeProjects} hint="No change" sub="Company-wide eligible" />
-          <Metric label="Delivery overdue (derived)" value={data.workload.deliveryOverdue} hint="Target date passed, not delivered" sub="" />
+          <Metric label="Delivery overdue" value={data.workload.deliveryOverdue} hint="Target date passed, not delivered" sub="" />
           <Metric label="Completed this month" value={data.workload.completedThisMonth} hint="Completed projects" sub="This calendar month" />
         </div>
       )}
@@ -95,8 +92,8 @@ export function ProjectsList() {
       )}
 
       <div className="flex flex-wrap items-end gap-2">
-        <Select aria-label="Project status" options={STATUS_OPTIONS} value={status} onChange={(e) => setStatus(e.target.value as ProjectStatus | 'any')} />
-        <Select aria-label="Scope" options={SCOPE_OPTIONS} value={scope} onChange={(e) => setScope(e.target.value as typeof scope)} />
+        <Select aria-label="Project status" options={STATUS_OPTIONS} value={status} onChange={(e) => setStatus(e.target.value as ProjectStatus | 'any')} wrapperClassName="sm:w-48" />
+        <Select aria-label="Scope" options={SCOPE_OPTIONS} value={scope} onChange={(e) => setScope(e.target.value as typeof scope)} wrapperClassName="sm:w-52" />
         <Select
           aria-label="Delivery overdue"
           options={[
@@ -105,6 +102,7 @@ export function ProjectsList() {
           ]}
           value={overdue ? 'overdue' : 'all'}
           onChange={(e) => setOverdue(e.target.value === 'overdue')}
+          wrapperClassName="sm:w-44"
         />
         <span className="sm:ml-auto text-xs text-text-muted">Sorted by target delivery date</span>
       </div>
@@ -146,12 +144,7 @@ export function ProjectsList() {
         </TableContainer>
       )}
 
-      <div className="flex flex-wrap gap-2">
-        <PolicyPendingChip dec="DEC-019" label="Scheduled · In progress · Waiting for client · Blocked · Delivered · Completed" demo />
-        <PolicyPendingChip dec="SB-3 §11" label="workload definition" demo />
-        <PolicyPendingChip dec="DEC-002" label="completed-project visibility" demo />
-      </div>
-      <p className="text-xs text-text-muted">Completed ≠ closed deal (G1). Cancelled projects are not modelled (OQ-11). Rows you cannot access are omitted and not counted.</p>
+      <p className="text-xs text-text-muted">A closed deal is not a completed project. Rows you cannot access are omitted and not counted.</p>
     </div>
   );
 }
@@ -191,7 +184,7 @@ function Unprovisioned({ items, autoProvision, onChanged }: { items: Unprovision
             ? 'Provisioning failed for at least one deal. Closures stand; it retries automatically and the Owner can retry now.'
             : autoProvision
               ? 'Projects are created automatically after closure.'
-              : 'Projects are created manually for now (F2).'
+              : 'Projects are created manually.'
         }
       />
       <Card className="divide-y divide-border-subtle">
@@ -203,11 +196,10 @@ function Unprovisioned({ items, autoProvision, onChanged }: { items: Unprovision
               </Link>
               <p className="text-[13px] text-text-muted">
                 {d.dealCode} · closed {fmtDate(d.closedAt)} ·{' '}
-                {d.provisioning === 'failed' ? `provisioning failed (attempt ${d.attempts})` : 'Project provisioning pending (derived)'}
+                {d.provisioning === 'failed' ? `project setup failed (attempt ${d.attempts})` : 'Project setup pending'}
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <PolicyPendingChip dec="F2" demo />
               {d.provisioning === 'failed' && isOwner && (
                 <Button
                   variant="secondary"

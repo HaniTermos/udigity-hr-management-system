@@ -9,7 +9,6 @@ import { duplicateMatchFrom, similarNamesFrom, updateBusiness, type BusinessDeta
 import { Alert } from '@/components/ui/Alert';
 import { SaveConflict, conflictResult, type ConflictField } from '@/components/states';
 import { NoticeAccess } from '@/components/ui/NoticeAccess';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { useToast } from '@/components/ui/Toast';
 import { BusinessForm } from '@/components/businesses/BusinessForm';
 import {
@@ -18,8 +17,7 @@ import {
   toInput,
   mapServerErrors,
   type BusinessFormValues,
-  type ServerFieldErrors,
-} from '@/components/businesses/businessFormModel';
+  type ServerFieldErrors } from '@/components/businesses/businessFormModel';
 import { DuplicateBlockedBanner, SimilarNameDialog } from '@/components/businesses/DuplicateBlocked';
 import { describeSaveError } from '@/components/businesses/saveErrors';
 import { useAuth } from '@/lib/auth';
@@ -270,13 +268,6 @@ function EditBusinessForm({
         breadcrumb={[{ label: 'Businesses', href: '/businesses' }, { label: data.name, href: `/businesses/${id}` }, { label: 'Edit' }]}
         title="Edit business"
         subtitle="Name and phone changes are re-checked for duplicates (this record excluded)."
-        chips={
-          <>
-            <PolicyPendingChip dec="DEC-003" demo />
-            <PolicyPendingChip dec="DEC-013" demo />
-            <PolicyPendingChip dec="C-01" demo />
-          </>
-        }
         actions={
           <Link href={`/businesses/${id}?tab=history`} className="text-sm font-medium text-text-link hover:underline underline-offset-2">
             View edit history

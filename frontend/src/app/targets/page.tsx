@@ -10,7 +10,6 @@ import { Card } from '@/components/ui/Card';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
 import { Input, Select, Textarea } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { Skeleton, StateView } from '@/components/ui/State';
 import { useToast } from '@/components/ui/Toast';
 import { ApiError } from '@/lib/api/client';
@@ -26,8 +25,7 @@ import {
   targetMetricLabel,
   workPaths,
   type TargetItem,
-  type WorkItem,
-} from '@/lib/api/work';
+  type WorkItem } from '@/lib/api/work';
 import { useApi } from '@/lib/hooks/useApi';
 import { useCompanyTime } from '@/lib/hooks/useCompanyTime';
 import type { Page } from '@/lib/api/types';
@@ -215,8 +213,6 @@ export default function TargetsPage() {
             <h1 className="text-2xl font-semibold leading-8 tracking-tight text-text-primary">Targets & Work Lists</h1>
             <p className="text-xs text-text-muted mt-1 flex flex-wrap items-center gap-2">
               Quotas, territories and employee task checklists
-              <PolicyPendingChip dec="DEC-020" />
-              <PolicyPendingChip dec="DEC-025" />
             </p>
           </div>
           <div className="flex items-center gap-2.5">

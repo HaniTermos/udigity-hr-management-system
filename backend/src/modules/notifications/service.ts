@@ -112,12 +112,26 @@ export const securityEmailConsumer: OutboxConsumer = {
 /** A non-negative integer from a stored summary (0 otherwise). */
 const count = (v: unknown): number => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : 0);
 
-/** 1440 → "24 hours", 60 → "1 hour", 90 → "90 minutes"; null when unknown. */
+/** 1440 → "24 hours", 60 → "1 hour", 90 → "90 minutes", 1439 → "24 hours"; null when unknown. */
 function leadLabel(minutes: number): string | null {
   if (minutes <= 0) return null;
-  if (minutes % 60 !== 0) return `${minutes} minutes`;
+  if (minutes < 60) return minutes === 1 ? '1 minute' : `${minutes} minutes`;
   const h = minutes / 60;
-  return h === 1 ? '1 hour' : `${h} hours`;
+  if (Math.abs(h - Math.round(h)) > 0.1 && minutes < 180) return `${minutes} minutes`;
+  const hours = Math.round(h);
+  return hours === 1 ? '1 hour' : `${hours} hours`;
+}
+
+/**
+ * Time left until the reminded event, as seen when the reminder was sent (`minutesUntil`); falls back to
+ * the planned lead. A late reminder (lead already passed when planned) is sent at once, so its lead would
+ * overstate the time left.
+ */
+function timeLeft(summary: Record<string, unknown> | null | undefined): number | 'now' | null {
+  const until = summary?.minutesUntil;
+  if (typeof until === 'number' && Number.isFinite(until)) return until <= 0 ? 'now' : Math.round(until);
+  const lead = count(summary?.leadMinutes);
+  return lead > 0 ? lead : null;
 }
 
 function formatNotification(d: repo.DeliveryRow): NotificationDto {
@@ -127,20 +141,28 @@ function formatNotification(d: repo.DeliveryRow): NotificationDto {
 
   switch (d.template) {
     case 'business.assignment':
-      title = 'New Calling Assignment';
-      message = 'A new business portfolio has been assigned to you.';
+      if (d.summary?.audience === 'previous') {
+        title = 'Calling Assignment Moved';
+        message = 'A business you were calling was reassigned to another agent.';
+      } else {
+        title = 'New Calling Assignment';
+        message = 'A business was assigned to you for calling. It is in your calling queue.';
+      }
       link = '/queue';
       break;
     case 'business.developer_handoff':
-      title = 'Opportunity Handed Off';
-      message = 'An accepted opportunity has been assigned to your development workload.';
+      title = 'Opportunity Assigned to You';
+      message = 'An accepted opportunity was assigned to you. Open the deal to start work.';
       link = d.source_id ? `/deals/${d.source_id}` : '/deals';
       break;
-    case 'business.follow_up_reminder':
+    case 'business.follow_up_reminder': {
+      const left = timeLeft(d.summary);
+      const when = typeof left === 'number' ? leadLabel(left) : null;
       title = 'Follow-up Due';
-      message = 'You have a scheduled follow-up call due soon.';
+      message = left === 'now' ? 'You have a follow-up call due now.' : when ? `You have a follow-up call due in ${when}.` : 'You have a follow-up call due soon.';
       link = '/calendar';
       break;
+    }
     case 'business.follow_up_overdue':
       title = 'Follow-up Overdue';
       message = 'A follow-up call assigned to you is more than an hour overdue.';
@@ -161,42 +183,77 @@ function formatNotification(d: repo.DeliveryRow): NotificationDto {
       if (missing > 0) parts.push(`${missing} missing checkout${missing === 1 ? '' : 's'} from the previous working day`);
       title = 'Morning Digest';
       message = parts.length > 0 ? `Waiting for review: ${parts.join(' and ')}.` : 'Nothing is waiting for review.';
-      link = missing > 0 && overdue === 0 ? '/attendance' : '/calendar';
+      link = missing > 0 && overdue === 0 ? '/attendance/monitor' : '/calendar';
       break;
     }
     case 'business.meeting_reminder': {
-      const lead = count(d.summary?.leadMinutes);
-      const when = leadLabel(lead);
+      const left = timeLeft(d.summary);
+      const when = left === 'now' ? 'now' : typeof left === 'number' ? `in ${leadLabel(left)}` : null;
       title = 'Meeting Reminder';
       if (d.source_type === 'business') {
         // Redacted (D15): the recipient may see the business but not the deal or meeting.
-        message = when ? `A client meeting for one of your assigned businesses starts in ${when}.` : 'A client meeting for one of your assigned businesses is coming up.';
+        message = when ? `A client meeting for one of your assigned businesses starts ${when}.` : 'A client meeting for one of your assigned businesses is coming up.';
         link = '/queue';
       } else {
-        message = when ? `An upcoming commercial discovery meeting starts in ${when}.` : 'An upcoming commercial discovery meeting is scheduled.';
+        message = when ? `An upcoming commercial discovery meeting starts ${when}.` : 'An upcoming commercial discovery meeting is scheduled.';
         link = '/meetings';
       }
       break;
     }
     case 'business.correction_request':
-      title = 'Correction Request Update';
-      message = 'A data correction request has an update.';
       link = '/corrections';
+      switch (d.summary?.status) {
+        case 'submitted':
+          title = 'New Correction Request';
+          message = 'A data correction was requested for a business. It is waiting for review.';
+          break;
+        case 'resolved':
+          title = 'Correction Request Resolved';
+          message = 'Your data correction request was reviewed and resolved.';
+          break;
+        case 'rejected':
+          title = 'Correction Request Rejected';
+          message = 'Your data correction request was rejected. Open it to see the reason.';
+          break;
+        case 'closed':
+          title = 'Correction Request Closed';
+          message = 'Your data correction request was closed.';
+          break;
+        default:
+          title = 'Correction Request Update';
+          message = 'A data correction request has an update.';
+      }
       break;
     case 'business.attendance_alert':
-      title = 'Attendance Alert';
-      message = 'An attendance check notice or correction review is pending.';
-      link = '/my-attendance';
+      title = 'Attendance Reminder';
+      link = '/my-day';
+      if (d.summary?.kind === 'missing_checkin') {
+        message = 'You have not checked in yet today.';
+      } else if (d.summary?.kind === 'missing_checkout') {
+        message = 'Your shift ended more than an hour ago and you are still checked in. Please check out.';
+      } else {
+        message = 'Please check your attendance for today.';
+      }
       break;
     case 'business.reservation_overridden':
       title = 'Reservation Overridden';
-      message = 'Your contact lease on a business was overridden by an Owner.';
+      message = 'An Owner took over a business you were calling. Your hold on it has ended.';
       link = '/queue';
       break;
     case 'business.attendance_review':
-      title = 'Attendance Review';
-      message = 'An attendance item is waiting for your review.';
-      link = '/attendance';
+      if (d.source_type === 'employee') {
+        title = 'Missing Check-in';
+        message = 'An employee has not checked in after the start of their shift.';
+        link = '/attendance/monitor';
+      } else if (d.source_type === 'attendance_correction') {
+        title = 'Attendance Correction Request';
+        message = 'An employee submitted an attendance correction request. It is waiting for your review.';
+        link = '/attendance/corrections';
+      } else {
+        title = 'Checkout Review';
+        message = 'A checkout is waiting for your review.';
+        link = '/attendance/corrections';
+      }
       break;
     case 'business.deal_closure_rejected':
       title = 'Closure Verification Rejected';
@@ -204,13 +261,13 @@ function formatNotification(d: repo.DeliveryRow): NotificationDto {
       link = d.source_id ? `/deals/${d.source_id}` : '/deals';
       break;
     case 'business.provisioning_failed':
-      title = 'Project Provisioning Failed';
-      message = 'A closed deal could not create its project. It is retried automatically.';
+      title = 'Project Setup Failed';
+      message = 'A closed deal could not create its project. The system will try again automatically.';
       link = '/projects';
       break;
     case 'business.duplicate_review':
       title = 'Duplicate Review Requested';
-      message = 'An employee asked you to review a blocked duplicate business.';
+      message = 'An employee asked you to review a business that matches an existing one.';
       link = d.source_id ? `/businesses/${d.source_id}` : '/businesses';
       break;
     case 'business.delivery_failure': {
@@ -226,9 +283,17 @@ function formatNotification(d: repo.DeliveryRow): NotificationDto {
       link = '/profile';
       break;
     case 'business.deal_closure':
-      title = 'Deal Closure Verification';
-      message = 'A deal closure request is awaiting review or has completed.';
       link = d.source_id ? `/deals/${d.source_id}` : '/deals';
+      if (d.summary?.stage === 'closed') {
+        title = 'Deal Closed';
+        message = 'A deal was verified and closed.';
+      } else if (d.summary?.stage === 'requested') {
+        title = 'Deal Closure Requested';
+        message = 'A deal is waiting for your closure verification.';
+      } else {
+        title = 'Deal Closure Update';
+        message = 'A deal closure has an update.';
+      }
       break;
     default:
       if (d.template.startsWith('security.')) {
@@ -315,7 +380,7 @@ export async function markAllAsRead(db: Queryable, principal: Principal): Promis
 
 export async function listDeliveryMonitor(
   db: Queryable,
-  options: { kind?: 'reminder' | 'notification' | 'provisioning'; limit?: number; offset?: number } = {}
+  options: { kind?: 'reminder' | 'notification' | 'provisioning'; state?: string; limit?: number; offset?: number } = {}
 ): Promise<{ items: DeliveryMonitorItemDto[]; total: number }> {
   const { items, total } = await repo.listDeliveryMonitorRows(db, options);
   return {
@@ -558,7 +623,16 @@ async function activeByRole(db: Queryable, role: string): Promise<string[]> {
 async function notifyInApp(
   ctx: CommandContext,
   event: DeliveredEvent,
-  n: { key: string; template: string; family?: 'security' | 'business'; recipients: string[]; sourceType: string | null; sourceId: string | null }
+  n: {
+    key: string;
+    template: string;
+    family?: 'security' | 'business';
+    recipients: string[];
+    sourceType: string | null;
+    sourceId: string | null;
+    /** Non-identifying facts the inbox text is built from (never user-written free text). */
+    summary?: Record<string, unknown>;
+  }
 ): Promise<number> {
   const enabled = await getSetting(ctx.tx, 'notifications.inApp');
   let created = 0;
@@ -576,6 +650,7 @@ async function notifyInApp(
         sourceId: n.sourceId,
         state: enabled ? 'sent' : 'suppressed',
         lastError: enabled ? null : 'in-app notifications are off',
+        summary: n.summary ?? null,
       },
       ctx.now
     );
@@ -689,18 +764,26 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
     switch (name) {
       case 'calling_assignment.assigned':
       case 'calling_assignment.reassigned': {
-        // E-07: the new assignee; OWN-008 optionally the previous one.
-        const ids = [str(payload.assigneeId) ?? str(payload.agentId)];
-        if (name === 'calling_assignment.reassigned' && (await getSetting(ctx.tx, 'notifications.notifyPreviousAssignee'))) {
-          ids.push(str(payload.previousAssigneeId));
-        }
+        // E-07: the new assignee; OWN-008 optionally the previous one (told the business moved, not "new").
+        const assignee = await activeOnly(ctx.tx, [str(payload.assigneeId) ?? str(payload.agentId)]);
         await notifyInApp(ctx, event, {
           key: 'assign',
           template: 'business.assignment',
-          recipients: await activeOnly(ctx.tx, ids),
+          recipients: assignee,
           sourceType: 'calling_assignment',
           sourceId: aggregateId,
         });
+        if (name === 'calling_assignment.reassigned' && (await getSetting(ctx.tx, 'notifications.notifyPreviousAssignee'))) {
+          const previous = (await activeOnly(ctx.tx, [str(payload.previousAssigneeId)])).filter((id) => !assignee.includes(id));
+          await notifyInApp(ctx, event, {
+            key: 'assign_prev',
+            template: 'business.assignment',
+            recipients: previous,
+            sourceType: 'calling_assignment',
+            sourceId: aggregateId,
+            summary: { audience: 'previous' },
+          });
+        }
         return;
       }
       case 'opportunity.developer_assigned':
@@ -741,6 +824,7 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
           recipients: recipients.filter((id) => id !== req.requested_by),
           sourceType: 'data_correction_request',
           sourceId: aggregateId,
+          summary: { status: 'submitted' },
         });
         return;
       }
@@ -755,6 +839,7 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
           recipients: await activeOnly(ctx.tx, [rows[0]?.requested_by ?? str(payload.requestedBy)]),
           sourceType: 'data_correction_request',
           sourceId: aggregateId,
+          summary: { status: name.slice('data_correction_request.'.length) },
         });
         return;
       }
@@ -784,6 +869,7 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
           recipients,
           sourceType: 'attendance_session',
           sourceId: str(payload.sessionId),
+          summary: { kind: name === 'attendance.missing_checkin_detected' ? 'missing_checkin' : 'missing_checkout' },
         });
         if (name === 'attendance.missing_checkin_detected') {
           // D18 (attendance agent): missing check-in → Owner in-app at shift start + grace + 30 min.
@@ -800,7 +886,14 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
       case 'deal.closure_requested':
       case 'deal.closed':
         // E-13 / E-14: active Owners.
-        await notifyInApp(ctx, event, { key: 'deal_closure', template: 'business.deal_closure', recipients: await owners(), sourceType: 'deal', sourceId: aggregateId });
+        await notifyInApp(ctx, event, {
+          key: 'deal_closure',
+          template: 'business.deal_closure',
+          recipients: await owners(),
+          sourceType: 'deal',
+          sourceId: aggregateId,
+          summary: { stage: name === 'deal.closed' ? 'closed' : 'requested' },
+        });
         return;
       case 'deal.closure_rejected': {
         // ORCH-2 (3): the assigned Developer and whoever asked for the verification.
@@ -879,7 +972,7 @@ const REMINDER_MAX_ATTEMPTS = 3;
  * "respect current access when generating notification content").
  */
 type ReminderCheck =
-  | { ok: true; redactTo?: { sourceType: 'business'; sourceId: string } }
+  | { ok: true; eventAt: Date; redactTo?: { sourceType: 'business'; sourceId: string } }
   | { ok: false; state: 'suppressed' | 'cancelled'; reason: string };
 
 /** C6 / HR-7 send-time re-check: recipient active, source still open, recipient still allowed. */
@@ -888,23 +981,29 @@ async function recheckReminder(db: Queryable, rem: repo.ReminderRow): Promise<Re
   if (!emp[0] || !emp[0].is_active) return { ok: false, state: 'suppressed', reason: 'recipient inactive' };
   const principal: Principal = { employeeId: rem.recipient_id, role: emp[0].role as Principal['role'], sessionState: 'active' };
   if (rem.source_type === 'follow_up') {
-    const { rows } = await db.query<{ state: string; responsible_id: string }>('SELECT state, responsible_id FROM follow_ups WHERE id = $1', [rem.source_id]);
+    const { rows } = await db.query<{ state: string; responsible_id: string; scheduled_for: Date }>(
+      'SELECT state, responsible_id, scheduled_for FROM follow_ups WHERE id = $1',
+      [rem.source_id]
+    );
     if (!rows[0] || rows[0].state !== 'scheduled') return { ok: false, state: 'cancelled', reason: 'follow-up no longer scheduled' };
     if (rows[0].responsible_id !== rem.recipient_id) return { ok: false, state: 'cancelled', reason: 'recipient no longer responsible' };
     const decision = await access.check(db, principal, 'follow_up.read', { type: 'follow_up', id: rem.source_id });
     if (!decision.allowed) return { ok: false, state: 'suppressed', reason: 'recipient may no longer see the source' };
-    return { ok: true };
+    return { ok: true, eventAt: rows[0].scheduled_for };
   }
-  const { rows } = await db.query<{ status: string; business_id: string }>('SELECT status, business_id FROM meetings WHERE id = $1', [rem.source_id]);
+  const { rows } = await db.query<{ status: string; business_id: string; starts_at: Date }>(
+    'SELECT status, business_id, starts_at FROM meetings WHERE id = $1',
+    [rem.source_id]
+  );
   if (!rows[0] || rows[0].status !== 'scheduled') return { ok: false, state: 'cancelled', reason: 'meeting no longer scheduled' };
   // D18: still the deal's Developer, the business's Call Center agent or an attendee.
   if (!(await meetingReminderRecipients(db, rem.source_id)).includes(rem.recipient_id)) {
     return { ok: false, state: 'cancelled', reason: 'recipient no longer a meeting recipient' };
   }
   const decision = await access.check(db, principal, 'meeting.read', { type: 'meeting', id: rem.source_id });
-  if (decision.allowed) return { ok: true };
+  if (decision.allowed) return { ok: true, eventAt: rows[0].starts_at };
   const business = await access.check(db, principal, 'business.read', { type: 'business', id: rows[0].business_id });
-  if (business.allowed) return { ok: true, redactTo: { sourceType: 'business', sourceId: rows[0].business_id } };
+  if (business.allowed) return { ok: true, eventAt: rows[0].starts_at, redactTo: { sourceType: 'business', sourceId: rows[0].business_id } };
   return { ok: false, state: 'suppressed', reason: 'recipient may no longer see the source' };
 }
 
@@ -945,7 +1044,8 @@ export async function dispatchDueReminders(): Promise<{ claimed: number; dispatc
             sourceType: check.redactTo?.sourceType ?? rem.source_type,
             sourceId: check.redactTo?.sourceId ?? rem.source_id,
             state: 'sent',
-            summary: { leadMinutes: rem.lead_minutes },
+            // minutesUntil: the time left when sent (a late reminder goes out at once, D18 / B3-Q08).
+            summary: { leadMinutes: rem.lead_minutes, minutesUntil: Math.max(0, Math.round((check.eventAt.getTime() - ctx.now.getTime()) / 60_000)) },
           },
           ctx.now
         );

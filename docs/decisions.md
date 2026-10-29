@@ -113,6 +113,23 @@ Earlier text stays where it lived; this log records what the baseline changes. "
 | — | Restore with an inactive category | The Owner picks an active category during restore (audited) |
 | — | Hosting / email / backups | VPS; Brevo or SendGrid SMTP; backups on the same server (S-23) |
 
+| S-25 | "No break tracking" (DEC-033, Fixed v1 scope) | Baseline | Owner answer 2026-10-29: break tracking **on** — Start/End break on My Day while checked in; 60 minutes total, at most 3 breaks per session (Owner can change in Settings); breaks do not reduce the 9 h day | Fixed v1 scope |
+
+**Approved as built (Owner, 2026-10-29: "I have approved every Figma file, step, work and question").** Every item the UI still marked as pending, a demonstration alternative or "No DEC ID" is approved with its current behaviour, and those markers are removed from the app:
+
+| ID shown in the UI | Item | Approved behaviour (as built) |
+|---|---|---|
+| R-11 | Owner session before 2FA is completed | Restricted Owner session: only the 2FA steps, no business records, calling lists, deals or reports |
+| R-13 | Meetings "Missed" state | Kept as a meeting state |
+| OQ-12 | Recovery when every recovery option fails | Owner bootstrap CLI on the server (documented in DEPLOY.md) |
+| OQ-13 | Profile fields an employee edits themselves | As built (own phone number; other fields by the Owner) |
+| OQ-15 | Reopening a lost deal | As built (Owner reopens a lost deal; closed deals never reopen) |
+| OQ-18 | Export scope | The current report catalogue and columns; every export is audited |
+| OQ-19 | Data retention | The current retention settings (`POLICY_RETENTION_*`); legal erasure stays a separate procedure (D20) |
+| A1 | Work list without checking in | The work list works without checking in |
+| AR-13 | Delivery & reminder monitor | As built ("Send again"; failure alerts deduplicated, D18) |
+| No DEC ID | Attendance alert recipients/timing; correction-request routing; telling the previous assignee on reassignment; "Request access"; category removal; break rules; meeting reminder timing | As built and per D18 / D10 / D12 / S-25 (no general access grants; categories are deactivated, never deleted) |
+
 **D-proposal values checked with no change:** grace 10 min (D1), missing-checkout flag shift end + 6 h (D5), queue cap value 40 (D8; meaning changed, S-04), similar-name threshold 0.6 (D11), all D18 notification timings, D19 retention 14/8/6, RPO 15 min with WAL, RTO 4 h.
 
 ## Mapping to the DEC register

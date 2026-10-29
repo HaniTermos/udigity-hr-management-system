@@ -8,10 +8,9 @@ import { ApiError } from '@/lib/api/client';
 import { createCategory, deactivateCategory, renameCategory, type CategoryRow } from '@/lib/api/businesses';
 import { Button } from '@/components/ui/Button';
 import { NoticeAccess } from '@/components/ui/NoticeAccess';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { useToast } from '@/components/ui/Toast';
 import { ErrorState } from '@/components/businesses/AsyncState';
-import { AddCategoryCard, CategoryPolicyNotes, RemoveCategoryDialog } from '@/components/businesses/CategoryPanels';
+import { AddCategoryCard, RemoveCategoryDialog } from '@/components/businesses/CategoryPanels';
 import { CategoryTable } from '@/components/businesses/CategoryTable';
 import { useBusinessAccess, useCategories } from '@/components/businesses/hooks';
 import { PageHeader } from '@/components/businesses/PageHeader';
@@ -27,14 +26,13 @@ function CategoriesDenied() {
         type="permission-denied"
         size="page"
         title="You cannot manage categories"
-        body="Category management is for the Owner. Whether Data Entry may add or suggest categories depends on DEC-015, which is not decided."
+        body="Category management is for the Owner. Pick an existing category, or choose “Other” and suggest a new one in the notes."
         action={
           <Link href="/businesses">
             <Button variant="secondary">Back to businesses</Button>
           </Link>
         }
       />
-      <PolicyPendingChip dec="DEC-015" demo />
     </div>
   );
 }
@@ -77,7 +75,7 @@ function CategoriesContent() {
     } catch (err) {
       setAddError(
         err instanceof ApiError && (err.code === 'PERMISSION_DENIED' || err.code === 'FORBIDDEN_ROLE')
-          ? 'Only the Owner can add categories under the current rule (DEC-015, demonstration alternative — not approved).'
+          ? 'Only the Owner can add categories.'
           : fieldMessage(err, 'We could not add this category. Try again.')
       );
       return false;
@@ -125,7 +123,6 @@ function CategoriesContent() {
       <PageHeader
         title="Categories"
         subtitle={canManage ? 'Businesses pick one category from this list. Names are unique, including inactive ones.' : 'Businesses pick one category from this list. You see active categories only.'}
-        chips={<PolicyPendingChip dec="DEC-015" demo />}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-4 items-start">
@@ -151,8 +148,7 @@ function CategoriesContent() {
           />
           {canManage && (
             <p className="flex flex-wrap items-center gap-2 text-[13px] leading-[18px] text-text-secondary">
-              <PolicyPendingChip dec="No DEC ID" demo />
-              <span>Remove… deactivates a category and keeps it on existing businesses; the removal rule is not approved.</span>
+              <span>Remove… deactivates a category and keeps it on existing businesses.</span>
             </p>
           )}
         </div>
@@ -167,7 +163,6 @@ function CategoriesContent() {
             onAdd={handleAdd}
           />
           )}
-          <CategoryPolicyNotes />
         </div>
       </div>
 

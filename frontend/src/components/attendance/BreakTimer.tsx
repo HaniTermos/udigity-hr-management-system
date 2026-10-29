@@ -7,7 +7,6 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { ProgressBar } from '@/components/ui/Progress';
 import { Skeleton } from '@/components/ui/State';
 import { ApiError } from '@/lib/api/client';
@@ -182,9 +181,6 @@ export function BreakTimerCard({ onBreakChanged }: BreakTimerCardProps) {
         value={`${totalBreakMinutes}m of ${allowanceMinutes}m`}
       />
 
-      <p className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
-        <PolicyPendingChip dec="No DEC ID" label="break rules" demo />
-      </p>
 
       {isExcessive && (
         <Alert

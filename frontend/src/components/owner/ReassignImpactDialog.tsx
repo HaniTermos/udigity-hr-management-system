@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
 import { Select, Textarea } from '@/components/ui/Input';
-import { NoticePolicy, PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { Skeleton } from '@/components/ui/State';
 import { ApiErrorView } from '@/components/states';
 import {
@@ -17,8 +16,7 @@ import {
   unassignBusiness,
   type AssignmentListItem,
   type FollowUpChoice,
-  type ReassignImpactDto,
-} from '@/lib/api/assignments';
+  type ReassignImpactDto } from '@/lib/api/assignments';
 import { ApiError } from '@/lib/api/client';
 import { classifyError, type ErrorRoute } from '@/lib/errorRouting';
 import { cn } from '@/lib/utils';
@@ -194,7 +192,7 @@ function DialogBody({ mode, row, agents, timeZone, progress, onClose, onDone, on
         isOpen={Boolean(row)}
         onClose={saving ? () => undefined : () => setStep('form')}
         title={`Override ${holder}'s reservation?`}
-        description={`${holder}'s contact on ${row?.businessName} ends now and they see an "overridden by Owner" notice (SCR-CC-005).`}
+        description={`${holder}'s contact on ${row?.businessName} ends now and they see an "overridden by Owner" notice.`}
         maxWidth="md"
         footer={
           <>
@@ -216,7 +214,6 @@ function DialogBody({ mode, row, agents, timeZone, progress, onClose, onDone, on
             helperText="Recorded with the override and the change."
             rows={3}
           />
-          <NoticePolicy size="inline" dec="DEC-004" demo body="Lease duration and Owner override rules are Proposed." />
           {saveError && <Alert tone="danger" title={saveError.title} body={saveError.body} />}
         </div>
       </Dialog>
@@ -313,7 +310,6 @@ function DialogBody({ mode, row, agents, timeZone, progress, onClose, onDone, on
                 <section aria-label="Active reservation" className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-sm font-semibold text-text-primary">Active reservation</h3>
-                    <PolicyPendingChip dec="DEC-004" demo />
                   </div>
                   <p className="flex items-center gap-2 text-[13px] text-text-primary">
                     <Icon name="lock" size={14} className="text-icon-default" />
@@ -348,7 +344,6 @@ function DialogBody({ mode, row, agents, timeZone, progress, onClose, onDone, on
               <section aria-label="Open follow-ups" className="space-y-3 border-t border-border-subtle pt-4">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-sm font-semibold text-text-primary">Open follow-ups · {followUps.length}</h3>
-                  <PolicyPendingChip dec="B3-Q03" label="no default" demo />
                 </div>
                 {followUps.length === 0 ? (
                   <p className="text-[13px] text-text-secondary">No open follow-ups. Nothing to decide.</p>
@@ -401,7 +396,6 @@ function DialogBody({ mode, row, agents, timeZone, progress, onClose, onDone, on
                 </dd>
               </dl>
 
-              <NoticePolicy size="inline" dec="No DEC ID" body={`Is ${current.assigneeName} told about the change? Not decided.`} />
 
               <Textarea
                 label="Reason"

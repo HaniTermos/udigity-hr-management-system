@@ -214,7 +214,8 @@ describe.skipIf(!hasTestDb)('FX-BE production-fix wave (DB)', () => {
   });
 
   // ------------------------------------------------------------------ notifications (F-05 / F-09)
-  describe('notification consumers', () => {
+  // 60 s: relaying other files' backlog on the shared DB can exceed the 5 s default.
+  describe('notification consumers', { timeout: 60_000 }, () => {
     it('every outbox event has a consumer or a documented NO_CONSUMER reason', () => {
       const consumed = new Set(getOutboxConsumers().flatMap((c) => c.events));
       const missing = OUTBOX_EVENTS.filter((e) => !consumed.has(e) && !(e in NO_CONSUMER_EVENTS));

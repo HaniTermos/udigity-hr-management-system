@@ -2,14 +2,12 @@
 
 import React, { useMemo, useState } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
-import { DerivedChip } from '@/components/ui/Badge';
 import { Icon } from '@/components/ui/Icon';
 import { Alert } from '@/components/ui/Alert';
 import { StateView } from '@/components/ui/State';
 import { ApiErrorView } from '@/components/states';
 import { CallingPageHeader, HeaderLink, LoadingBlock } from '@/components/calling/CallingPageHeader';
 import { BucketFilter, QueueBoard, QueueFilterBar, groupQueue } from '@/components/calling/QueueBoard';
-import { OverdueThresholdChip, ReopenPolicyChip } from '@/components/calling/PolicyNotes';
 import { useDoNotCallCount, useQueue } from '@/components/calling/hooks';
 import { useCallingFormat } from '@/components/calling/format';
 
@@ -51,10 +49,6 @@ export default function CallingQueuePage() {
           <>
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
               <QueueFilterBar counts={data.counts} text={text} onText={setText} filter={filter} onFilter={setFilter} />
-              <div className="flex flex-wrap items-center gap-2">
-                <DerivedChip>Buckets are derived · a business is in exactly one</DerivedChip>
-                <OverdueThresholdChip />
-              </div>
             </div>
 
             {data.total > data.items.length && (
@@ -74,7 +68,6 @@ export default function CallingQueuePage() {
                 Rejected: do not call{dncCount !== null ? ` (${dncCount})` : ''} — view only <Icon name="ban" size={14} />
               </span>
               <span className="flex-1">Rejected businesses are excluded from every calling bucket; Start Contact is disabled for them.</span>
-              <ReopenPolicyChip />
               <span className="text-text-muted">No check-in needed to call</span>
             </div>
           </>
