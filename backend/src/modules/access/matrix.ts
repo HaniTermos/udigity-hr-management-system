@@ -67,9 +67,9 @@ export const AUTHZ_MATRIX: Readonly<Record<string, MatrixRow>> = Object.freeze({
   'profile.update': row('3.2', ALL, 'Own; DEMO OQ-13'),
   'role.list': row('3.2', [O], 'List system and custom roles', true),
   'role.read': row('3.2', [O], 'Read role details and permissions', true),
-  'role.create': row('3.2', [], 'Fixed v1 scope (approved 2026-10-29): no custom-role management'),
-  'role.update': row('3.2', [], 'Fixed v1 scope (approved 2026-10-29): no custom-role management'),
-  'role.delete': row('3.2', [], 'Fixed v1 scope (approved 2026-10-29): no custom-role management'),
+  'role.create': row('3.2', [O], 'Create custom role with permissions (Owner decision 2026-10-29: custom roles on)', true),
+  'role.update': row('3.2', [O], 'Update custom role and permissions', true),
+  'role.delete': row('3.2', [O], 'Deactivate custom role (no hard delete, D20)', true),
   'permission.list': row('3.2', [O], 'List available system permissions', true),
 
   // §3.3 attendance

@@ -16,7 +16,7 @@
 @layer base {
   :root {
     color-scheme: light;
-    --font-inter: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-inter: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 
     /* ---------- Primitives (hex reference, §2.1) ---------- */
     --navy-50: #EEF2F8;

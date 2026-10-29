@@ -310,7 +310,7 @@ export async function deleteRole(ctx: CommandContext, roleId: string): Promise<v
   if (!current) throw notFound();
 
   if (current.is_system || isSystemRole(current.id)) {
-    throw new HttpError(400, 'BAD_REQUEST', 'System roles cannot be deleted.');
+    throw new HttpError(400, 'BAD_REQUEST', 'System roles cannot be removed.');
   }
 
   const assignedCount = await repo.hasAssignedEmployees(ctx.tx, roleId);
@@ -318,17 +318,19 @@ export async function deleteRole(ctx: CommandContext, roleId: string): Promise<v
     throw new HttpError(
       409,
       'STATE_CONFLICT',
-      `Cannot delete role "${current.name}". It is currently assigned to ${assignedCount} employee(s). Reassign them first.`
+      `The role "${current.name}" is still held by ${assignedCount} employee(s). Give them another role first, then remove it.`
     );
   }
 
-  await repo.deleteRole(ctx.tx, roleId);
+  // D20: deactivate, never hard-delete (the row and its permissions stay for history; migration 994).
+  await repo.deleteRole(ctx.tx, roleId, ctx.actor.kind === 'employee' ? ctx.actor.employeeId : null);
 
   await audit(ctx, {
-    eventName: 'role.deleted',
+    eventName: 'role.deleted', // = deactivated (no hard delete, D20)
     entityType: 'role',
     entityId: roleId,
     before: { name: current.name, id: current.id },
+    payload: { deactivated: true },
     sourceWorkflow: 'WF-ROLE-003',
   });
 }

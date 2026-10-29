@@ -6,6 +6,7 @@ import { ApiErrorView } from '@/components/states/ApiErrorView';
 import { EnrollmentTokenPanel } from '@/components/owner/EnrollmentTokenPanel';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
+import Link from 'next/link';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
@@ -462,15 +463,19 @@ function AccessTab() {
     <Card className="p-6 space-y-4 max-w-2xl">
       <div>
         <h2 className="text-base font-semibold text-text-primary">Roles & permissions</h2>
-        {/* Fixed v1 scope (approved 2026-10-29): four fixed roles, no custom-role management (no studio link). */}
-        <p className="text-xs text-text-secondary mt-1">Udigity v1 has four fixed roles: Owner, Data Entry, Call Center and Developer. Custom roles are not part of v1.</p>
+        <p className="text-xs text-text-secondary mt-1">Manage roles, what each role can do, and how far its data visibility reaches.</p>
       </div>
-      <div className="p-4 bg-surface-subtle border border-border-subtle rounded-xl space-y-1">
-        <div className="font-semibold text-sm text-text-primary flex items-center gap-2">
-          <Icon name="shield" size={16} className="text-brand-primary" />
-          Fixed roles
+      <div className="p-4 bg-surface-subtle border border-border-subtle rounded-xl flex items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="font-semibold text-sm text-text-primary flex items-center gap-2">
+            <Icon name="shield" size={16} className="text-brand-primary" />
+            Roles & Permissions Studio
+          </div>
+          <p className="text-xs text-text-secondary">Create custom roles alongside the four built-in ones and choose what each can do.</p>
         </div>
-        <p className="text-xs text-text-secondary">Assign a role from the employee record. What each role can see and do is set by the approved policy.</p>
+        <Link href="/settings/roles">
+          <Button>Open studio</Button>
+        </Link>
       </div>
     </Card>
   );

@@ -121,7 +121,6 @@ export interface RuleInput {
   /**
    * Custom (non-matrix) roles only: the `data_scope` of the validated `role_permissions` grant for this
    * action, or `null` when the role holds no grant. The four matrix roles ignore it. Absent = `null`.
-   * Fixed v1 scope (approved): custom roles are turned off, so the rule table ignores it for every role.
    */
   dataScope?: DataScope | null;
 }
@@ -287,10 +286,30 @@ export function buildRuleFragments(input: RuleInput): RuleFragments {
       relation = 'TRUE';
       windowForRole = creationWindow();
       break;
-    default:
-      // Fixed v1 scope (approved): four roles, no custom roles. Any other role id gets nothing, on every
-      // surface, whatever `role_permissions` says (the data is kept, the feature is off).
+    default: {
+      // Custom roles (migration 014; Owner decision 2026-10-29: on). Nothing by default. A validated
+      // `role_permissions` grant for THIS action opens the base scope per its `data_scope`; the same elapsed
+      // 15-day rules apply (creation; plus the current-assignment window for `assigned_only`, like Call
+      // Center), archived businesses stay excluded (`live`), and the exception rows never apply. An unknown
+      // scope value gets nothing (deny by default).
+      const ds = input.dataScope ?? null;
+      if (ds === 'global') {
+        relation = 'TRUE';
+      } else if (ds === 'assigned_only') {
+        relation = `(${af}.assignee_id = ${u()} OR ${u()} = ANY(${af}.deal_developer_ids) OR ${u()} = ANY(${af}.project_developer_ids))`;
+      } else if (ds === 'self' || ds === 'department') {
+        // `department` has no business-level fact: narrowest reading = own-created.
+        relation = `(${af}.created_by = ${u()})`;
+      } else {
+        break;
+      }
+      scope = 'TRUE';
+      windowForRole =
+        ds === 'assigned_only'
+          ? `(${creationWindow()} OR (${af}.assignee_id = ${u()} AND ${elapsedWindow(`${af}.assignment_started_at`)}))`
+          : creationWindow();
       break;
+    }
   }
 
   return { live: role === 'owner' ? 'TRUE' : `${af}.archived_at IS NULL`, scope, relation, window: windowForRole, rows };
