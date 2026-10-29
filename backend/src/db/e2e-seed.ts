@@ -123,6 +123,20 @@ export async function seedE2e() {
   }
   void harbor; void yoga; void cuts;
 
+  // Attendance settings (D1 configured gate): an Owner-saved, complete version so the check-in journeys
+  // run. Test values only: every weekday (runs on weekends too), the local backend's loopback addresses as
+  // the "office", no holidays (confirmed). Written once; an existing confirmed version is kept.
+  if (!(await one('SELECT 1 FROM attendance_settings_versions WHERE holidays_confirmed = true'))) {
+    await query(
+      `INSERT INTO attendance_settings_versions (version_no, timezone, working_days, shift_start, shift_end, grace_minutes, verification_mode,
+         office_ips, holidays, holidays_confirmed, summary_required, summary_min_length, missing_checkout_flag_hours, reason, created_by)
+       VALUES (COALESCE((SELECT MAX(version_no) + 1 FROM attendance_settings_versions), 1), 'Asia/Beirut',
+         ARRAY['MON','TUE','WED','THU','FRI','SAT','SUN'], '09:00', '18:00', 10, 'ip', ARRAY['127.0.0.1','::1','::ffff:127.0.0.1'],
+         '{}'::date[], true, true, 10, 6, 'e2e: local test settings', $1)`,
+      [owner]
+    );
+  }
+
   // Attendance: yesterday's closed session for Maya (history on the monitor).
   if (!(await one(`SELECT 1 FROM attendance_sessions WHERE employee_id = $1`, [maya]))) {
     await query(

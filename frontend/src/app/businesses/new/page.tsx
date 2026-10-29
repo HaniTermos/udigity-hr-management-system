@@ -11,7 +11,7 @@ import { NoticeAccess } from '@/components/ui/NoticeAccess';
 import { useToast } from '@/components/ui/Toast';
 import { BusinessForm } from '@/components/businesses/BusinessForm';
 import { emptyFormValues, mapServerErrors, phoneKeyForMatch, toInput, type BusinessFormValues, type ServerFieldErrors } from '@/components/businesses/businessFormModel';
-import { DuplicateBlockedDialog, SimilarNameDialog } from '@/components/businesses/DuplicateBlocked';
+import { DuplicateBlockedDialog, SimilarNameDialog, type DuplicateReviewProbe } from '@/components/businesses/DuplicateBlocked';
 import { describeSaveError } from '@/components/businesses/saveErrors';
 import { PageHeader } from '@/components/businesses/PageHeader';
 import { useBusinessAccess, useCategories } from '@/components/businesses/hooks';
@@ -29,6 +29,8 @@ function CreateBusiness() {
   const [isSaving, setIsSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [match, setMatch] = useState<DuplicateMatch | null>(null);
+  // D10: the details of the blocked save, for "Request Owner review" (the server re-derives the match).
+  const [reviewProbe, setReviewProbe] = useState<DuplicateReviewProbe | undefined>(undefined);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [serverErrors, setServerErrors] = useState<Partial<ServerFieldErrors>>();
   const [similar, setSimilar] = useState<SimilarName[] | null>(null);
@@ -61,6 +63,8 @@ function CreateBusiness() {
       if (err instanceof ApiError && err.code === 'DUPLICATE_BLOCKED') {
         const m = duplicateMatchFrom(err.details);
         setMatch(m);
+        const input = toInput(values);
+        setReviewProbe({ name: input.name, branch: input.branch, phones: input.phones });
         setDialogOpen(true);
         setBlocked(true);
         const key = phoneKeyForMatch(values, m);
@@ -128,7 +132,7 @@ function CreateBusiness() {
         />
       )}
 
-      <DuplicateBlockedDialog open={dialogOpen} match={match} onClose={() => setDialogOpen(false)} />
+      <DuplicateBlockedDialog open={dialogOpen} match={match} onClose={() => setDialogOpen(false)} reviewProbe={reviewProbe} />
       <SimilarNameDialog
         similar={similar}
         busy={isSaving}

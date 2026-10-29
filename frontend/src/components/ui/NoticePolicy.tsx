@@ -6,6 +6,23 @@ import { Icon } from './Icon';
 export const DEMO_ALTERNATIVE_LABEL = 'Demonstration alternative — not approved';
 export const POLICY_PENDING_LABEL = 'Policy pending';
 
+/**
+ * IDs settled by the Owner-approved baseline (docs/policy-baseline-2026-10-29.md, decisions.md): no
+ * "pending" marker is shown for them (DEC-004 was selected by the Owner the same day). Company inputs that
+ * are still missing show as "not configured" states in the screens themselves.
+ */
+const SETTLED_POLICY_IDS = new Set<string>([
+  ...Array.from({ length: 34 }, (_, i) => `DEC-${String(i + 1).padStart(3, '0')}`),
+  'C-01', // archive only → DEC-031
+  'F-01', // correction on an open session → pending review (D4/D5)
+  'F-02', // provisional checkout keeps the summary (D5)
+  'AR-13', // delivery monitor "Send again" only: built implementation choice, not a pending policy
+]);
+
+export function isPolicySettled(dec: string): boolean {
+  return SETTLED_POLICY_IDS.has(dec);
+}
+
 const TONE = {
   policy: 'bg-status-policy-bg border-status-policy-border text-status-policy-fg',
   decision: 'bg-status-decision-bg border-status-decision-border text-status-decision-fg',
@@ -26,6 +43,7 @@ export interface NoticePolicyProps {
 }
 
 export function NoticePolicy({ tone = 'policy', size = 'block', dec, body, demo = false, className }: NoticePolicyProps) {
+  if (isPolicySettled(dec)) return null;
   if (size === 'chip') {
     return <PolicyPendingChip dec={dec} demo={demo} tone={tone} className={className} />;
   }
@@ -73,6 +91,7 @@ export function PolicyPendingChip({
   tone?: 'policy' | 'decision';
   className?: string;
 }) {
+  if (isPolicySettled(dec)) return null;
   const text = demo ? DEMO_ALTERNATIVE_LABEL : (label ?? (tone === 'decision' ? 'Implementation decision' : POLICY_PENDING_LABEL));
   return (
     <span

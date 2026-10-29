@@ -81,10 +81,22 @@ export interface DashboardMetricsDto {
     suppressedDeliveriesCount: number;
     failedRemindersCount: number;
   };
+  /** D7: Owner-set targets active today (company timezone) with server-computed progress; [] = none set. */
   targets: {
-    outreachProgress: { current: number; target: number; percentage: number };
-    closedDealsProgress: { current: number; target: number; percentage: number };
-    contactedBusinessesProgress: { current: number; target: number; percentage: number };
+    /** false = attendance schedule not configured: working-day rules are not applied yet. */
+    scheduleConfigured: boolean;
+    items: Array<{
+      id: string;
+      employeeId: string;
+      employeeName: string;
+      metric: string;
+      period: 'daily' | 'weekly' | 'monthly' | 'quarterly';
+      targetValue: number;
+      currentValue: number | null;
+      progressNote: 'schedule_not_configured' | 'non_working_day' | 'unsupported_metric' | null;
+      startDate: string;
+      endDate: string;
+    }>;
   };
 }
 

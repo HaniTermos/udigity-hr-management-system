@@ -14,9 +14,27 @@ export const dealsPaths = {
   command: (id: string, verb: DealVerb) => `/api/deals/${id}/${verb}`,
 } as const;
 
-/** Stored stages. Labels are derived client-side (`DEAL_STAGE_LABEL`). */
-export type DealStage = 'accepted_opportunity' | 'signed' | 'paid' | 'signed_and_paid' | 'closed' | 'not_proceeding';
+/**
+ * Stored stages (D16 approved: accepted → meeting scheduled → proposal sent → signed → payment pending
+ * verification → verified closed; lost = `not_proceeding`). Labels are derived client-side (`DEAL_STAGE_LABEL`).
+ */
+export type DealStage =
+  | 'accepted_opportunity'
+  | 'meeting_scheduled'
+  | 'proposal_sent'
+  | 'signed'
+  | 'paid'
+  | 'signed_and_paid'
+  | 'closed'
+  | 'not_proceeding';
 
+/** Forward-only pipeline moves (`advance-stage`). */
+export type DealAdvanceTarget = 'meeting_scheduled' | 'proposal_sent';
+
+/** D16 closure evidence still missing on an open deal. */
+export type ClosureEvidence = 'agreementReference' | 'paymentDate';
+
+/** `direct` appears only on deals closed before the approved policy retired it. */
 export type ClosureMode = 'ownerVerify' | 'direct';
 
 export interface DealListItem {
@@ -72,6 +90,11 @@ export interface ClosureReview {
 
 export interface DealAllowed {
   assignDeveloper: boolean;
+  advanceStage: boolean;
+  advanceTargets: DealAdvanceTarget[];
+  updateContract: boolean;
+  /** Owner, verified closed deal. */
+  correctFinancials: boolean;
   recordSignature: boolean;
   recordPayment: boolean;
   removeFact: boolean;
@@ -100,23 +123,28 @@ export interface Deal {
   assignedDeveloperName: string | null;
   developerNotAssigned: boolean;
   facts: {
-    signature: { date: IsoDate; reference: string; recordedById: Id; recordedAt: IsoDateTime } | null;
+    /** `reference` = the agreement reference (closure evidence); the date is optional. */
+    signature: { date: IsoDate | null; reference: string | null; recordedById: Id; recordedAt: IsoDateTime } | null;
     payment: {
       date: IsoDate;
-      reference: string;
+      reference: string | null;
       amount: string | null;
       currency: string | null;
       recordedById: Id;
       recordedAt: IsoDateTime;
     } | null;
   };
+  /** Contract amount, distinct from the payment received. A null amount is missing, never zero. */
+  contract: { amount: string | null; currency: string | null };
+  /** Closure evidence still missing (empty = ready for Owner verification). */
+  closureMissing: ClosureEvidence[];
   closure: { closedAt: IsoDateTime; closedById: Id; mode: ClosureMode } | null;
   openClosureReview: ClosureReview | null;
   lastRejectedReview: ClosureReview | null;
   notProceeding: { reason: string; at: IsoDateTime; byId: Id } | null;
   projectProvisioning: ProjectProvisioningState;
   projectId: Id | null;
-  policy: { closureMode: ClosureMode; developerPreClosure: 'assigned' | 'closedOnly'; autoProvision: boolean; label: string };
+  policy: { closureMode: 'ownerVerify'; developerPreClosure: 'assigned' | 'closedOnly'; autoProvision: boolean; label: string };
   /** Drive every button from this: the server recomputes and re-checks on the command. */
   allowed: DealAllowed;
   createdAt: IsoDateTime;
@@ -143,8 +171,22 @@ export type DealFactKey = 'signature' | 'payment';
 
 export interface DealCommandBodies {
   developer: { developerId: string };
-  signature: { date: string; reference: string };
-  payment: { date: string; reference: string; amount?: number; currency?: string };
+  'advance-stage': { to: DealAdvanceTarget };
+  contract: { amount: number | null; currency: string | null };
+  signature: { date?: string; reference: string };
+  payment: { date: string; reference?: string; amount?: number; currency?: string };
+  /** Owner, verified closed deal; only the fields given change. */
+  'financial-correction': {
+    reason: string;
+    agreementReference?: string;
+    signatureDate?: string | null;
+    paymentDate?: string;
+    paymentReference?: string | null;
+    paymentAmount?: number | null;
+    paymentCurrency?: string | null;
+    contractAmount?: number | null;
+    contractCurrency?: string | null;
+  };
   'remove-fact': { fact: DealFactKey; reason: string };
   'closure-request': { note?: string };
   'closure-verify': Record<string, never>;
@@ -167,8 +209,17 @@ export async function runDealCommand<V extends DealVerb>(
   return res.deal;
 }
 
-/** Payload `details.missing` of a 409 STATE_CONFLICT from `finalize` / closure commands. */
+/**
+ * Payload `details.missing` of a 409 STATE_CONFLICT from `finalize` / closure commands, as the fact to
+ * record: `agreementReference` → signature, `paymentDate` → payment (older servers sent the fact names).
+ */
 export function missingFacts(details: unknown): DealFactKey[] {
   const m = (details as { missing?: unknown } | undefined)?.missing;
-  return Array.isArray(m) ? m.filter((x): x is DealFactKey => x === 'signature' || x === 'payment') : [];
+  if (!Array.isArray(m)) return [];
+  const out: DealFactKey[] = [];
+  for (const x of m) {
+    if (x === 'agreementReference' || x === 'signature') out.push('signature');
+    if (x === 'paymentDate' || x === 'payment') out.push('payment');
+  }
+  return out;
 }

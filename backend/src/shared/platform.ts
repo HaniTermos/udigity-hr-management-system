@@ -16,6 +16,8 @@ export type JobKind =
   | 'platform.outbox_relay' // J-03
   | 'notifications.reminder_dispatch' // J-01
   | 'notifications.delivery_dispatch' // J-02 (email retries 60 s / 10 min / 60 min)
+  | 'notifications.daily_digest' // J-13 (D18 shift-start digests, in-app)
+  | 'notifications.ops_alerts' // J-14 (operator failure alerts → ALERT_EMAIL_TO)
   | 'attendance.exception_check' // J-04
   | 'reservation.expiry_sweep' // J-05
   | 'identity.session_cleanup' // J-06

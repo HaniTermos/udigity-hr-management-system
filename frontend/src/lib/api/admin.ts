@@ -125,7 +125,10 @@ export interface AttendanceSettingsCurrent {
   graceMinutes: number | null;
   verificationMode: string | null;
   officeIps?: string[];
+  officeHostnames?: string[];
   holidays?: string[];
+  /** D1: the Owner confirmed the holiday list (possibly empty). */
+  holidaysConfirmed?: boolean;
   summaryRequired?: boolean;
   summaryMinLength?: number;
   missingCheckoutFlagHours?: number;
@@ -138,16 +141,23 @@ export interface AttendanceSettingsDto {
   current: AttendanceSettingsCurrent;
 }
 
-/** Only the fields the form edits. The server keeps every omitted field (holidays, summary rules, flag hours). */
+/**
+ * Only the fields the form edits; on a later save the server keeps every omitted field. D1: the first save must
+ * state timezone, working days, shift start, office IPs, holidays and `holidaysConfirmed: true`. No shift end
+ * (derived: start + 9 h) and no summary rule (pinned).
+ */
 export interface AttendanceSettingsPut {
   version: number;
   timezone?: string;
   workingDays?: WeekdayCode[];
   shiftStart?: string;
-  shiftEnd?: string;
   graceMinutes?: number;
-  verificationMode?: string;
+  verificationMode?: 'ip';
   officeIps?: string[];
+  /** Dynamic-DNS names of the office router (no static IP); max 5. */
+  officeHostnames?: string[];
+  holidays?: string[];
+  holidaysConfirmed?: boolean;
   reason?: string;
 }
 

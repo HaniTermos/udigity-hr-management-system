@@ -69,17 +69,42 @@ router.post('/export', authenticate, requireAction('report.export'), exportLimit
   activeExports++;
   try {
     const q = ExportQuerySchema.parse(req.body);
-    const result = await service.exportReport(req, q.report, q.format, { from: q.from, to: q.to }, q.totpCode);
-
-    res.setHeader('Content-Type', result.contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
-    res.setHeader('Cache-Control', 'no-store');
-    // Additive: lets the UI say "first N rows" when the row cap applied.
-    res.setHeader('X-Export-Row-Count', String(result.rowCount));
-    res.setHeader('X-Export-Truncated', String(result.truncated));
-    res.send(result.content);
+    // Synchronous streaming: headers go out when the row count is known, then the body in chunks.
+    const sink: service.ExportSink = {
+      start(meta) {
+        res.status(200);
+        res.setHeader('Content-Type', meta.contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${meta.filename}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        // Additive: lets the UI say "first N rows" when the row cap applied.
+        res.setHeader('X-Export-Row-Count', String(meta.rowCount));
+        res.setHeader('X-Export-Truncated', String(meta.truncated));
+        res.flushHeaders();
+      },
+      write(chunk) {
+        if (!chunk) return Promise.resolve();
+        if (res.destroyed) return Promise.reject(new Error('Client closed the export connection'));
+        if (res.write(chunk)) return Promise.resolve();
+        return new Promise<void>((resolve, reject) => {
+          const done = (err?: Error) => {
+            res.off('drain', onDrain);
+            res.off('close', onClose);
+            if (err) reject(err);
+            else resolve();
+          };
+          const onDrain = () => done();
+          const onClose = () => done(new Error('Client closed the export connection'));
+          res.once('drain', onDrain);
+          res.once('close', onClose);
+        });
+      },
+    };
+    await service.exportReport(req, q.report, q.format, { from: q.from, to: q.to }, q.totpCode, sink);
+    res.end();
   } catch (err) {
-    next(err);
+    // After the first byte the status is gone: abort the connection so the client sees a failed download.
+    if (res.headersSent) res.destroy(err as Error);
+    else next(err);
   } finally {
     activeExports--;
   }

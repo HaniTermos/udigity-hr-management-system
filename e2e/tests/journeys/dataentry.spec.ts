@@ -17,6 +17,8 @@ test.describe('Journey: Data Entry', () => {
       await page.getByLabel('Category').click();
       await page.getByRole('option', { name: 'Other' }).click();
     });
+    // No default country code (Owner decision 2026-10-29): each phone row picks its code.
+    await page.getByLabel('Phone 1 country code').selectOption('+961');
     await page.getByPlaceholder('70 000 000').first().fill(phoneDigits);
     await page.getByLabel('Platform').selectOption('Instagram').catch(async () => {
       await page.getByLabel('Platform').click();

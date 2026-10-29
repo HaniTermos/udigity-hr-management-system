@@ -25,6 +25,7 @@ import {
 import type { Punctuality } from '@/lib/api/attendance';
 import { ApiError } from '@/lib/api/client';
 import { employeesListKey, listEmployees } from '@/lib/api/employees';
+import { AttendanceDaysOff } from './AttendanceDaysOff';
 import { formatClock, formatWeekdayDay, useCompanyTimezone } from './format';
 
 const STATUS: Record<MonitorStatus, { label: string; tone: BadgeTone }> = {
@@ -125,13 +126,25 @@ export function AttendanceMonitor() {
           }
         />
       ) : (
-        <Loaded data={data} timeZone={timeZone} filtered={Boolean(employeeId)} />
+        <Loaded data={data} timeZone={timeZone} filtered={Boolean(employeeId)} employees={options} onChanged={() => void mutate()} />
       )}
     </div>
   );
 }
 
-function Loaded({ data, timeZone, filtered }: { data: AttendanceOverview; timeZone: string; filtered: boolean }) {
+function Loaded({
+  data,
+  timeZone,
+  filtered,
+  employees,
+  onChanged,
+}: {
+  data: AttendanceOverview;
+  timeZone: string;
+  filtered: boolean;
+  employees: { value: string; label: string }[];
+  onChanged: () => void;
+}) {
   const s = data.summary;
   const configured = data.scheduleConfigured;
   return (
@@ -192,7 +205,10 @@ function Loaded({ data, timeZone, filtered }: { data: AttendanceOverview; timeZo
           )}
         </div>
 
-        <ExceptionsPanel exceptions={data.exceptions} />
+        <div className="space-y-6">
+          <ExceptionsPanel exceptions={data.exceptions} />
+          <AttendanceDaysOff fromDate={data.date} employees={employees} onChanged={onChanged} />
+        </div>
       </div>
     </>
   );
@@ -209,8 +225,9 @@ function Metric({ value, label, note, tone, chip }: { value: string; label: stri
   );
 }
 
-function MonitorTableRow({ row: r, timeZone }: { row: MonitorRow; timeZone: string }) {
-  const st = STATUS[r.status];
+/** D1: the overview row also says whether an approved day off covers the date (backend `dayOff`). */
+function MonitorTableRow({ row: r, timeZone }: { row: MonitorRow & { dayOff?: boolean }; timeZone: string }) {
+  const st = r.dayOff && r.status === 'not_checked_in' ? { label: 'Day off', tone: 'neutral' as BadgeTone } : STATUS[r.status];
   const base = VERIFICATION[r.verification];
   const checkInVerification = r.session?.verification.checkIn;
   const v =

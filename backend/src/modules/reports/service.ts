@@ -1,16 +1,67 @@
 /**
  * MOD-reports — service. Owner: BE5.
- * Dashboard metrics (arch-a §5A) and synchronous exports (ADR-010).
+ * Dashboard metrics (arch-a §5A) and synchronous streaming exports (ADR-010; policy baseline 2026-10-29
+ * "Fixed v1 scope": bounded by row cap, statement timeout, concurrency and rate limits; no async jobs).
  */
 import type { Request } from 'express';
 import { type Queryable, withTransaction } from '../../db/pool.js';
 import { runCommand, audit } from '../../shared/tx.js';
 import { HttpError, isHttpError } from '../../shared/errors.js';
 import { recordAuditEvent } from '../admin/audit.js';
+import { isValidTimeZone } from '../identity/env.js';
 import { hasRecentStepUp, verifyStepUpTotp } from '../identity/routes.js';
 import { clock } from '../platform/clock.js';
+import { getCompanyTimezone } from '../attendance/service.js';
+import { addDays, workDateOf, zonedToUtc } from '../attendance/time.js';
+import { progressContext } from '../work/progress.js';
+import * as workRepo from '../work/repo.js';
+import { withProgress } from '../work/service.js';
 import * as repo from './repo.js';
 import type { DashboardMetricsDto, ReportItemDto } from './schemas.js';
+
+/** Company-timezone dashboard window. `until` is exclusive (undefined = open-ended, up to now). */
+export function dashboardRange(
+  period: 'today' | '7d' | '30d' | 'custom',
+  now: Date,
+  timezone: string,
+  from?: string,
+  to?: string
+): { since: Date; until?: Date; todayStart: Date } {
+  const tz = timezone || 'UTC';
+  const today = workDateOf(now, timezone);
+  const todayStart = zonedToUtc(today, '00:00', tz);
+  const daysBack = (n: number) => zonedToUtc(addDays(today, -n), '00:00', tz);
+  if (period === 'today') return { since: todayStart, todayStart };
+  if (period === '30d') return { since: daysBack(29), todayStart };
+  if (period === 'custom' && from) {
+    return { since: zonedToUtc(from, '00:00', tz), until: to ? zonedToUtc(addDays(to, 1), '00:00', tz) : undefined, todayStart };
+  }
+  return { since: daysBack(6), todayStart };
+}
+
+/**
+ * D7: Owner-set targets whose period contains company today, with server-computed progress. No target →
+ * an empty list (the UI says "No target set"); nothing here is an invented quota.
+ */
+async function activeTargets(db: Queryable, now: Date): Promise<DashboardMetricsDto['targets']> {
+  const pctx = await progressContext(db, now);
+  const withValues = await withProgress(db, await workRepo.listActiveTargets(db, pctx.today), pctx);
+  return {
+    scheduleConfigured: pctx.scheduleConfigured,
+    items: withValues.map((t) => ({
+      id: t.id,
+      employeeId: t.employeeId,
+      employeeName: t.employeeName ?? '',
+      metric: t.metric,
+      period: t.period,
+      targetValue: t.targetValue,
+      currentValue: t.currentValue,
+      progressNote: t.progressNote ?? null,
+      startDate: t.startDate,
+      endDate: t.endDate,
+    })),
+  };
+}
 
 export async function getDashboardMetrics(
   db: Queryable,
@@ -19,27 +70,14 @@ export async function getDashboardMetrics(
   to?: string
 ): Promise<DashboardMetricsDto> {
   const now = clock.now();
-  let since = new Date(now.getTime() - 7 * 86400_000);
-  let until: Date | undefined;
+  // D7: company-timezone dates. "today" starts at company midnight; 7d/30d are the last 7/30 company days
+  // including today; custom is [from 00:00, to + 1 day 00:00) in the company timezone.
+  const tz = (await getCompanyTimezone(db)) ?? '';
+  const range = dashboardRange(period, now, tz, from, to);
 
-  if (period === 'today') {
-    since = new Date(now);
-    since.setUTCHours(0, 0, 0, 0);
-  } else if (period === '30d') {
-    since = new Date(now.getTime() - 30 * 86400_000);
-  } else if (period === 'custom' && from) {
-    since = new Date(from);
-    since.setUTCHours(0, 0, 0, 0);
-    if (to) {
-      until = new Date(to);
-      until.setUTCHours(23, 59, 59, 999);
-    }
-  }
-
-  const [stats, devWorkload] = await Promise.all([
-    repo.queryDashboardStats(db, since, until),
-    repo.queryDeveloperWorkload(db),
-  ]);
+  const stats = await repo.queryDashboardStats(db, range.since, range.until, range.todayStart);
+  const devWorkload = await repo.queryDeveloperWorkload(db);
+  const targets = await activeTargets(db, now);
 
   const closedVsCompRatio =
     stats.completedProjects > 0
@@ -92,23 +130,8 @@ export async function getDashboardMetrics(
       suppressedDeliveriesCount: stats.suppressedDeliveries,
       failedRemindersCount: stats.failedReminders,
     },
-    targets: {
-      outreachProgress: {
-        current: stats.callAttemptsInPeriod,
-        target: 500,
-        percentage: Math.min(100, Number(((stats.callAttemptsInPeriod / 500) * 100).toFixed(1))),
-      },
-      closedDealsProgress: {
-        current: stats.closedDeals,
-        target: 12,
-        percentage: Math.min(100, Number(((stats.closedDeals / 12) * 100).toFixed(1))),
-      },
-      contactedBusinessesProgress: {
-        current: stats.businessesContactedInPeriod,
-        target: 200,
-        percentage: Math.min(100, Number(((stats.businessesContactedInPeriod / 200) * 100).toFixed(1))),
-      },
-    },
+    // D7: Owner-set targets only (the former 500/12/200 bars were invented quotas and are removed).
+    targets,
   };
 }
 
@@ -118,7 +141,7 @@ export function listReports(): ReportItemDto[] {
       id: 'rep-1',
       title: 'Company Timesheet & Punctuality Export',
       description: 'Daily check-in and checkout facts, total duration, punctuality flags, and approved corrections.',
-      format: 'CSV / Excel (Streamed)',
+      format: 'CSV / JSON (Streamed)',
       badge: 'Payroll Ready',
     },
     {
@@ -177,12 +200,74 @@ export const EXPORT_LIMITS = {
   statementTimeoutMs: 15_000,
 } as const;
 
-export interface ExportResult {
-  content: string;
+/** Rows fetched from the export cursor per round trip (and written to the response per chunk). */
+export const EXPORT_CHUNK_ROWS = 200;
+
+export interface ExportMeta {
   contentType: string;
   filename: string;
   rowCount: number;
   truncated: boolean;
+}
+
+/**
+ * Where a streamed export goes (the HTTP response in routes.ts). `start` is called once, before the first
+ * chunk, with the final row count / truncation flag; `write` resolves when the chunk may be followed by
+ * the next one (back-pressure).
+ */
+export interface ExportSink {
+  start(meta: ExportMeta): void;
+  write(chunk: string): Promise<void>;
+}
+
+/**
+ * Incremental CSV / JSON writer. Concatenating `chunk()` outputs and `end()` gives exactly
+ * `formatAsCsv(rows)` / `JSON.stringify(rows, null, 2)` for the same rows (streaming output equality).
+ */
+export function createExportSerializer(format: 'csv' | 'json') {
+  let count = 0;
+  let headers: string[] | null = null;
+  return {
+    chunk(rows: Record<string, unknown>[]): string {
+      let out = '';
+      for (const r of rows) {
+        if (format === 'json') {
+          out += `${count === 0 ? '[\n' : ',\n'}  ${JSON.stringify(r, null, 2).replace(/\n/g, '\n  ')}`;
+        } else {
+          if (!headers) {
+            headers = Object.keys(r);
+            out += headers.map(escapeCsvField).join(',');
+          }
+          const h = headers;
+          out += `\r\n${h.map((k) => escapeCsvField(r[k])).join(',')}`;
+        }
+        count++;
+      }
+      return out;
+    },
+    end(): string {
+      if (format === 'json') return count === 0 ? '[]' : '\n]';
+      return '';
+    },
+  };
+}
+
+/**
+ * Captures the one SQL statement a report query would run, without running it, so the export can be
+ * streamed through a server-side cursor with the report's own SQL (per-report column definitions stay in
+ * repo.queryExportRows). `usable` is false when the report did more than return that statement's rows
+ * (several queries, or rows post-processed in JS): the export then falls back to the buffered result.
+ */
+function captureQuery(): { db: Queryable; captured: () => { text: string; values: unknown[] } | null; isSentinel: (rows: unknown) => boolean } {
+  const sentinel: Record<string, unknown>[] = [];
+  const calls: { text: string; values: unknown[] }[] = [];
+  const db = {
+    query: async (text: string, values?: unknown[]) => {
+      calls.push({ text, values: values ?? [] });
+      return { rows: sentinel, rowCount: 0, fields: [], command: 'SELECT', oid: 0 };
+    },
+  } as unknown as Queryable;
+  return { db, captured: () => (calls.length === 1 ? calls[0] : null), isSentinel: (rows) => rows === sentinel };
 }
 
 type ExportAuditEvent = 'report.export_denied' | 'report.export_failed';
@@ -237,24 +322,51 @@ export async function exportReport(
   reportType: string,
   format: string,
   filters: Record<string, unknown> = {},
-  totpCode?: string
-): Promise<ExportResult> {
+  totpCode: string | undefined,
+  sink: ExportSink
+): Promise<ExportMeta> {
   await assertStepUp(req, reportType, totpCode);
   try {
     return await runCommand(req, async (ctx) => {
       if (ctx.actor.kind !== 'employee') {
         throw new Error('Export can only be requested by an employee');
       }
-      // R2-02 time cap: the export query may not run longer than this (rolls back on timeout).
+      // R2-02 time cap: no export statement (cursor open/count/fetch) may run longer than this.
       await ctx.tx.query(`SET LOCAL statement_timeout = ${Number(EXPORT_LIMITS.statementTimeoutMs)}`);
-      const fetched = await repo.queryExportRows(ctx.tx, reportType, filters, EXPORT_LIMITS.rowCap + 1);
-      const truncated = fetched.length > EXPORT_LIMITS.rowCap;
-      const rows = truncated ? fetched.slice(0, EXPORT_LIMITS.rowCap) : fetched;
+      // D7: the from/to range is company-timezone days. The report SQL compares timestamps with `::date`,
+      // which PostgreSQL resolves in the session time zone, so the transaction uses the company zone.
+      const tz = (await getCompanyTimezone(ctx.tx)) ?? '';
+      if (tz && isValidTimeZone(tz)) await ctx.tx.query(`SELECT set_config('TimeZone', $1, true)`, [tz]);
+
+      const cap = EXPORT_LIMITS.rowCap;
+      const probe = captureQuery();
+      const probed = await repo.queryExportRows(probe.db, reportType, filters, cap + 1);
+      const statement = probe.isSentinel(probed) ? probe.captured() : null;
+
+      // Synchronous streaming: a server-side cursor over the report's own statement, counted (bounded by
+      // cap + 1) before the first byte so the row count / truncation headers are exact, then fetched and
+      // written in chunks. Fallback (report not a single statement): the buffered, capped result.
+      let rowCount: number;
+      let truncated: boolean;
+      let buffered: Record<string, unknown>[] | null = null;
+      if (statement) {
+        await ctx.tx.query(`DECLARE export_cursor SCROLL CURSOR FOR ${statement.text}`, statement.values);
+        const moved = await ctx.tx.query(`MOVE FORWARD ${cap + 1} IN export_cursor`);
+        truncated = (moved.rowCount ?? 0) > cap;
+        rowCount = Math.min(moved.rowCount ?? 0, cap);
+        await ctx.tx.query('MOVE ABSOLUTE 0 IN export_cursor');
+      } else {
+        const fetched = await repo.queryExportRows(ctx.tx, reportType, filters, cap + 1);
+        truncated = fetched.length > cap;
+        buffered = truncated ? fetched.slice(0, cap) : fetched;
+        rowCount = buffered.length;
+      }
+
       const exportId = await repo.insertExportRecord(ctx.tx, {
         requestedBy: ctx.actor.employeeId,
         reportType,
         format,
-        rowCount: rows.length,
+        rowCount,
         filters,
       });
 
@@ -265,27 +377,37 @@ export async function exportReport(
         after: {
           reportType,
           format,
-          rowCount: rows.length,
+          rowCount,
           truncated,
         },
       });
 
-      let content = '';
-      let contentType = 'text/plain';
-      const timestamp = clock.now().toISOString().slice(0, 10);
-      let filename = `report_${reportType}_${timestamp}.txt`;
-
-      if (format === 'json') {
-        content = JSON.stringify(rows, null, 2);
-        contentType = 'application/json';
-        filename = `report_${reportType}_${timestamp}.json`;
+      const timestamp = workDateOf(clock.now(), tz && isValidTimeZone(tz) ? tz : '');
+      const fmt: 'csv' | 'json' = format === 'json' ? 'json' : 'csv';
+      const meta: ExportMeta = {
+        contentType: fmt === 'json' ? 'application/json' : 'text/csv; charset=utf-8',
+        filename: `report_${reportType}_${timestamp}.${fmt}`,
+        rowCount,
+        truncated,
+      };
+      sink.start(meta);
+      const out = createExportSerializer(fmt);
+      if (buffered) {
+        for (let i = 0; i < buffered.length; i += EXPORT_CHUNK_ROWS) {
+          await sink.write(out.chunk(buffered.slice(i, i + EXPORT_CHUNK_ROWS)));
+        }
       } else {
-        content = formatAsCsv(rows);
-        contentType = 'text/csv; charset=utf-8';
-        filename = `report_${reportType}_${timestamp}.csv`;
+        for (let sent = 0; sent < rowCount; ) {
+          const n = Math.min(EXPORT_CHUNK_ROWS, rowCount - sent);
+          const { rows } = await ctx.tx.query<Record<string, unknown>>(`FETCH FORWARD ${n} FROM export_cursor`);
+          if (rows.length === 0) break;
+          sent += rows.length;
+          await sink.write(out.chunk(rows));
+        }
+        await ctx.tx.query('CLOSE export_cursor');
       }
-
-      return { content, contentType, filename, rowCount: rows.length, truncated };
+      await sink.write(out.end());
+      return meta;
     });
   } catch (err) {
     const timedOut = (err as { code?: string }).code === '57014'; // query_canceled (statement_timeout)

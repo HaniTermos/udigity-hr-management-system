@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import path from 'path';
 import crypto from 'crypto';
+import net from 'net';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -176,6 +177,26 @@ function int(env: Env, key: string, fallback: number): number {
   return value;
 }
 
+/** Express `trust proxy` names (subnet presets) accepted beside IP addresses and CIDR ranges. */
+const PROXY_PRESETS = new Set(['loopback', 'linklocal', 'uniquelocal']);
+
+/** TRUSTED_PROXY_CIDRS: comma list of IPs / CIDRs / Express presets; null when unset. */
+export function parseTrustedProxies(raw: string | undefined): string[] | null {
+  if (raw === undefined || raw.trim() === '') return null;
+  const list = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  for (const entry of list) {
+    if (PROXY_PRESETS.has(entry)) continue;
+    const [addr, prefix, extra] = entry.split('/');
+    const family = net.isIP(addr);
+    const max = family === 4 ? 32 : 128;
+    const prefixOk = prefix === undefined || (/^\d{1,3}$/.test(prefix) && Number(prefix) <= max);
+    if (!family || extra !== undefined || !prefixOk) {
+      throw new ConfigError(`TRUSTED_PROXY_CIDRS: "${entry}" is not an IP address, CIDR range or one of ${[...PROXY_PRESETS].join(', ')}`);
+    }
+  }
+  return list;
+}
+
 /**
  * Resolve NODE_ENV. Fails closed: an unset or unknown NODE_ENV is treated as
  * 'production' (strict mode: secrets required, no verbose errors, Secure cookies).
@@ -249,6 +270,12 @@ export function loadConfig(env: Env) {
     /** Requests with neither Origin nor Referer: rejected in production, allowed in dev/test (CLI tools, supertest). */
     allowMissingOrigin: env.ALLOW_MISSING_ORIGIN ? env.ALLOW_MISSING_ORIGIN === 'true' : !isProduction,
     trustProxy: env.TRUST_PROXY === 'true',
+    /**
+     * D2: the reverse-proxy hops whose X-Forwarded-For entry Express may use for `req.ip` (office check).
+     * null = unset: development/test keep the legacy single hop (TRUST_PROXY=true); production trusts no
+     * proxy and /readyz answers 503 until it is set.
+     */
+    trustedProxyCidrs: parseTrustedProxies(env.TRUSTED_PROXY_CIDRS),
 
     db: { ...db, configured: dbConfigured },
 
@@ -288,7 +315,7 @@ export function loadConfig(env: Env) {
     // Working default: min 12 characters, no composition rules; reset link single use, 60 min; reset ends all sessions.
     password: {
       minLength: int(env, 'PASSWORD_MIN_LENGTH', 12),
-      resetTtlMinutes: int(env, 'PASSWORD_RESET_TTL_MINUTES', 60),
+      resetTtlMinutes: int(env, 'PASSWORD_RESET_TTL_MINUTES', 30),
       /** bcrypt cost for account passwords: 12 outside tests (V-02). */
       bcryptRounds: bcryptCost(env, appEnv, 'PASSWORD_BCRYPT_ROUNDS', 12),
       /** bcrypt cost for 2FA recovery codes: 10 outside tests (V-02). */

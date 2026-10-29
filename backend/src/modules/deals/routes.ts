@@ -6,16 +6,19 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { pool } from '../../db/pool.js';
 import { authenticate } from '../../middleware/auth.js';
-import { access, assertAllowed, principalFromRequest, requireAction, requireActionFor } from '../../shared/access.js';
+import { access, assertAllowed, principalFromRequest, requireAction } from '../../shared/access.js';
 import { runCommand } from '../../shared/tx.js';
 import { auditOwnerHiddenRead } from '../access/schemas.js';
 import { idempotent } from '../platform/idempotency.js';
 import {
+  AdvanceStageBody,
   AssignDeveloperBody,
   ClosureRejectBody,
   ClosureRequestBody,
   ClosureVerifyBody,
+  ContractBody,
   FinalizeBody,
+  FinancialCorrectionBody,
   IdParam,
   ListDealsQuery,
   NotProceedingBody,
@@ -25,6 +28,7 @@ import {
   ReopenBody,
 } from './schemas.js';
 import * as service from './service.js';
+import { relevantCallNotes } from './callNotes.js';
 import { activeEmployeesByRole } from '../employees/service.js';
 
 /** Mounted at /api/deals. */
@@ -72,6 +76,17 @@ async function readDeal(req: Request, res: Response, next: NextFunction, withHis
 
 router.get('/:id', authenticate, requireAction('deal.read'), (req, res, next) => readDeal(req, res, next, false));
 router.get('/:id/history', authenticate, requireAction('deal.read'), (req, res, next) => readDeal(req, res, next, true));
+// D15 (BE2): read-only relevant call notes for the assigned Developer / Owner (callNotes.ts).
+router.get('/:id/call-notes', authenticate, requireAction('deal.read'), async (req, res, next) => {
+  try {
+    const { id } = IdParam.parse(req.params);
+    const principal = principalFromRequest(req);
+    assertAllowed(await access.check(pool, principal, 'deal.read', { type: 'deal', id }));
+    res.json(await relevantCallNotes(pool, principal, id));
+  } catch (e) {
+    next(e);
+  }
+});
 
 type Cmd = (ctx: Parameters<Parameters<typeof runCommand>[1]>[0], id: string, body: never) => Promise<unknown>;
 
@@ -95,6 +110,9 @@ function command(path: string, gate: string, operation: string, schema: { parse(
 }
 
 command('developer', 'deal.assign_developer', 'deal.assign_developer', AssignDeveloperBody, service.assignDeveloper as Cmd);
+// D16: forward-only stage move and contract amount (Owner or the assigned Developer, narrowed in the service).
+command('advance-stage', 'deal.update_stage', 'deal.advance_stage', AdvanceStageBody, service.advanceStage as Cmd);
+command('contract', 'deal.update_stage', 'deal.set_contract', ContractBody, service.setContract as Cmd);
 command('signature', 'deal.record_signature', 'deal.record_signature', RecordSignatureBody, service.recordSignature as Cmd);
 command('payment', 'deal.record_payment', 'deal.record_payment', RecordPaymentBody, service.recordPayment as Cmd);
 command('remove-fact', 'deal.update_stage', 'deal.remove_fact', RemoveFactBody, service.removeFact as Cmd);
@@ -103,24 +121,9 @@ command('closure-verify', 'deal.verify_closure', 'deal.verify_closure', ClosureV
 command('closure-reject', 'deal.reject_closure', 'deal.reject_closure', ClosureRejectBody, service.rejectClosure as Cmd);
 command('not-proceeding', 'deal.mark_not_proceeding', 'deal.mark_not_proceeding', NotProceedingBody, service.markNotProceeding as Cmd);
 command('reopen', 'deal.reopen_not_proceeding', 'deal.reopen_not_proceeding', ReopenBody, service.reopenNotProceeding as Cmd);
-
-// Finalize: the Owner passes `deal.finalize` (admin, 2FA); a Developer passes the `deal.update_stage`
-// gate and the service allows it only under DEC-006 `direct` for the assigned Developer (matrix note).
-router.post(
-  '/:id/finalize',
-  authenticate,
-  requireActionFor((req) => (req.user?.role === 'developer' ? 'deal.update_stage' : 'deal.finalize'), ['deal.finalize', 'deal.update_stage']),
-  idempotent('deal.finalize'),
-  async (req, res, next) => {
-    try {
-      const { id } = IdParam.parse(req.params);
-      const body = FinalizeBody.parse(req.body);
-      const deal = await runCommand(req, (ctx) => service.finalize(ctx, id, body));
-      res.json({ deal });
-    } catch (e) {
-      next(e);
-    }
-  }
-);
+// D16: only Owner verification closes. Finalize = the Owner records and verifies directly (`deal.finalize`, admin, 2FA).
+command('finalize', 'deal.finalize', 'deal.finalize', FinalizeBody, service.finalize as Cmd);
+// D16 Owner-only correction of a verified closed deal's financial facts (reason, prior values kept).
+command('financial-correction', 'deal.finalize', 'deal.correct_financials', FinancialCorrectionBody, service.correctFinancials as Cmd);
 
 export default router;

@@ -172,9 +172,16 @@ export function registerDynamicRoleChecker(checker: DynamicRoleChecker): void {
   dynamicRoleChecker = checker;
 }
 
-/** The custom-role grant for `role`/`action` (null for system roles, unknown roles, no checker). */
+/**
+ * Fixed v1 scope (docs/policy-baseline-2026-10-29.md, approved): four roles, NO custom-role management.
+ * Custom roles are turned off, not removed: `custom_roles` / `role_permissions` rows are kept, but no grant
+ * is ever honoured, so every custom (or unknown) role id is denied everywhere.
+ */
+export const CUSTOM_ROLES_ENABLED: boolean = false;
+
+/** The custom-role grant for `role`/`action`. Always null in v1 (custom roles off). */
 export function dynamicGrantFor(role: Role, action: Action): DataScope | null {
-  if (isSystemRole(role) || !dynamicRoleChecker) return null;
+  if (!CUSTOM_ROLES_ENABLED || isSystemRole(role) || !dynamicRoleChecker) return null;
   return dynamicRoleChecker.grantFor(role, action);
 }
 
@@ -289,6 +296,8 @@ export function requireAction(action: Action) {
       if (role === 'owner' && req.user.sessionState !== 'active' && ownerOnly) return secondFactor();
       return next();
     }
+    // Fixed v1 scope: custom roles are off; any other role id is refused on every action.
+    if (!CUSTOM_ROLES_ENABLED) return forbidden();
     // Custom role: nothing by default; only a validated grant, loaded from the database. The load is
     // awaited (cold process) so the answer is never "not loaded yet".
     const user = req.user;

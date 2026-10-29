@@ -22,7 +22,8 @@ const RUN = crypto.randomUUID();
 // Test consumers only act on events of this run (the shared test DB may hold older rows).
 const seenA: string[] = [];
 const seenB: string[] = [];
-let failB = 0;
+/** Event id consumer B fails for once (by id, so a leftover event from an earlier test can't use it up). */
+let failBFor: string | null = null;
 let failAlways = false;
 
 function mine(e: DeliveredEvent): boolean {
@@ -36,7 +37,8 @@ afterAll(async () => {
   if (hasTestDb) await pool.end();
 });
 
-describe.skipIf(!hasTestDb)('platform against TEST_DATABASE_URL', () => {
+// 60 s per test: relaying another file's backlog on the shared DB can exceed the 5 s default.
+describe.skipIf(!hasTestDb)('platform against TEST_DATABASE_URL', { timeout: 60_000 }, () => {
   beforeAll(() => {
     registerOutboxConsumer({
       name: 'test.consumer_a',
@@ -52,8 +54,8 @@ describe.skipIf(!hasTestDb)('platform against TEST_DATABASE_URL', () => {
       events: ['call_outcome.changed', 'password_reset.completed'],
       async handle(_ctx, e) {
         if (!mine(e)) return;
-        if (failAlways || failB > 0) {
-          failB = Math.max(0, failB - 1);
+        if (failAlways || failBFor === e.id) {
+          if (failBFor === e.id) failBFor = null;
           throw new Error('consumer b failed');
         }
         seenB.push(e.id);
@@ -76,7 +78,7 @@ describe.skipIf(!hasTestDb)('platform against TEST_DATABASE_URL', () => {
 
   afterEach(() => {
     clock.set(null);
-    failB = 0;
+    failBFor = null;
     failAlways = false;
   });
 
@@ -133,7 +135,7 @@ describe.skipIf(!hasTestDb)('platform against TEST_DATABASE_URL', () => {
     const t0 = new Date(Date.now() + 60_000);
     clock.set(t0);
     const id = await emit('call_outcome.changed');
-    failB = 1;
+    failBFor = id;
     await relayAll();
     let row = await eventRow(id);
     expect(row.state).toBe('pending');

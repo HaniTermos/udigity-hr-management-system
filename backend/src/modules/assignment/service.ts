@@ -2,8 +2,9 @@
  * MOD-assignment — service (SM-ASSIGNMENT-001, WF-CALL-001; docs/implementation/calling-design.md §4). Owner: BE3.
  *
  * B8: only this module creates or changes calling assignments. Owner + completed 2FA only (B3-Q01, B3-Q15).
- * Policies used here — B1/B2/B4/B6 eligibility, B3-Q03 per-follow-up choice, DEC-021 autofill cap
- * (work.autofillPerAgentPerDay) — are "Demonstration alternative — not approved (docs/policy-defaults.md)".
+ * Policies used here — B1/B2/B4/B6 eligibility, B3-Q03 per-follow-up choice — are "Demonstration alternative —
+ * not approved (docs/policy-defaults.md)". Auto-fill follows the approved policy baseline 2026-10-29 §D8
+ * (round-robin, queue cap work.autofillQueueCap = 40 current eligible assigned businesses per agent).
  *
  * Lock order (same as MOD-calls): business_calling_states row → calling_assignments row → follow_ups row.
  * Reassign/unassign never touch an Active reservation (AR-03): the Owner overrides it first (separate call).
@@ -15,6 +16,7 @@ import { outbox } from '../../shared/outbox.js';
 import { orderByClause, toPage, type PageResult } from '../../shared/pagination.js';
 import { SqlParams } from '../../shared/sql.js';
 import { audit, type CommandContext } from '../../shared/tx.js';
+import { readCompanySettings } from '../admin/repo.js';
 import { getSetting } from '../admin/service.js';
 import { callingStateOf, lockCallingState, openFollowUpOf, transferFollowUps } from '../calls/service.js';
 import { employees, isActiveCallingUser } from '../calls/directory.js';
@@ -26,6 +28,7 @@ import type { AssignmentRow, AssignmentSource } from './repo.js';
 import type {
   AssignBody,
   AssignResultDto,
+  AutofillAgentResultDto,
   AutofillBody,
   CallingAssignmentDto,
   FollowUpChoice,
@@ -245,28 +248,79 @@ export async function unassign(ctx: CommandContext, body: z.infer<typeof Unassig
   return { businessId: body.businessId, unassigned: true, warnings };
 }
 
-/** POST /api/calling-assignments/autofill — DEC-021 manual trigger (DEMO cap work.autofillPerAgentPerDay). */
-export async function autofill(ctx: CommandContext, body: z.infer<typeof AutofillBody>): Promise<AssignResultDto & { cap: number; alreadyToday: number }> {
-  await assertAssignee(ctx.tx, body.agentId, 'agentId');
-  const now = clock.now();
-  const cap = await getSetting(ctx.tx, 'work.autofillPerAgentPerDay');
-  const tz = await getSetting(ctx.tx, 'company.timezone');
-  const since = await repo.startOfCompanyDay(ctx.tx, typeof tz === 'string' ? tz : '', now);
-  const alreadyToday = await repo.countAssignedSince(ctx.tx, body.agentId, since);
-  const room = Math.max(0, Math.min(body.limit ?? cap, cap - alreadyToday));
+const LEGACY_QUEUE_CAP_KEY = 'work.autofillPerAgentPerDay';
+
+/**
+ * D8 queue cap. `work.autofillQueueCap` when the Owner saved it; else a value saved under the retired
+ * key `work.autofillPerAgentPerDay` (read-only fallback, never rewritten); else the registry default (40).
+ */
+export async function autofillQueueCap(db: Queryable): Promise<number> {
+  const stored = (await readCompanySettings(db)).values;
+  if (!Object.prototype.hasOwnProperty.call(stored, 'work.autofillQueueCap')) {
+    const legacy = Number(stored[LEGACY_QUEUE_CAP_KEY]);
+    if (Number.isInteger(legacy) && legacy >= 1) return legacy;
+  }
+  return getSetting(db, 'work.autofillQueueCap');
+}
+
+/** Round-robin step (pure, unit-tested): the agent at `cursor` among the agents that still have room. */
+export function roundRobinPick(open: readonly string[], cursor: number): { agentId: string; index: number } | null {
+  if (open.length === 0) return null;
+  const index = cursor % open.length;
+  return { agentId: open[index], index };
+}
+
+/**
+ * POST /api/calling-assignments/autofill — D8 "Auto-fill queues" (Owner-triggered; no scheduled run in v1).
+ * Candidates: eligible, unassigned, non-rejected businesses, oldest first (unassigned only, so a business
+ * with an open follow-up, active reservation, accepted opportunity or active deal is never moved).
+ * Distribution: round-robin across active Call Center agents (or the one `agentId`), each filled up to the
+ * queue cap of current eligible assigned businesses. Queue cap, not a performance quota.
+ */
+export async function autofill(
+  ctx: CommandContext,
+  body: z.infer<typeof AutofillBody>
+): Promise<AssignResultDto & { cap: number; agents: AutofillAgentResultDto[] }> {
+  if (body.agentId) await assertAssignee(ctx.tx, body.agentId, 'agentId');
+  const agentIds = body.agentId ? [body.agentId] : await repo.activeCallCenterAgents(ctx.tx);
+  const cap = await autofillQueueCap(ctx.tx);
+  const before = await repo.eligibleQueueSizes(ctx.tx, agentIds);
+  const room = new Map(agentIds.map((id) => [id, Math.max(0, cap - (before.get(id) ?? 0))]));
+  const totalRoom = Math.min(body.limit ?? Number.MAX_SAFE_INTEGER, [...room.values()].reduce((a, b) => a + b, 0));
   const assigned: AssignmentRow[] = [];
   const skipped: AssignResultDto['skipped'] = [];
-  if (room > 0) {
+  const open = agentIds.filter((id) => (room.get(id) ?? 0) > 0);
+  let cursor = 0;
+  if (totalRoom > 0) {
     // Over-fetch: some candidates fail the full rule (open deal) or lose a race.
-    for (const businessId of await repo.autofillCandidates(ctx.tx, room * 2 + 10)) {
-      if (assigned.length >= room) break;
-      const r = await assignOne(ctx, businessId, body.agentId, 'automatic');
-      if ('row' in r) assigned.push(r.row);
-      else skipped.push({ businessId, ...r.skip });
+    for (const businessId of await repo.autofillCandidates(ctx.tx, totalRoom * 2 + 10)) {
+      if (assigned.length >= totalRoom) break;
+      const pick = roundRobinPick(open, cursor);
+      if (!pick) break;
+      const r = await assignOne(ctx, businessId, pick.agentId, 'automatic');
+      if (!('row' in r)) {
+        skipped.push({ businessId, ...r.skip });
+        continue; // the same agent gets the next candidate
+      }
+      assigned.push(r.row);
+      const left = (room.get(pick.agentId) ?? 0) - 1;
+      room.set(pick.agentId, left);
+      if (left <= 0) {
+        open.splice(pick.index, 1); // the next agent slides into this index
+        cursor = pick.index;
+      } else {
+        cursor = pick.index + 1;
+      }
     }
   }
-  const names = await employees(ctx.tx, [body.agentId]);
-  return { assigned: assigned.map((r) => toDto(r, names)), skipped, cap, alreadyToday };
+  const names = await employees(ctx.tx, agentIds);
+  const agents = agentIds.map((id) => ({
+    agentId: id,
+    agentName: names.get(id)?.name ?? '',
+    queueBefore: before.get(id) ?? 0,
+    assignedNow: assigned.filter((a) => a.assignee_id === id).length,
+  }));
+  return { assigned: assigned.map((r) => toDto(r, names)), skipped, cap, agents };
 }
 
 // ---------------------------------------------------------------------------

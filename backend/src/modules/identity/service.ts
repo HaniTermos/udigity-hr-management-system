@@ -2,6 +2,7 @@
  * MOD-identity — service (public operations for other modules). Owner: BE1.
  * Increment 1 HTTP logic lives in routes.ts, sessions.ts and security.ts.
  */
+import bcrypt from 'bcryptjs';
 import type { Queryable } from '../../db/pool.js';
 import { config } from '../../config/index.js';
 import { recordAuditEvent } from '../admin/audit.js';
@@ -40,6 +41,40 @@ export async function issueCredentialSetup(
   );
   await stashSecuritySecret(tx, rows[0].id, raw, expiresAt);
   return { securityTokenId: rows[0].id, expiresAt };
+}
+
+/**
+ * D20 (approved 2026-10-29): reactivating an employee never restores old credentials or MFA. In the
+ * reactivation transaction: the stored password is replaced by a hash of a random value nobody knows (the
+ * old password stops working; the row stays for the credential-setup upsert), the TOTP factor is removed
+ * (the old secret is destroyed, so it can never be re-confirmed), open recovery codes and pending security
+ * tokens are superseded, and live sessions end. The employee then sets a password through the existing
+ * credential-setup invitation (`issueCredentialSetup`). Nothing secret is returned or logged.
+ */
+export async function invalidateCredentialsForReactivation(
+  tx: Queryable,
+  employeeId: string
+): Promise<{ passwordInvalidated: boolean; mfaRemoved: boolean; endedSessions: number }> {
+  const unusable = await bcrypt.hash(generateToken(), config.password.bcryptRounds);
+  const pw = await tx.query(
+    `UPDATE credentials SET password_hash = $2, failed_count = 0, failed_window_started_at = NULL, locked_until = NULL,
+            updated_at = CURRENT_TIMESTAMP
+      WHERE employee_id = $1`,
+    [employeeId, unusable]
+  );
+  const mfa = await tx.query('DELETE FROM two_factor_factors WHERE employee_id = $1', [employeeId]);
+  await tx.query(
+    `UPDATE two_factor_recovery_codes SET superseded_at = CURRENT_TIMESTAMP
+      WHERE employee_id = $1 AND used_at IS NULL AND superseded_at IS NULL`,
+    [employeeId]
+  );
+  await tx.query(
+    `UPDATE security_tokens SET superseded_at = CURRENT_TIMESTAMP
+      WHERE employee_id = $1 AND used_at IS NULL AND superseded_at IS NULL`,
+    [employeeId]
+  );
+  const ended = await endAllSessions(tx, employeeId, 'revoked');
+  return { passwordInvalidated: (pw.rowCount ?? 0) > 0, mfaRemoved: (mfa.rowCount ?? 0) > 0, endedSessions: ended.length };
 }
 
 /** Ends every live session of an employee and writes `session.revoked` (System actor) when any ended. */

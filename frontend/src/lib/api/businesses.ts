@@ -15,6 +15,7 @@ export const businessesPaths = {
   archive: (id: string) => `/api/businesses/${id}/archive`,
   restore: (id: string) => `/api/businesses/${id}/restore`,
   duplicateCheck: '/api/businesses/duplicate-check',
+  duplicateReview: '/api/businesses/duplicate-review-requests',
   categories: '/api/categories',
   category: (id: string) => `/api/categories/${id}`,
   categoryDeactivate: (id: string) => `/api/categories/${id}/deactivate`,
@@ -193,8 +194,9 @@ export interface BusinessUpdateInput extends BusinessInput {
 }
 
 /**
- * DEC-003 shaping. `visible`: the matching business is one this user can open. `hidden`: existence only,
- * nothing else may be rendered (no id, name, phone or matched field).
+ * Duplicate-match shaping. `visible`: the matching business is one this user can open. `hidden` (approved D10):
+ * only the matched field type, the business name, its category and its creation date — never an id, phones,
+ * social links, notes or the assignee. Seeing it grants no access.
  */
 export type DuplicateMatch =
   | {
@@ -207,7 +209,14 @@ export type DuplicateMatch =
       phones: string[];
       archived: boolean;
     }
-  | { visibility: 'hidden' };
+  | {
+      visibility: 'hidden';
+      /** Absent only when the server sent an older or unreadable shape. */
+      matchedOn?: 'name' | 'phone';
+      name?: string;
+      categoryName?: string;
+      createdAt?: string;
+    };
 
 /** DEC-013 SN-1: a similar name that this user can read (never lists hidden or archived records). */
 export interface SimilarName {
@@ -231,8 +240,12 @@ export function archiveBusiness(id: string, version: number, reason?: string): P
   return api.post<BusinessDetail>(businessesPaths.archive(id), { version, ...(reason ? { reason } : {}) });
 }
 
-export function restoreBusiness(id: string, version: number): Promise<BusinessDetail> {
-  return api.post<BusinessDetail>(businessesPaths.restore(id), { version });
+/**
+ * Owner + 2FA. `categoryId` (Owner decision 2026-10-29): an active category replacing a deactivated one; the
+ * server answers 422 `CATEGORY_INACTIVE` when the business's category is inactive and none is given.
+ */
+export function restoreBusiness(id: string, version: number, categoryId?: string): Promise<BusinessDetail> {
+  return api.post<BusinessDetail>(businessesPaths.restore(id), { version, ...(categoryId ? { categoryId } : {}) });
 }
 
 export interface DuplicateCheckResult {
@@ -252,8 +265,25 @@ export function checkDuplicate(body: {
 
 /** 409 `DUPLICATE_BLOCKED` carries a `DuplicateMatch` in `ApiError.details`. Anything unreadable is shown as hidden. */
 export function duplicateMatchFrom(details: unknown): DuplicateMatch {
-  const d = details as Partial<DuplicateMatch> | null | undefined;
-  return d && d.visibility === 'visible' ? (d as DuplicateMatch) : { visibility: 'hidden' };
+  const d = details as Record<string, unknown> | null | undefined;
+  if (d && d.visibility === 'visible') return d as unknown as DuplicateMatch;
+  // D10: copy only the allowed hidden fields, whatever else arrives.
+  const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+  const matchedOn = d?.matchedOn === 'phone' || d?.matchedOn === 'name' ? d.matchedOn : undefined;
+  return { visibility: 'hidden', matchedOn, name: str(d?.name), categoryName: str(d?.categoryName), createdAt: str(d?.createdAt) };
+}
+
+/**
+ * D10 "Request Owner review" from the duplicate warning. The server re-derives the match from these details
+ * (no business id is sent), audits the request and notifies the Owner. It does not grant access.
+ */
+export function requestDuplicateReview(body: {
+  name?: string;
+  branch?: string | null;
+  phones: { countryCode: string; number: string }[];
+  explanation?: string;
+}): Promise<{ requested: true; match: DuplicateMatch }> {
+  return api.post<{ requested: true; match: DuplicateMatch }>(businessesPaths.duplicateReview, body);
 }
 
 /** 409 `CONFLICT_DUPLICATE` with `details.kind === 'similar_name'`: the SN-1 warning. Returns `null` for other errors. */

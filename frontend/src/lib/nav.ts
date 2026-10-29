@@ -45,7 +45,7 @@ export const NAV_SECTIONS: NavSectionDef[] = [
       { name: 'Reports & Exports', href: '/reports', icon: 'file-text', action: ACTIONS.reportRead },
       { name: 'Delivery Monitor', href: '/delivery-monitor', icon: 'list', action: ACTIONS.reminderMonitorRead, built: true },
       { name: 'Audit', href: '/audit', icon: 'shield', action: ACTIONS.auditRead },
-      { name: 'Roles & Permissions', href: '/settings/roles', icon: 'lock', action: ACTIONS.roleList },
+      // Fixed v1 scope (approved 2026-10-29): four roles, no custom-role management, so no Roles page in the menu.
       { name: 'Settings', href: '/settings', icon: 'settings', action: ACTIONS.settingsRead },
     ],
   },
@@ -63,7 +63,8 @@ export const NAV_SECTIONS: NavSectionDef[] = [
     items: [
       { name: 'Calling Queue', href: '/queue', icon: 'phone', action: ACTIONS.callingQueueRead, mobilePriority: 1 },
       { name: 'Follow-ups & Calendar', href: '/calendar', icon: 'calendar', action: ACTIONS.followUpRead, mobilePriority: 2 },
-      { name: 'Opportunities & Handoffs', href: '/opportunities', icon: 'briefcase', action: ACTIONS.callingQueueRead },
+      // D15 (approved): Owner only; Call Center is refused (assigned Developer works from Deals).
+      { name: 'Opportunities & Handoffs', href: '/opportunities', icon: 'briefcase', action: ACTIONS.opportunitiesList },
       { name: 'Do-not-call List', href: '/do-not-call', icon: 'ban', action: ACTIONS.callingQueueRead },
     ],
   },

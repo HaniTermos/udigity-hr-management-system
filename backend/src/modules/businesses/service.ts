@@ -23,7 +23,7 @@ import {
   stateConflict,
   versionConflict,
 } from '../../shared/errors.js';
-import { flags as envFlags } from '../../shared/flags.js';
+import { outbox } from '../../shared/outbox.js';
 import { orderByClause } from '../../shared/pagination.js';
 import { SqlParams } from '../../shared/sql.js';
 import { audit, runCommand, type CommandContext } from '../../shared/tx.js';
@@ -103,17 +103,6 @@ async function businessSettings(db: Queryable): Promise<BusinessSettings> {
     threshold: Number(threshold),
     platforms: (platforms as string[]).map((p) => p.toLowerCase()),
   };
-}
-
-let categoryFlagOverride: boolean | null = null;
-/** Test only: DEC-015 FLAG branch switch. */
-export function setCategoryFlagForTests(value: boolean | null): void {
-  if (process.env.NODE_ENV !== 'test') throw new Error('Category flag override is available only when NODE_ENV=test');
-  categoryFlagOverride = value;
-}
-/** DEC-015 (FLAG `categories.dataEntryManage`, default false = CA-A Owner only). */
-export function dataEntryManagesCategories(): boolean {
-  return categoryFlagOverride ?? envFlags['categories.dataEntryManage'];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -241,13 +230,23 @@ async function detectBlock(db: Queryable, probe: DuplicateProbe, excludeId: stri
 /** DEC-003 (i): the Owner sees the match (C1); others see it only with full read access, else existence only. */
 async function shapeMatch(db: Queryable, principal: Principal, block: Block): Promise<DuplicateMatch> {
   const row = await repo.findBusiness(db, block.businessId);
-  if (!row) return { visibility: 'hidden' };
+  // Businesses are never hard-deleted (D20): a match found a moment ago still exists.
+  if (!row) throw stateConflict('The duplicate check collided with another change; please retry');
   let visible = principal.role === 'owner';
   if (!visible) {
     const d = await access.check(db, principal, 'business.read', { type: 'duplicate_preview', id: block.businessId });
     visible = d.allowed && d.level === 'full' && !row.archived_at;
   }
-  if (!visible) return { visibility: 'hidden' };
+  if (!visible) {
+    // D10: exactly these fields — no id, phones, social links, notes or assignee.
+    return {
+      visibility: 'hidden',
+      matchedOn: block.matchedOn,
+      name: row.name,
+      categoryName: row.category,
+      createdAt: iso(row.created_at) as string,
+    };
+  }
   return {
     visibility: 'visible',
     id: row.id,
@@ -302,6 +301,58 @@ export async function duplicateCheck(
   const block = await detectBlock(db, probe, exclude);
   if (block) return { blocked: true, match: await shapeMatch(db, principal, block), similar: [] };
   return { blocked: false, match: null, similar: await similarFor(db, principal, n, settings.threshold, exclude) };
+}
+
+/** The probe of a duplicate check / review request, normalised (invalid phones → 400). */
+async function probeFrom(db: Queryable, input: { name?: string; branch?: string | null; phones: { countryCode: string; number: string }[] }): Promise<DuplicateProbe> {
+  const settings = await businessSettings(db);
+  const normalized: string[] = [];
+  const errors: FieldErrors = {};
+  input.phones.forEach((p, i) => {
+    const r = normalizePhone(p.countryCode, p.number, settings.defaultCountryCode);
+    if (r.ok) normalized.push(r.phone.normalized);
+    else addError(errors, `phones.${i}.number`, r.reason === 'invalid' ? 'Enter a valid phone number' : 'Enter the country code');
+  });
+  if (Object.keys(errors).length) throw validationError(errors);
+  const n = input.name ? normalizeName(input.name) : '';
+  return { name: n ? { normalizedName: n, normalizedBranch: normalizeBranch(input.branch ?? '') } : null, phones: normalized };
+}
+
+/** Audit + outbox name of a D10 "Request Owner review" (placeholder name; G2). */
+export const DUPLICATE_REVIEW_EVENT = 'business.duplicate_review_requested';
+
+/**
+ * `POST /api/businesses/duplicate-review-requests` — D10 "Request Owner review" from the duplicate warning.
+ * The server re-derives the match from the submitted details (client ids are never accepted), audits the
+ * request with the optional explanation and queues an in-app notice to the active Owners (outbox). It grants
+ * NO access: the response carries only the same hidden-match disclosure the warning already showed.
+ */
+export async function requestDuplicateReview(
+  ctx: CommandContext,
+  principal: Principal,
+  input: { name?: string; branch?: string | null; phones: { countryCode: string; number: string }[]; explanation?: string }
+): Promise<{ requested: true; match: DuplicateMatch }> {
+  const db = ctx.tx;
+  const probe = await probeFrom(db, input);
+  if (!probe.name && probe.phones.length === 0) throw validationError({ name: ['Enter the business name or a phone number'] });
+  const block = await detectBlock(db, probe, null);
+  if (!block) throw ruleViolation('No existing business matches these details', { reason: 'NO_DUPLICATE' });
+  const match = await shapeMatch(db, principal, block);
+  const explanation = input.explanation?.trim() || null;
+  await audit(ctx, {
+    eventName: DUPLICATE_REVIEW_EVENT,
+    entityType: 'business',
+    entityId: block.businessId,
+    reason: explanation,
+    payload: { matchedOn: block.matchedOn, revealed: match.visibility },
+  });
+  await outbox.emit(db, {
+    name: DUPLICATE_REVIEW_EVENT,
+    aggregateType: 'business',
+    aggregateId: block.businessId,
+    payload: { requestedBy: actorId(ctx), matchedOn: block.matchedOn },
+  });
+  return { requested: true, match };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -411,6 +462,8 @@ function toRow(r: repo.BusinessDbRow, viewer: Principal, open: OpenCorrections |
       followers: s.followers,
       lastPost: s.lastPost,
       metricsRecordedAt: iso(s.metricsRecordedAt),
+      followersObservedAt: iso(s.followersObservedAt),
+      lastPostObservedAt: iso(s.lastPostObservedAt),
     })),
     website: r.website,
     createdBy: r.created_by_name ?? '',
@@ -869,7 +922,9 @@ export async function setBusinessArchived(
   id: string,
   version: number,
   archive: boolean,
-  reason: string | null
+  reason: string | null,
+  /** Restore only: an active category replacing a deactivated one (Owner decision 2026-10-29). */
+  newCategoryId: string | null = null
 ): Promise<BusinessDetail> {
   const db = ctx.tx;
   const decision = await checkBusiness(db, principal, archive ? 'business.archive' : 'business.restore', id);
@@ -879,6 +934,48 @@ export async function setBusinessArchived(
   if (Boolean(row.archived_at) === archive) return buildDetail(db, principal, id, decision);
   if (row.version !== version) throw new SaveConflict(id, row.version, await buildDetail(db, principal, id, decision));
   const me = actorId(ctx);
+  if (!archive) {
+    // D20 (approved): restoring is subject to validation and duplicate checks. The category must still be
+    // active, and the restored name/phones must not collide with another record (archived ones included).
+    // Owner decision 2026-10-29 "Pick a new category": an inactive category may be replaced by an ACTIVE one in
+    // the same transaction (history + audit, reason "category inactive at restore"); without one → 422.
+    if (!row.category_active) {
+      if (!newCategoryId) {
+        throw ruleViolation('This business’s category was deactivated. Choose an active category to restore it.', { reason: 'CATEGORY_INACTIVE' });
+      }
+      const cat = await repo.findCategory(db, newCategoryId);
+      if (!cat || !cat.is_active) throw validationError({ categoryId: ['Choose an active category'] });
+      await repo.setCategoryForRestore(db, id, cat.id, me);
+      const restoreReason = 'category inactive at restore';
+      await repo.insertHistory(db, {
+        businessId: id,
+        kind: 'updated',
+        field: 'category',
+        before: row.category,
+        after: cat.name,
+        actorId: me,
+        correctionId: null,
+        requestId: ctx.requestId,
+      });
+      await audit(ctx, {
+        eventName: 'business.updated',
+        entityType: 'business',
+        entityId: id,
+        before: { categoryId: row.category_id },
+        after: { categoryId: cat.id },
+        reason: restoreReason,
+        payload: { fields: 'category' },
+      });
+    } else if (newCategoryId && newCategoryId !== row.category_id) {
+      throw validationError({ categoryId: ['The category is active; change it by editing the business after restoring'] });
+    }
+    const probe: DuplicateProbe = {
+      name: row.normalized_name ? { normalizedName: row.normalized_name, normalizedBranch: row.normalized_branch } : null,
+      phones: row.phones.map((p) => p.normalized),
+    };
+    const block = await detectBlock(db, probe, id);
+    if (block) throw new DuplicateBlockedError(await shapeMatch(db, principal, block), block.businessId, block.matchedOn);
+  }
   const next = await repo.setArchived(db, id, version, archive, me);
   if (next === null) throw versionConflict(row.version);
   await repo.insertHistory(db, {

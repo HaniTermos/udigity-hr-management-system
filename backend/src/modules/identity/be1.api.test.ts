@@ -629,6 +629,43 @@ describe.skipIf(!hasTestDb)('BE1 Increment 2 (DB)', () => {
       expect(on.body.employee.isActive).toBe(true);
     });
 
+    it('D20 (approved): reactivation does not restore the old password or MFA; a new credential-setup invitation is issued', async () => {
+      const t = await agentFor('developer');
+      const email = (await call(owner, 'get', `/api/employees/${t.id}`)).body.email as string;
+      await query(`INSERT INTO two_factor_factors (employee_id, factor_type, secret, is_enrolled) VALUES ($1, 'totp', 'JBSWY3DPEHPK3PXP', true)`, [t.id]);
+      await query(`INSERT INTO two_factor_recovery_codes (employee_id, batch_id, code_hash) VALUES ($1, gen_random_uuid(), 'x')`, [t.id]);
+      const v = (await call(owner, 'get', `/api/employees/${t.id}`)).body.version as number;
+      expect((await call(owner, 'patch', `/api/employees/${t.id}/status`, { isActive: false, version: v })).status).toBe(200);
+      const on = await call(owner, 'patch', `/api/employees/${t.id}/status`, { isActive: true, version: v + 1 });
+      expect(on.status).toBe(200);
+      expect(on.body.employee).toMatchObject({ isActive: true, twoFactorEnrolled: false });
+      // Old password no longer signs in; the TOTP factor and open recovery codes are gone.
+      expect((await login(email)).res.status).not.toBe(200);
+      const { rows: f } = await query<{ n: number }>('SELECT count(*)::int AS n FROM two_factor_factors WHERE employee_id = $1', [t.id]);
+      expect(f[0].n).toBe(0);
+      const { rows: rc } = await query<{ n: number }>('SELECT count(*)::int AS n FROM two_factor_recovery_codes WHERE employee_id = $1 AND superseded_at IS NULL AND used_at IS NULL', [t.id]);
+      expect(rc[0].n).toBe(0);
+      // Exactly one open credential-setup token, delivered through the existing invitation (E-01) outbox event.
+      const { rows: tok } = await query<{ id: string }>(
+        `SELECT id FROM security_tokens WHERE employee_id = $1 AND purpose = 'credential_setup' AND used_at IS NULL AND superseded_at IS NULL`,
+        [t.id]
+      );
+      expect(tok).toHaveLength(1);
+      const { rows: ob } = await query<{ payload: Record<string, unknown> }>(
+        `SELECT payload FROM outbox_events WHERE name = 'account.created' AND aggregate_id = $1`,
+        [t.id]
+      );
+      expect(ob.map((r) => r.payload)).toEqual([{ securityTokenId: tok[0].id, reactivated: true }]);
+      expect(await auditCount('account.credentials_invalidated', t.id)).toBe(1);
+      // Never the raw token: only ids in the audit payload.
+      const { rows: au } = await query<{ payload: Record<string, unknown> }>(
+        `SELECT payload FROM audit_events WHERE event_name = 'account.credentials_invalidated' AND entity_id = $1`,
+        [t.id]
+      );
+      expect(Object.keys(au[0].payload).sort()).toEqual(['endedSessions', 'mfaRemoved', 'passwordInvalidated', 'securityTokenId']);
+      expect(au[0].payload).toMatchObject({ passwordInvalidated: true, mfaRemoved: true });
+    });
+
     it('E-02 consumer revokes all sessions and is idempotent', async () => {
       const t = await agentFor('data_entry');
       const event = {

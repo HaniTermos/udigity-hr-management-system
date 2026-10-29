@@ -2,6 +2,7 @@ import { app } from './app.js';
 import { config } from './config/index.js';
 import { pool } from './db/pool.js';
 import { assertRuntimeRole } from './shared/runtimeRole.js';
+import { exitOnCrash } from './shared/crash.js';
 
 async function main(): Promise<void> {
   // UDI-6: never serve production traffic as the owner/superuser role.
@@ -11,6 +12,8 @@ async function main(): Promise<void> {
     console.log(`🚀 Udigity Backend Server running on port ${config.port} (${config.env})`);
     console.log(`📡 App origin(s): ${config.appOrigins.join(', ')}`);
   });
+
+  exitOnCrash('api');
 
   process.on('SIGTERM', () => {
     console.log('SIGTERM signal received: closing HTTP server');

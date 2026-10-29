@@ -17,7 +17,7 @@ import { useToast } from '@/components/ui/Toast';
 import {
   assignBusinesses,
   assignmentsListKey,
-  autofillAgent,
+  autofillQueues,
   listAssignments,
   type AssignmentListItem,
   type AssignmentListQuery,
@@ -147,17 +147,25 @@ export function CallingAssignments() {
     }
   }
 
-  async function runAutofill() {
-    if (!bulkAssignee) return;
+  /** D8: without an agent every active Call Center agent is filled round-robin; with one, only that agent. */
+  async function runAutofill(agentId?: string) {
     setBusy('autofill');
     setActionError(null);
     setResult(null);
     try {
-      const res: AutofillResultDto = await autofillAgent({ agentId: bulkAssignee });
-      const name = agents.find((a) => a.id === bulkAssignee)?.name ?? 'the agent';
-      const atCap = res.alreadyToday + res.assigned.length >= res.cap;
+      const res: AutofillResultDto = await autofillQueues(agentId ? { agentId } : {});
+      let title: string;
+      if (agentId) {
+        const name = agents.find((a) => a.id === agentId)?.name ?? 'the agent';
+        const row = res.agents.find((a) => a.agentId === agentId);
+        const queue = (row?.queueBefore ?? 0) + res.assigned.length;
+        title = `${res.assigned.length} assigned to ${name} automatically · queue ${queue} of ${res.cap}${queue >= res.cap ? ' (queue full)' : ''}`;
+      } else {
+        const filled = res.agents.filter((a) => a.assignedNow > 0).length;
+        title = `${res.assigned.length} assigned automatically across ${filled} of ${res.agents.length} agents · queue cap ${res.cap}`;
+      }
       setResult({
-        title: `${res.assigned.length} assigned to ${name} automatically · ${res.alreadyToday + res.assigned.length} of ${res.cap} today${atCap ? ' (daily cap reached)' : ''}`,
+        title,
         skipped: res.skipped,
         tone: res.assigned.length === 0 || res.skipped.length ? 'warning' : 'success',
       });
@@ -258,12 +266,15 @@ export function CallingAssignments() {
           <Button size="sm" variant="secondary" disabled={selectedAssigned.length === 0} onClick={openUnassign}>
             Unassign{selectedAssigned.length > 1 ? ` (${selectedAssigned.length})` : ''}
           </Button>
-          <Button size="sm" variant="secondary" disabled={!bulkAssignee} isLoading={busy === 'autofill'} onClick={() => void runAutofill()}>
-            Autofill to daily cap
+          <Button size="sm" variant="secondary" disabled={busy !== null} isLoading={busy === 'autofill'} onClick={() => void runAutofill()}>
+            Auto-fill queues
+          </Button>
+          <Button size="sm" variant="secondary" disabled={!bulkAssignee || busy !== null} onClick={() => void runAutofill(bulkAssignee)}>
+            Auto-fill this agent
           </Button>
         </div>
         <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
-          <PolicyPendingChip dec="DEC-021" label="automatic allocation (cap 40 per agent per day)" demo />
+          <span className="text-xs text-text-muted">Fills each agent up to the queue cap (default 40 current businesses)</span>
           <PolicyPendingChip dec="DEC-017" label="B6 open deal blocks" demo />
         </div>
       </div>

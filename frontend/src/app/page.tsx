@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AppShell } from '@/components/layout/AppShell';
@@ -13,7 +13,8 @@ import { useApi } from '@/lib/hooks/useApi';
 import { useAuth } from '@/lib/auth';
 import { useCapability } from '@/lib/hooks/useCapability';
 import { useCompanyTime } from '@/lib/hooks/useCompanyTime';
-import type { DashboardMetrics } from '@/lib/api/reports';
+import type { DashboardMetrics, DashboardTarget } from '@/lib/api/reports';
+import { progressNoteLabel, targetMetricLabel } from '@/lib/api/work';
 
 type Period = 'today' | '7d' | '30d' | 'custom';
 
@@ -67,6 +68,24 @@ function Dashboard() {
   const periodSubtitle = period === 'custom' ? `Period · ${customFrom} to ${customTo}` : `Period · ${PERIOD_LABEL[period]}`;
   const updated = m?.companyTime ? time.formatTime(m.companyTime) : null;
 
+  // Close the date dropdown on an outside click or Esc.
+  const pickerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setPickerOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPickerOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [pickerOpen]);
+
   const applyPreset = (from: string, to: string) => {
     setCustomFrom(from);
     setCustomTo(to);
@@ -93,7 +112,8 @@ function Dashboard() {
 
   return (
     <div className="space-y-6 max-w-[1440px] mx-auto min-w-0">
-      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+      {/* Own layer so the date dropdown opens over the KPI cards, not under them. */}
+      <div className="relative z-30 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
         <div className="flex flex-col shrink-0">
           <h1 className="text-2xl font-semibold leading-8 text-text-primary tracking-tight">Dashboard</h1>
           <p className="text-xs text-text-muted leading-4">
@@ -125,43 +145,49 @@ function Dashboard() {
           </div>
 
           {period === 'custom' && (
-            <div className="relative">
+            <div className="relative" ref={pickerRef}>
               <button
                 type="button"
                 onClick={() => setPickerOpen((v) => !v)}
                 aria-expanded={pickerOpen}
+                aria-haspopup="dialog"
                 className="h-10 px-3 rounded-md border border-brand-primary bg-surface-default flex items-center gap-2.5 text-sm text-text-primary min-w-[190px] cursor-pointer shadow-xs"
               >
                 <Icon name="calendar" size={15} className="text-brand-primary" />
                 <span className="font-medium">{customFrom === customTo ? customFrom : `${customFrom} – ${customTo}`}</span>
+                <Icon name="chevron-down" size={14} className={`text-text-muted transition-transform ${pickerOpen ? 'rotate-180' : ''}`} />
               </button>
               {pickerOpen && (
-                <div className="absolute right-0 top-12 z-50 w-80 bg-surface-default border border-border-default rounded-xl shadow-lg p-4 space-y-4">
-                  <div className="grid grid-cols-2 gap-1.5 text-xs">
+                <div
+                  role="dialog"
+                  aria-label="Choose dates"
+                  className="absolute left-0 sm:left-auto sm:right-0 top-12 z-50 w-[min(22rem,calc(100vw-2rem))] max-h-[calc(100vh-8rem)] overflow-y-auto bg-surface-raised border border-border-strong rounded-xl shadow-lg p-4 space-y-4"
+                >
+                  <div className="grid grid-cols-2 gap-2 text-sm">
                     <PresetButton onClick={() => applyPreset(shift(1), shift(1))}>Yesterday</PresetButton>
                     <PresetButton onClick={() => applyPreset(shift(6), shift(0))}>Last 7 days</PresetButton>
                     <PresetButton onClick={() => applyPreset(shift(13), shift(0))}>Last 14 days</PresetButton>
                     <PresetButton onClick={() => applyPreset(`${shift(0).slice(0, 8)}01`, shift(0))}>This month</PresetButton>
                   </div>
                   <div className="space-y-3 pt-2 border-t border-border-subtle">
-                    <label className="block text-xs font-medium text-text-secondary">
+                    <label className="block text-sm font-medium text-text-primary">
                       From
                       <input
                         type="date"
                         value={customFrom}
                         max={customTo || undefined}
                         onChange={(e) => setCustomFrom(e.target.value)}
-                        className="mt-1 w-full h-9 px-2.5 rounded-md border border-border-input bg-surface-default text-sm text-text-primary focus:outline-hidden focus:border-brand-accent"
+                        className="mt-1.5 w-full h-11 px-3 rounded-md border border-border-strong bg-surface-default text-base text-text-primary cursor-pointer focus:outline-hidden focus:border-brand-accent focus:ring-2 focus:ring-brand-accent/30"
                       />
                     </label>
-                    <label className="block text-xs font-medium text-text-secondary">
+                    <label className="block text-sm font-medium text-text-primary">
                       To
                       <input
                         type="date"
                         value={customTo}
                         min={customFrom || undefined}
                         onChange={(e) => setCustomTo(e.target.value)}
-                        className="mt-1 w-full h-9 px-2.5 rounded-md border border-border-input bg-surface-default text-sm text-text-primary focus:outline-hidden focus:border-brand-accent"
+                        className="mt-1.5 w-full h-11 px-3 rounded-md border border-border-strong bg-surface-default text-base text-text-primary cursor-pointer focus:outline-hidden focus:border-brand-accent focus:ring-2 focus:ring-brand-accent/30"
                       />
                     </label>
                     {!rangeValid && <p className="text-xs text-status-danger-fg">Choose a start date on or before the end date.</p>}
@@ -173,7 +199,7 @@ function Dashboard() {
                         setPeriod('7d');
                         setPickerOpen(false);
                       }}
-                      className="text-xs text-text-muted hover:text-text-primary px-2 py-1 cursor-pointer"
+                      className="text-sm text-text-secondary hover:text-text-primary px-2 py-1.5 cursor-pointer"
                     >
                       Reset to 7 days
                     </button>
@@ -181,7 +207,7 @@ function Dashboard() {
                       type="button"
                       disabled={!rangeValid}
                       onClick={() => setPickerOpen(false)}
-                      className="text-xs px-3 py-1.5 rounded-md bg-brand-primary text-text-on-primary font-medium hover:opacity-90 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="text-sm px-4 py-2 rounded-md bg-brand-primary text-text-on-primary font-medium hover:opacity-90 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Apply
                     </button>
@@ -229,7 +255,7 @@ function PresetButton({ onClick, children }: { onClick: () => void; children: Re
     <button
       type="button"
       onClick={onClick}
-      className="px-2 py-1.5 rounded-md bg-surface-sunken hover:bg-surface-hover text-text-secondary hover:text-text-primary text-left font-medium transition-colors cursor-pointer"
+      className="px-3 py-2 rounded-md bg-surface-sunken hover:bg-surface-hover text-text-secondary hover:text-text-primary text-left font-medium transition-colors cursor-pointer"
     >
       {children}
     </button>
@@ -302,21 +328,25 @@ function ExceptionRow({ icon, tone, title, detail, href, action }: { icon: 'cloc
   );
 }
 
-function TargetBar({ label, p }: { label: string; p?: { current: number; target: number; percentage: number } }) {
-  const hasTarget = Boolean(p && p.target > 0);
-  const pct = hasTarget && p ? Math.max(0, Math.min(100, p.percentage)) : 0;
+/** D7: one Owner-set target with its server-computed progress (no invented quotas). */
+function TargetBar({ t }: { t: DashboardTarget }) {
+  const label = `${t.employeeName || 'Employee'} · ${targetMetricLabel(t.metric)}`;
+  const known = typeof t.currentValue === 'number';
+  const pct = known && t.targetValue > 0 ? Math.max(0, Math.min(100, ((t.currentValue as number) / t.targetValue) * 100)) : 0;
+  const note = progressNoteLabel(t.progressNote);
   return (
     <div>
-      <div className="flex items-center justify-between text-xs mb-1">
-        <span className="text-text-secondary">{label}</span>
-        <span className="font-medium text-text-primary">{hasTarget && p ? `${p.current} / ${p.target}` : 'No target set'}</span>
+      <div className="flex items-center justify-between gap-2 text-xs mb-1">
+        <span className="text-text-secondary truncate">{label}</span>
+        <span className="font-medium text-text-primary shrink-0">{known ? `${t.currentValue} / ${t.targetValue}` : `— / ${t.targetValue}`}</span>
       </div>
+      {note && <p className="text-[11px] text-text-muted mb-1">{note}</p>}
       <div
         role="progressbar"
         aria-label={label}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={hasTarget ? Math.round(pct) : undefined}
+        aria-valuenow={known ? Math.round(pct) : undefined}
         className="h-2 w-full bg-surface-sunken rounded-full overflow-hidden"
       >
         <div className="h-full bg-brand-accent rounded-full transition-all" style={{ width: `${pct}%` }} />
@@ -448,9 +478,11 @@ function DashboardBody({ m, periodSubtitle }: { m: DashboardMetrics; periodSubti
             <PolicyPendingChip dec="DEC-025" />
           </div>
           <div className="space-y-3.5 my-auto">
-            <TargetBar label="Outreach calls completed" p={m.targets?.outreachProgress} />
-            <TargetBar label="Businesses contacted" p={m.targets?.contactedBusinessesProgress} />
-            <TargetBar label="Deals closed" p={m.targets?.closedDealsProgress} />
+            {(m.targets?.items ?? []).length === 0 ? (
+              <p className="text-sm text-text-secondary">No target set</p>
+            ) : (
+              (m.targets?.items ?? []).slice(0, 4).map((t) => <TargetBar key={t.id} t={t} />)
+            )}
           </div>
         </section>
       </div>

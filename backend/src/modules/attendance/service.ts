@@ -2,15 +2,19 @@
  * MOD-attendance — service (rules + public operations). Owner: BE1.
  * SM-ATTENDANCE-001, SM-CORRECTION-001, WF-ATT-001..003, WF-ADMIN-001.
  *
- * Every policy below is a Demonstration alternative — not approved (docs/policy-defaults.md):
- * DEC-007 schedule/timezone, DEC-008 grace, DEC-009 office IP mode, DEC-010 remote exceptions (+ flag
- * `attendance.remoteSelfRequest`), DEC-011 Alt B requests (flag `attendance.employeeRequests`),
- * DEC-012 checkout summary, DEC-022 working days/holidays, DEC-026 failed checkout (flag
- * `attendance.failedCheckout`), F-01..F-04, N-2, D5. Confirmed: one open session, originals never
- * overwritten, 9 h workday, server time only.
+ * Approved policy (docs/policy-baseline-2026-10-29.md): D1 schedule gate (only an Owner-saved,
+ * complete settings version activates enforcement; days off), D2 IP/CIDR office check only, D3 remote
+ * exceptions (no self-grant), D4 corrections (no self-approval; effective values only after approval),
+ * D5 provisional failed checkout and missing-checkout handling, D6 summary (10 non-whitespace
+ * characters, pinned), D18 J-04 alerts, fixed v1 scope "no break tracking" (CFG
+ * `attendance.breaksEnabled`, default false). Still Demonstration alternatives: DEC-010 self request
+ * (flag `attendance.remoteSelfRequest`), DEC-011 Alt B requests (flag `attendance.employeeRequests`).
+ * Owner decisions 2026-10-29: per-employee start time / working days (`employee_schedules`, effective
+ * from a date) and office dynamic-DNS hostnames (officeDns.ts) beside the IP/CIDR list.
+ * Confirmed: one open session, originals never overwritten, 9 h workday, server time only.
  *
  * Time: `clock.now()` (platform clock; tests pin it). Client IP: `ctx.clientIp` = Express `req.ip`
- * (proxy trust is the app-level `trust proxy` = 1 hop setting; forwarding headers are never read here).
+ * (proxy trust is the app-level `trust proxy` = TRUSTED_PROXY_CIDRS; forwarding headers are never read here).
  */
 import type { Queryable } from '../../db/pool.js';
 import { config } from '../../config/index.js';
@@ -39,6 +43,9 @@ import {
   type BreakDto,
   type CheckOutInput,
   type CorrectionDto,
+  type CreateDayOffInput,
+  type DayOffDto,
+  type DaysOffQuery,
   type CorrectionRequestInput,
   type CorrectionsQuery,
   type EndBreakInput,
@@ -47,6 +54,7 @@ import {
   type OverviewQuery,
   type OverviewRowDto,
   type StartBreakInput,
+  type PutEmployeeScheduleInput,
   type PutSettingsInput,
   type RemoteExceptionDto,
   type RemoteQuery,
@@ -60,6 +68,7 @@ import {
 } from './schemas.js';
 import {
   REQUIRED_MINUTES,
+  SUMMARY_MIN_CHARS,
   matchingEntries,
   missingCheckoutDueAt,
   missingSettings,
@@ -68,17 +77,23 @@ import {
   officeCheck,
   parseIpEntry,
   punctualityOf,
+  shiftEndAt,
+  shiftEndOf,
+  summaryCharCount,
+  withOverride,
   workDateOf,
   zonedToUtc,
+  type EmployeeOverride,
   type Schedule,
   type VerificationMode,
 } from './time.js';
+import { isValidHostname, resolveOfficeHostnames } from './officeDns.js';
 
 // ---------------------------------------------------------------------------
 // Flags (FLAG kinds come from the env registry; tests may override both branches)
 // ---------------------------------------------------------------------------
 
-type AttendanceFlag = 'attendance.employeeRequests' | 'attendance.remoteSelfRequest' | 'attendance.failedCheckout';
+type AttendanceFlag = 'attendance.employeeRequests' | 'attendance.remoteSelfRequest' | 'attendance.breaksEnabled';
 let flagOverrides: Partial<Pick<PolicyFlags, AttendanceFlag>> = {};
 
 /** Test only (NODE_ENV=test): run both branches of a FLAG. Pass {} to reset. */
@@ -95,9 +110,16 @@ export function attendanceFlags() {
   return {
     employeeRequests: flag('attendance.employeeRequests'),
     remoteSelfRequest: flag('attendance.remoteSelfRequest'),
-    failedCheckout: flag('attendance.failedCheckout'),
+    /** D5: pinned; the block/hold alternatives are not selectable. */
+    failedCheckout: 'provisional' as const,
+    breaksEnabled: flag('attendance.breaksEnabled'),
     label: DEMO_LABEL,
   };
+}
+
+/** Fixed v1 scope "no break tracking": the break routes answer 404 while this is false. */
+export function breaksEnabled(): boolean {
+  return flag('attendance.breaksEnabled');
 }
 
 // ---------------------------------------------------------------------------
@@ -113,44 +135,44 @@ function scheduleFromRow(v: repo.SettingsVersionRow): Schedule {
   return {
     timezone: v.timezone,
     workingDays: v.working_days,
-    shiftStart: v.shift_start.trim(),
-    shiftEnd: v.shift_end.trim(),
+    shiftStart: v.shift_start.trim(), // shift_end is kept in the row but ignored: end = start + 9 h (D1)
     graceMinutes: v.grace_minutes,
     verificationMode: v.verification_mode,
     officeIps: v.office_ips,
+    officeHostnames: v.office_hostnames ?? [],
     holidays: v.holidays,
-    summaryRequired: v.summary_required,
-    summaryMinLength: v.summary_min_length,
+    holidaysConfirmed: v.holidays_confirmed,
+    saved: true,
     missingCheckoutFlagHours: v.missing_checkout_flag_hours,
   };
 }
 
-/** Env defaults (and the DEV-R4 aliases) through `getSetting`, used until the Owner saves a version. */
+/**
+ * Env values (and the DEV-R4 aliases) through `getSetting`, shown as pre-fill suggestions until the Owner
+ * saves a version. Never "configured" (`saved: false`): no enforcement runs on assumed values (D1).
+ */
 async function envSchedule(db: Queryable): Promise<Schedule> {
   // One after another: `db` is often the command's transaction client, and a pg client must not run
   // concurrent queries (pg DeprecationWarning seen from the J-04 worker job).
   const timezone = await getSetting(db, 'company.timezone');
   const workingDays = await getSetting(db, 'attendance.workingDays');
   const shiftStart = await getSetting(db, 'attendance.shiftStart');
-  const shiftEnd = await getSetting(db, 'attendance.shiftEnd');
   const graceMinutes = await getSetting(db, 'attendance.graceMinutes');
   const verificationMode = await getSetting(db, 'attendance.verificationMode');
   const officeIps = await getSetting(db, 'attendance.officeIps');
   const holidays = await getSetting(db, 'attendance.holidays');
-  const summaryRequired = await getSetting(db, 'attendance.summaryRequired');
-  const summaryMinLength = await getSetting(db, 'attendance.summaryMinLength');
   const flagHours = await getSetting(db, 'attendance.missingCheckoutFlagHours');
   return {
     timezone: timezone && isValidTimeZone(timezone) ? timezone : '',
     workingDays: workingDays.map((d) => d.toUpperCase()),
     shiftStart,
-    shiftEnd,
     graceMinutes,
-    verificationMode: verificationMode as VerificationMode,
+    verificationMode,
     officeIps,
+    officeHostnames: [],
     holidays,
-    summaryRequired,
-    summaryMinLength,
+    holidaysConfirmed: false,
+    saved: false,
     missingCheckoutFlagHours: flagHours,
   };
 }
@@ -187,12 +209,15 @@ function versionDto(v: repo.SettingsVersionRow | null, s: Schedule, full: boolea
     timezone: s.timezone,
     workingDays: s.workingDays,
     shiftStart: s.shiftStart,
-    shiftEnd: s.shiftEnd,
+    shiftEnd: shiftEndOf(s.shiftStart),
     graceMinutes: s.graceMinutes,
     verificationMode: s.verificationMode,
-    ...(full ? { officeIps: s.officeIps, holidays: s.holidays, reason: v?.reason ?? null, createdByName: v?.created_by_name ?? null } : {}),
-    summaryRequired: s.summaryRequired,
-    summaryMinLength: s.summaryMinLength,
+    ...(full
+      ? { officeIps: s.officeIps, officeHostnames: s.officeHostnames, holidays: s.holidays, reason: v?.reason ?? null, createdByName: v?.created_by_name ?? null }
+      : {}),
+    holidaysConfirmed: s.holidaysConfirmed,
+    summaryRequired: true,
+    summaryMinLength: SUMMARY_MIN_CHARS,
     missingCheckoutFlagHours: s.missingCheckoutFlagHours,
     createdAt: v ? new Date(v.created_at).toISOString() : null,
     createdBy: v?.created_by ?? null,
@@ -221,75 +246,97 @@ function validationError(details: Record<string, string[]>): HttpError {
   return new HttpError(400, 'VALIDATION_ERROR', 'Validation failed', details);
 }
 
-/** PUT /attendance/settings: one new version (append-only) + company.timezone, audited, one tx. */
+/** D3/D4: a decision about one's own record (403, the shared PERMISSION_DENIED code). */
+function selfDecision(message: string): HttpError {
+  return new HttpError(403, 'PERMISSION_DENIED', message, { reason: 'SELF_DECISION' });
+}
+
+/**
+ * PUT /attendance/settings: one new version (append-only) + company.timezone, audited, one tx.
+ * D1: the first save states every company value explicitly (env values are suggestions only, never a
+ * fallback); a later save keeps omitted fields from the current Owner-saved version (FX-BE-C2). Every
+ * saved version must end up complete (office IPs, holiday confirmation): a save never "un-configures".
+ */
 export async function putSettings(ctx: CommandContext, patch: PutSettingsInput) {
   await repo.lockSettingsVersions(ctx.tx);
   const before = await currentSchedule(ctx.tx);
   const currentNo = before.version?.version_no ?? 0;
   if (patch.version !== currentNo) throw versionConflict(currentNo);
-  // FX-BE-C2: omitted fields keep the current value (no field wipe on a partial form save).
-  const cur = before.schedule;
+  const cur = before.version ? before.schedule : null; // never fall back to env suggestions
   const input = {
-    timezone: patch.timezone ?? cur.timezone,
-    workingDays: patch.workingDays ?? cur.workingDays,
-    shiftStart: patch.shiftStart ?? cur.shiftStart,
-    shiftEnd: patch.shiftEnd ?? cur.shiftEnd,
-    graceMinutes: patch.graceMinutes ?? cur.graceMinutes,
-    verificationMode: patch.verificationMode ?? cur.verificationMode,
-    officeIps: patch.officeIps ?? cur.officeIps,
-    holidays: patch.holidays ?? cur.holidays,
-    summaryRequired: patch.summaryRequired ?? cur.summaryRequired,
-    summaryMinLength: patch.summaryMinLength ?? cur.summaryMinLength,
-    missingCheckoutFlagHours: patch.missingCheckoutFlagHours ?? cur.missingCheckoutFlagHours,
+    timezone: patch.timezone ?? cur?.timezone,
+    workingDays: patch.workingDays ?? cur?.workingDays,
+    shiftStart: patch.shiftStart ?? cur?.shiftStart,
+    // D1 grace (10 min) and the D5 flag hours (6) are approved values, not company inputs.
+    graceMinutes: patch.graceMinutes ?? cur?.graceMinutes ?? (await getSetting(ctx.tx, 'attendance.graceMinutes')),
+    verificationMode: patch.verificationMode ?? (cur?.verificationMode === 'ip' ? 'ip' : undefined),
+    officeIps: patch.officeIps ?? cur?.officeIps ?? (patch.officeHostnames ? [] : undefined),
+    officeHostnames: (patch.officeHostnames ?? cur?.officeHostnames ?? []).map((h) => h.trim().toLowerCase()),
+    holidays: patch.holidays ?? cur?.holidays,
+    holidaysConfirmed: patch.holidaysConfirmed ?? cur?.holidaysConfirmed ?? false,
+    missingCheckoutFlagHours: patch.missingCheckoutFlagHours ?? cur?.missingCheckoutFlagHours ?? (await getSetting(ctx.tx, 'attendance.missingCheckoutFlagHours')),
     reason: patch.reason,
   };
   const errors: Record<string, string[]> = {};
-  if (!input.timezone || !isValidTimeZone(input.timezone)) errors.timezone = ['Must be an IANA time zone, e.g. Asia/Beirut'];
+  const required = 'Required: enter the company-confirmed value';
+  if (!input.timezone) errors.timezone = [required];
+  else if (!isValidTimeZone(input.timezone)) errors.timezone = ['Must be an IANA time zone, e.g. Asia/Beirut'];
   if (!input.workingDays || input.workingDays.length === 0) errors.workingDays = ['Choose at least one working day'];
   else if (new Set(input.workingDays).size !== input.workingDays.length) errors.workingDays = ['Each day only once'];
-  if (!input.shiftStart || !input.shiftEnd || input.shiftEnd <= input.shiftStart) errors.shiftEnd = ['Shift end must be after shift start'];
-  input.officeIps.forEach((ip, i) => {
+  if (!input.shiftStart) errors.shiftStart = [required];
+  if (!input.verificationMode) errors.verificationMode = ['Office verification uses the office IP/CIDR list'];
+  // The office is either an IP/CIDR list or dynamic-DNS hostnames (or both); never allow-all.
+  if ((!input.officeIps || input.officeIps.length === 0) && input.officeHostnames.length === 0) {
+    errors.officeIps = ['Add at least one office public IP / CIDR range or a dynamic DNS hostname'];
+  }
+  (input.officeIps ?? []).forEach((ip, i) => {
     if (!parseIpEntry(ip)) errors[`officeIps.${i}`] = ['Not an IP address or CIDR range'];
   });
-  if (input.verificationMode === 'ip' && input.officeIps.length === 0) errors.officeIps = ['Add at least one office IP for IP mode'];
-  if (['geofence', 'ipOrLocation', 'ipAndLocation'].includes(input.verificationMode)) {
-    errors.verificationMode = ['No location verifier exists in v1; choose IP or Disabled'];
-  }
+  input.officeHostnames.forEach((h, i) => {
+    if (!isValidHostname(h)) errors[`officeHostnames.${i}`] = ['Not a hostname, e.g. office.ddns.net'];
+  });
+  if (!input.holidays) errors.holidays = ['Enter the holiday list (it may be empty)'];
+  if (!input.holidaysConfirmed) errors.holidaysConfirmed = ['Confirm the holiday calendar'];
   if (Object.keys(errors).length > 0) throw validationError(errors);
 
-  const holidays = [...new Set(input.holidays)].sort();
-  const workingDays = [...input.workingDays];
-  const officeIps = input.officeIps.map((s) => s.trim());
+  const timezone = input.timezone!;
+  const shiftStart = input.shiftStart!;
+  const holidays = [...new Set(input.holidays!)].sort();
+  const workingDays = [...input.workingDays!];
+  const officeIps = (input.officeIps ?? []).map((s) => s.trim());
+  const officeHostnames = [...new Set(input.officeHostnames)];
   const id = await repo.insertSettingsVersion(ctx.tx, {
     versionNo: currentNo + 1,
-    timezone: input.timezone,
+    timezone,
     workingDays,
-    shiftStart: input.shiftStart,
-    shiftEnd: input.shiftEnd,
+    shiftStart,
+    shiftEnd: shiftEndOf(shiftStart), // column kept; informational only (D1: start + 9 h)
     graceMinutes: input.graceMinutes,
-    verificationMode: input.verificationMode,
+    verificationMode: 'ip',
     officeIps,
+    officeHostnames,
     holidays,
-    summaryRequired: input.summaryRequired,
-    summaryMinLength: input.summaryMinLength,
+    holidaysConfirmed: true,
+    summaryRequired: true, // D6 pinned
+    summaryMinLength: SUMMARY_MIN_CHARS,
     missingCheckoutFlagHours: input.missingCheckoutFlagHours,
     reason: input.reason ?? null,
     createdBy: actorIdOf(ctx),
   });
   // Keep company.timezone (read by other modules through getSetting) equal to the saved version.
-  await setCompanyValue(ctx, 'company.timezone', input.timezone);
+  await setCompanyValue(ctx, 'company.timezone', timezone);
 
   const after: Schedule = {
-    timezone: input.timezone,
+    timezone,
     workingDays,
-    shiftStart: input.shiftStart,
-    shiftEnd: input.shiftEnd,
+    shiftStart,
     graceMinutes: input.graceMinutes,
-    verificationMode: input.verificationMode,
+    verificationMode: 'ip',
     officeIps,
+    officeHostnames,
     holidays,
-    summaryRequired: input.summaryRequired,
-    summaryMinLength: input.summaryMinLength,
+    holidaysConfirmed: true,
+    saved: true,
     missingCheckoutFlagHours: input.missingCheckoutFlagHours,
   };
   const changedBefore: Record<string, unknown> = {};
@@ -320,11 +367,14 @@ export async function testOfficeCheck(db: Queryable, clientIp: string | null, of
   const list = officeIps ?? schedule.officeIps;
   const invalid = list.filter((e) => !parseIpEntry(e));
   if (invalid.length > 0) throw validationError({ officeIps: ['Not an IP address or CIDR range'] });
-  const mode: VerificationMode = officeIps ? 'ip' : schedule.verificationMode;
-  if (mode === 'disabled') return { mode, result: 'disabled' as const, matches: [] as string[], label: DEMO_LABEL };
-  if (mode !== 'ip') return { mode, result: 'not_configured' as const, matches: [] as string[], label: DEMO_LABEL };
-  if (list.length === 0) return { mode, result: 'not_configured' as const, matches: [] as string[], label: DEMO_LABEL };
+  const mode: VerificationMode = 'ip';
+  if (!officeIps && schedule.verificationMode !== 'ip') return { mode, result: 'not_configured' as const, matches: [] as string[], label: DEMO_LABEL };
+  if (list.length === 0 && (officeIps || schedule.officeHostnames.length === 0)) return { mode, result: 'not_configured' as const, matches: [] as string[], label: DEMO_LABEL };
   const matches = matchingEntries(clientIp, list);
+  if (matches.length === 0 && !officeIps && schedule.officeHostnames.length > 0) {
+    const dns = await resolveOfficeHostnames(schedule.officeHostnames);
+    if (matchingEntries(clientIp, dns.ips).length > 0) return { mode, result: 'passed' as const, matches: ['hostname'], label: DEMO_LABEL };
+  }
   return { mode, result: matches.length > 0 ? ('passed' as const) : ('failed' as const), matches, label: DEMO_LABEL };
 }
 
@@ -336,7 +386,7 @@ const iso = (d: Date | null | undefined) => (d ? new Date(d).toISOString() : nul
 
 function verificationOf(v: Record<string, unknown> | null): VerificationDto | null {
   if (!v || typeof v !== 'object' || !('result' in v)) return null;
-  return { result: v.result as VerificationDto['result'], mode: (v.mode as VerificationMode | null) ?? null };
+  return { result: v.result as VerificationDto['result'], mode: (v.mode as string | null) ?? null };
 }
 
 function isReviewPending(r: repo.SessionRow): boolean {
@@ -388,6 +438,7 @@ export function toSessionDto(r: repo.SessionRow, s: Schedule, now: Date): Sessio
           outstandingTasks: r.summary_outstanding,
           blockers: r.summary_blockers,
           notes: r.summary_notes,
+          writtenBy: r.summary_written_by,
         }
       : null,
     missingCheckout: missingCheckoutOf(r, s, now),
@@ -401,8 +452,122 @@ export function toSessionDto(r: repo.SessionRow, s: Schedule, now: Date): Sessio
 async function sessionDtos(db: Queryable, rows: repo.SessionRow[], info?: ScheduleInfo): Promise<SessionDto[]> {
   const current = info ?? (await currentSchedule(db));
   const resolve = scheduleResolver(db, current);
+  const ov = await overridesFor(db, rows.map((r) => r.employee_id));
   const now = clock.now();
-  return Promise.all(rows.map(async (r) => toSessionDto(r, await resolve(r), now)));
+  const out: SessionDto[] = [];
+  for (const r of rows) out.push(toSessionDto(r, withOverride(await resolve(r), ov.on(r.employee_id, r.work_date)), now));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Per-employee schedules (Owner decision 2026-10-29)
+// ---------------------------------------------------------------------------
+
+/** The overrides of a set of employees, answered per work date (latest row effective on or before it). */
+export interface OverrideIndex {
+  on(employeeId: string, date: string): EmployeeOverride | null;
+}
+
+function overrideOfRow(r: repo.EmployeeScheduleRow): EmployeeOverride | null {
+  if (r.shift_start === null && r.working_days === null) return null; // "use company default"
+  return { shiftStart: r.shift_start, workingDays: r.working_days };
+}
+
+export async function overridesFor(db: Queryable, employeeIds: string[]): Promise<OverrideIndex> {
+  const rows = await repo.employeeScheduleRows(db, [...new Set(employeeIds)]);
+  const byEmp = new Map<string, repo.EmployeeScheduleRow[]>();
+  for (const r of rows) byEmp.set(r.employee_id, [...(byEmp.get(r.employee_id) ?? []), r]);
+  return {
+    on(employeeId, date) {
+      const hit = (byEmp.get(employeeId) ?? []).find((r) => r.effective_from <= date); // newest first
+      return hit ? overrideOfRow(hit) : null;
+    },
+  };
+}
+
+/** An employee's own start / working days on a date; null = the company schedule applies. */
+export async function employeeOverrideOn(db: Queryable, employeeId: string, date: string): Promise<EmployeeOverride | null> {
+  return (await overridesFor(db, [employeeId])).on(employeeId, date);
+}
+
+/**
+ * The schedule that applies to one employee on a company date: the current company settings version
+ * with the employee's start time / working days applied. Check `missingSettings` before enforcing.
+ */
+export async function employeeSchedule(db: Queryable, employeeId: string, date: string): Promise<Schedule> {
+  const { schedule } = await currentSchedule(db);
+  return withOverride(schedule, await employeeOverrideOn(db, employeeId, date));
+}
+
+function scheduleRowDto(r: repo.EmployeeScheduleRow) {
+  return {
+    id: r.id,
+    effectiveFrom: r.effective_from,
+    shiftStart: r.shift_start,
+    workingDays: r.working_days,
+    useCompanyDefault: r.shift_start === null && r.working_days === null,
+    reason: r.reason,
+    createdBy: r.created_by,
+    createdByName: r.created_by_name,
+    createdAt: iso(r.created_at)!,
+  };
+}
+
+/** GET /employees/:id/schedule (Owner): today's effective schedule, the company default and the history. */
+export async function getEmployeeSchedule(db: Queryable, employeeId: string) {
+  if (!(await repo.employeeExists(db, employeeId))) throw notFound();
+  const { schedule } = await currentSchedule(db);
+  const today = workDateOf(clock.now(), schedule.timezone);
+  const rows = await repo.employeeScheduleRows(db, [employeeId]);
+  const o = (await overridesFor(db, [employeeId])).on(employeeId, today);
+  const eff = withOverride(schedule, o);
+  return {
+    employeeId,
+    date: today,
+    company: { shiftStart: schedule.shiftStart, shiftEnd: shiftEndOf(schedule.shiftStart), workingDays: schedule.workingDays },
+    override: o,
+    effective: { shiftStart: eff.shiftStart, shiftEnd: shiftEndOf(eff.shiftStart), workingDays: eff.workingDays },
+    history: rows.map(scheduleRowDto),
+    label: DEMO_LABEL,
+  };
+}
+
+/**
+ * PUT /employees/:id/schedule (Owner): a new row from `effectiveFrom` (default today); rows are never
+ * edited, so sessions before that date keep the schedule that applied. Audited.
+ */
+export async function setEmployeeSchedule(ctx: CommandContext, employeeId: string, input: PutEmployeeScheduleInput) {
+  if (!(await repo.employeeExists(ctx.tx, employeeId))) throw notFound();
+  await repo.lockEmployeeAttendance(ctx.tx, employeeId);
+  const { schedule } = await currentSchedule(ctx.tx);
+  const effectiveFrom = input.effectiveFrom ?? workDateOf(clock.now(), schedule.timezone);
+  const shiftStart = input.useCompanyDefault ? null : input.shiftStart ?? null;
+  const workingDays = input.useCompanyDefault ? null : input.workingDays ? [...new Set(input.workingDays)] : null;
+  const before = await employeeOverrideOn(ctx.tx, employeeId, effectiveFrom);
+  const id = await repo.insertEmployeeSchedule(ctx.tx, {
+    employeeId,
+    effectiveFrom,
+    shiftStart,
+    workingDays,
+    reason: input.reason ?? null,
+    createdBy: actorIdOf(ctx),
+  });
+  await audit(ctx, {
+    eventName: 'attendance.employee_schedule_set', // placeholder name (Owner decision 2026-10-29), needs approval (G2)
+    entityType: 'employee',
+    entityId: employeeId,
+    before: { override: before },
+    after: { scheduleId: id, effectiveFrom, shiftStart, workingDays },
+    reason: input.reason ?? null,
+    sourceWorkflow: 'WF-ADMIN-001',
+  });
+  return getEmployeeSchedule(ctx.tx, employeeId);
+}
+
+/** The D2 office check with the dynamic-DNS hostnames resolved (cached, fail closed after 60 min). */
+async function officeCheckNow(clientIp: string | null | undefined, s: Schedule) {
+  const dns = s.officeHostnames.length > 0 ? await resolveOfficeHostnames(s.officeHostnames) : { ips: [], unresolved: [] };
+  return { ...officeCheck(clientIp, s, dns.ips), hostnamesUnresolved: dns.unresolved.length > 0 };
 }
 
 function correctionDto(c: repo.CorrectionRow): CorrectionDto {
@@ -473,7 +638,9 @@ function sessionAuditState(r: { state: string; effective_check_in_at: Date; effe
 // Check-in / check-out (WF-ATT-001/002)
 // ---------------------------------------------------------------------------
 
-export type CheckInOutcome = { kind: 'ok'; session: SessionDto } | { kind: 'office_failed'; mode: VerificationMode };
+export type CheckInOutcome =
+  | { kind: 'ok'; session: SessionDto }
+  | { kind: 'office_failed'; mode: VerificationMode; hostnamesUnresolved: boolean };
 
 /** POST /check-in. The failed attempt is audited and committed; the route then answers 422. */
 export async function checkIn(ctx: CommandContext): Promise<CheckInOutcome> {
@@ -485,28 +652,24 @@ export async function checkIn(ctx: CommandContext): Promise<CheckInOutcome> {
   }
   const now = clock.now();
   const info = await currentSchedule(ctx.tx);
+  const check = await officeCheckNow(ctx.clientIp, info.schedule);
+  // D1: no check-in (not even under a remote exception) until an Owner-saved, complete version exists.
+  if (check.result === 'not_configured') throw notConfigured(info.schedule);
   const workDate = workDateOf(now, info.schedule.timezone);
-  const check = officeCheck(ctx.clientIp, info.schedule);
   let result: VerificationDto['result'] = check.result;
   let remoteExceptionId: string | null = null;
-  if (check.result === 'failed' || check.result === 'not_configured') {
+  if (check.result === 'failed') {
     const ex = await repo.grantedRemoteOn(ctx.tx, employeeId, workDate);
     if (!ex) {
-      if (check.result === 'not_configured') {
-        throw stateConflict('Attendance verification is not configured', {
-          reason: 'POLICY_NOT_CONFIGURED',
-          mode: check.mode,
-        });
-      }
       await audit(ctx, {
         eventName: 'attendance.checkin_failed', // proposed name (WF-ATT-001 "failed attempt audited"); placeholder
         entityType: 'employee',
         entityId: employeeId,
-        payload: { mode: check.mode, workDate, reason: 'office_check_failed' },
+        payload: { mode: check.mode, workDate, reason: 'office_check_failed', hostnamesUnresolved: check.hostnamesUnresolved },
         securityEvent: true,
         sourceWorkflow: 'WF-ATT-001',
       });
-      return { kind: 'office_failed', mode: check.mode };
+      return { kind: 'office_failed', mode: check.mode, hostnamesUnresolved: check.hostnamesUnresolved };
     }
     result = 'remote';
     remoteExceptionId = ex.id;
@@ -537,11 +700,25 @@ export async function checkIn(ctx: CommandContext): Promise<CheckInOutcome> {
   return { kind: 'ok', session: await reloadSession(ctx, id) };
 }
 
-export type CheckOutOutcome =
-  | { kind: 'ok'; session: SessionDto; outcome: 'closed' | 'closed_provisional' | 'pending_review' }
-  | { kind: 'blocked'; session: SessionDto; mode: VerificationMode };
+export type CheckOutOutcome = { kind: 'ok'; session: SessionDto; outcome: 'closed' | 'closed_provisional' };
 
-/** POST /check-out. F-02: the summary is validated and stored before the office check decides. */
+/** 409 POLICY_NOT_CONFIGURED (D1): what is still missing is listed for the Owner screens. */
+function notConfigured(s: Schedule): HttpError {
+  return stateConflict('Attendance is not configured yet', { reason: 'POLICY_NOT_CONFIGURED', missing: missingSettings(s) });
+}
+
+/** D6: "Work completed" with at least 10 non-whitespace characters, or a 400 on `field`. */
+function assertWorkSummary(text: string, field: string): void {
+  if (summaryCharCount(text) < SUMMARY_MIN_CHARS) {
+    throw validationError({ [field]: [`Describe the work completed (at least ${SUMMARY_MIN_CHARS} characters, not counting spaces)`] });
+  }
+}
+
+/**
+ * POST /check-out. F-02: the summary is validated and stored before the office check decides.
+ * D5: a session flagged "missing checkout" or from an earlier work date is never self-closed; the
+ * employee sends a correction request instead (409 CORRECTION_REQUIRED).
+ */
 export async function checkOut(ctx: CommandContext, input: CheckOutInput): Promise<CheckOutOutcome> {
   const employeeId = actorIdOf(ctx);
   await repo.lockEmployeeAttendance(ctx.tx, employeeId);
@@ -549,28 +726,23 @@ export async function checkOut(ctx: CommandContext, input: CheckOutInput): Promi
   if (!open) throw stateConflict('There is no open attendance session to check out', { reason: 'NO_OPEN_SESSION' });
   if (input.version !== undefined && input.version !== open.version) throw versionConflict(open.version, await reloadSession(ctx, open.id)); // BL-09
 
+  const now = clock.now();
   const info = await currentSchedule(ctx.tx);
-  const sessionSchedule = await scheduleResolver(ctx.tx, info)(open);
-  const summary = input.summary;
-  const work = summary.workCompleted.trim();
-  if (sessionSchedule.summaryRequired && work.length < Math.max(1, sessionSchedule.summaryMinLength)) {
-    throw validationError({
-      'summary.workCompleted': [`Describe the work completed (at least ${Math.max(1, sessionSchedule.summaryMinLength)} characters)`],
+  const check = await officeCheckNow(ctx.clientIp, info.schedule);
+  if (check.result === 'not_configured') throw notConfigured(info.schedule);
+  const sessionSchedule = withOverride(await scheduleResolver(ctx.tx, info)(open), await employeeOverrideOn(ctx.tx, employeeId, open.work_date));
+  if (open.work_date < workDateOf(now, info.schedule.timezone) || missingCheckoutOf(open, sessionSchedule, now)) {
+    throw stateConflict('This session can no longer be checked out. Send a correction request with your checkout time.', {
+      reason: 'CORRECTION_REQUIRED',
+      sessionId: open.id,
+      workDate: open.work_date,
     });
   }
-  const now = clock.now();
-  const check = officeCheck(ctx.clientIp, info.schedule);
+  const summary = input.summary;
+  const work = summary.workCompleted.trim();
+  assertWorkSummary(work, 'summary.workCompleted');
   let result: VerificationDto['result'] = check.result;
-  if (check.result === 'not_configured') {
-    if (open.remote || (await repo.grantedRemoteOn(ctx.tx, employeeId, open.work_date))) {
-      result = 'remote';
-    } else {
-      throw stateConflict('Attendance verification is not configured', {
-        reason: 'POLICY_NOT_CONFIGURED',
-        mode: check.mode,
-      });
-    }
-  } else if (check.result === 'failed' && (open.remote || (await repo.grantedRemoteOn(ctx.tx, employeeId, open.work_date)))) {
+  if (check.result === 'failed' && (open.remote || (await repo.grantedRemoteOn(ctx.tx, employeeId, open.work_date)))) {
     result = 'remote';
   }
   const summaryPatch = {
@@ -614,46 +786,9 @@ export async function checkOut(ctx: CommandContext, input: CheckOutInput): Promi
     return { kind: 'ok', session: await reloadSession(ctx, open.id), outcome: 'closed' };
   }
 
-  // DEC-026 (Demonstration alternative — not approved): failed office check at checkout.
-  const mode = flag('attendance.failedCheckout');
+  // D5 (pinned `provisional`): a failed office check closes provisionally at the server-received
+  // attempt time, pending Owner review with the failure reason. Next check-in allowed.
   const failure = { checkoutFailureReason: 'office_check_failed', checkOutVerification: verification, checkoutAttemptedAt: now };
-  if (mode === 'block') {
-    // Alt A: blocked; the summary is still saved (F-02), the session stays Open.
-    const ok = await repo.updateSession(ctx.tx, open.id, open.version, { ...failure, ...summaryPatch });
-    if (!ok) throw versionConflict();
-    await audit(ctx, {
-      eventName: 'attendance.checkout_failed',
-      entityType: 'attendance_session',
-      entityId: open.id,
-      payload: { mode: check.mode, outcome: 'blocked' },
-      securityEvent: true,
-      sourceWorkflow: 'WF-ATT-002',
-    });
-    return { kind: 'blocked', session: await reloadSession(ctx, open.id), mode: check.mode };
-  }
-  if (mode === 'hold') {
-    // Alt C: held for Owner review; no checkout time until the Owner resolves it. Next check-in allowed.
-    await repo.autoCloseActiveBreaksForSession(ctx.tx, open.id, now);
-    const ok = await repo.updateSession(ctx.tx, open.id, open.version, { state: 'pending_review', ...failure, ...summaryPatch });
-    if (!ok) throw versionConflict();
-    await audit(ctx, {
-      eventName: 'attendance.checkout_pending_review',
-      entityType: 'attendance_session',
-      entityId: open.id,
-      before,
-      after: { state: 'pending_review', attemptedAt: now.toISOString(), mode: check.mode },
-      securityEvent: true,
-      sourceWorkflow: 'WF-ATT-002',
-    });
-    await outbox.emit(ctx.tx, {
-      name: 'attendance.checkout_pending_review',
-      aggregateType: 'attendance_session',
-      aggregateId: open.id,
-      payload: { sessionId: open.id, employeeId },
-    });
-    return { kind: 'ok', session: await reloadSession(ctx, open.id), outcome: 'pending_review' };
-  }
-  // Alt B (default `provisional`): closed provisionally at the attempted time + Owner review item.
   await repo.autoCloseActiveBreaksForSession(ctx.tx, open.id, now);
   const ok = await repo.updateSession(ctx.tx, open.id, open.version, {
     state: 'closed_provisional',
@@ -687,11 +822,14 @@ export async function checkOut(ctx: CommandContext, input: CheckOutInput): Promi
 
 export async function getToday(db: Queryable, principal: Principal) {
   const info = await currentSchedule(db);
-  const s = info.schedule;
   const now = clock.now();
-  const date = workDateOf(now, s.timezone);
+  const date = workDateOf(now, info.schedule.timezone);
+  // The employee's own start / working days apply (company schedule otherwise).
+  const s = withOverride(info.schedule, await employeeOverrideOn(db, principal.employeeId, date));
   const missing = missingSettings(s);
-  const reason = s.timezone ? nonWorkingReason(date, s) : null;
+  const configured = missing.length === 0;
+  const dayOff = configured && (await repo.employeesOffOn(db, date)).has(principal.employeeId);
+  const reason = configured ? nonWorkingReason(date, s) ?? (dayOff ? 'day_off' : null) : null;
   const todays = await repo.sessionsOnDate(db, principal.employeeId, date);
   const open = await repo.openSessionOf(db, principal.employeeId);
   const remote = await repo.grantedRemoteOn(db, principal.employeeId, date);
@@ -700,26 +838,36 @@ export async function getToday(db: Queryable, principal: Principal) {
   const session = open && open.work_date === date ? open : latest;
   const earlier = open && open.work_date !== date ? open : null;
   const pendingCorrections = await repo.countCorrections(db, 'submitted', principal.employeeId);
+  const sessionDto = session ? toSessionDto(session, await resolve(session), now) : null;
   return {
     label: DEMO_LABEL,
     now: now.toISOString(),
     date,
-    configured: missing.length === 0,
+    configured,
     missing,
-    workingDay: s.timezone ? reason === null : null,
+    workingDay: configured ? reason === null : null,
     nonWorkingReason: reason,
-    schedule: { timezone: s.timezone || null, workingDays: s.workingDays, shiftStart: s.shiftStart, shiftEnd: s.shiftEnd, graceMinutes: s.graceMinutes },
+    dayOff,
+    schedule: {
+      timezone: s.timezone || null,
+      workingDays: s.workingDays,
+      shiftStart: s.shiftStart,
+      shiftEnd: shiftEndOf(s.shiftStart),
+      graceMinutes: s.graceMinutes,
+    },
     requiredMinutes: REQUIRED_MINUTES,
-    officeCheck: { mode: s.verificationMode, active: missing.length === 0 && s.verificationMode !== 'disabled' },
+    officeCheck: { mode: 'ip', active: configured },
     remoteExceptionToday: remote ? remoteDto(remote) : null,
-    session: session ? toSessionDto(session, await resolve(session), now) : null,
+    session: sessionDto,
     openSessionFromEarlierDay: earlier ? toSessionDto(earlier, await resolve(earlier), now) : null,
-    canCheckIn: !open,
-    canCheckOut: Boolean(open),
-    summaryRule: { required: s.summaryRequired, minLength: s.summaryMinLength },
+    canCheckIn: configured && !open,
+    // D5: an earlier-day or missing-checkout session needs a correction request, not a checkout.
+    canCheckOut: configured && Boolean(open) && !earlier && !(sessionDto?.state === 'open' && sessionDto.missingCheckout),
+    summaryRule: { required: true, minLength: SUMMARY_MIN_CHARS },
     employeeRequestsEnabled: flag('attendance.employeeRequests'),
     remoteSelfRequestEnabled: flag('attendance.remoteSelfRequest'),
-    failedCheckout: flag('attendance.failedCheckout'),
+    failedCheckout: 'provisional' as const,
+    breaksEnabled: flag('attendance.breaksEnabled'),
     pendingCorrections,
   };
 }
@@ -814,6 +962,8 @@ export async function requestCorrection(ctx: CommandContext, input: CorrectionRe
     const newOut = pOut ?? (session.effective_check_out_at ? new Date(session.effective_check_out_at) : null);
     validateInterval(newIn, newOut, now);
     await assertNoOverlap(ctx.tx, employeeId, newIn, newOut, session.id);
+    // D4/D5: a proposed checkout for a still-open session moves it to Owner review WITHOUT an effective
+    // checkout (that is set only on approval); the review state no longer blocks the next check-in.
     closeProvisionally = session.state === 'open' && pOut !== null;
     id = await repo.insertCorrection(ctx.tx, {
       sessionId: session.id,
@@ -831,15 +981,15 @@ export async function requestCorrection(ctx: CommandContext, input: CorrectionRe
     });
     if (!id) throw stateConflict('A correction request is already open for this session', { reason: 'REQUEST_OPEN' });
     if (closeProvisionally) {
-      // F-01: the still-open session closes provisionally at the proposed time; check-in is allowed.
-      const ok = await repo.updateSession(ctx.tx, session.id, session.version, { state: 'closed_provisional', effectiveCheckOutAt: pOut });
+      await repo.autoCloseActiveBreaksForSession(ctx.tx, session.id, now);
+      const ok = await repo.updateSession(ctx.tx, session.id, session.version, { state: 'pending_review' });
       if (!ok) throw versionConflict();
       await audit(ctx, {
         eventName: 'attendance.closed_provisionally', // placeholder name (F-01), needs approval (G2)
         entityType: 'attendance_session',
         entityId: session.id,
         before: sessionAuditState(session),
-        after: { state: 'closed_provisional', effectiveCheckOutAt: pOut!.toISOString(), correctionId: id },
+        after: { state: 'pending_review', effectiveCheckOutAt: null, proposedCheckOutAt: pOut!.toISOString(), correctionId: id },
         sourceWorkflow: 'WF-ATT-003',
       });
     }
@@ -897,11 +1047,13 @@ async function lockedCorrection(ctx: CommandContext, id: string) {
 /** POST /corrections/:id/approve (Owner). Original kept; effective values set; "adjusted" marker. */
 export async function approveCorrection(ctx: CommandContext, id: string, input: { version: number; reason?: string }) {
   const c = await lockedCorrection(ctx, id);
+  const decidedBy = actorIdOf(ctx);
+  // D4: nobody approves their own correction (the Owner corrects their own record by a direct adjustment).
+  if (c.employee_id === decidedBy) throw selfDecision('You cannot approve your own correction request');
   if (c.status === 'approved') return correctionDto(c); // repeat = no-op (§4.5)
   if (c.status !== 'submitted') throw stateConflict('Only a submitted request can be approved', { status: c.status });
   if (c.version !== input.version) throw versionConflict(c.version, correctionDto(c)); // BL-09
   const now = clock.now();
-  const decidedBy = actorIdOf(ctx);
   let sessionId = c.session_id;
 
   if (c.session_id) {
@@ -994,7 +1146,7 @@ export async function rejectCorrection(
 
   if (c.session_id && c.closed_session_provisionally) {
     const s = await repo.sessionById(ctx.tx, c.session_id, true);
-    if (s && s.state === 'closed_provisional') {
+    if (s && (s.state === 'closed_provisional' || s.state === 'pending_review')) {
       const out = input.effectiveCheckOutAt ? new Date(input.effectiveCheckOutAt) : null;
       if (out) {
         validateInterval(new Date(s.effective_check_in_at), out, now);
@@ -1128,15 +1280,9 @@ function reviewItemFromSession(d: SessionDto, role: ReviewItemDto['role'], kind:
   };
 }
 
-/** DEC-026 alternatives that are not the active branch, shown as preview rows (not counted). */
-function dec026Previews() {
-  const active = flag('attendance.failedCheckout');
-  const all = [
-    { key: 'block', title: 'Blocked checkout (Alt A)', detail: 'The checkout is refused; the session stays open and the summary is kept.' },
-    { key: 'provisional', title: 'Provisional close (Alt B)', detail: 'Closed at the attempted time and flagged for your review.' },
-    { key: 'hold', title: 'Held for review (Alt C)', detail: 'No checkout time until you confirm or set one.' },
-  ];
-  return all.filter((a) => a.key !== active).map((a) => ({ id: `dec026-${a.key}`, title: a.title, detail: a.detail, flagLabel: DEMO_LABEL }));
+/** DEC-026 alternative previews: none since D5 pinned `provisional` (field kept for FE2). */
+function dec026Previews(): { id: string; title: string; detail: string; flagLabel: string }[] {
+  return [];
 }
 
 async function reviewQueue(db: Queryable, q: CorrectionsQuery & { kind: NonNullable<CorrectionsQuery['kind']> }) {
@@ -1205,6 +1351,28 @@ async function reviewQueue(db: Queryable, q: CorrectionsQuery & { kind: NonNulla
 // Owner direct actions (N-2, DEC-026 review)
 // ---------------------------------------------------------------------------
 
+/**
+ * D6: the Owner completes a missing "Work completed" (reason mandatory). Additive: an employee-written
+ * summary is never replaced; the writer and the reason are stored beside it and audited.
+ */
+async function ownerSummaryPatch(ctx: CommandContext, s: repo.SessionRow, workCompleted: string | undefined, reason: string | undefined) {
+  if (workCompleted === undefined) return {};
+  if (s.summary_work_completed && s.summary_work_completed.trim()) {
+    throw ruleViolation('The employee already wrote a work summary; it is never replaced', { reason: 'SUMMARY_EXISTS' });
+  }
+  if (!reason) throw validationError({ reason: ['A reason is required to complete the summary'] });
+  assertWorkSummary(workCompleted, 'workCompleted');
+  await audit(ctx, {
+    eventName: 'attendance.summary_completed', // placeholder name (D6), needs approval (G2)
+    entityType: 'attendance_session',
+    entityId: s.id,
+    after: { summaryWrittenBy: actorIdOf(ctx) },
+    reason,
+    sourceWorkflow: 'WF-ATT-003',
+  });
+  return { summaryWorkCompleted: workCompleted.trim(), summaryWrittenBy: actorIdOf(ctx), summaryCompletionReason: reason };
+}
+
 /** POST /sessions/:id/adjust (Owner direct correction; original kept). */
 export async function adjustSession(ctx: CommandContext, id: string, input: AdjustInput) {
   const s0 = await repo.sessionById(ctx.tx, id);
@@ -1214,6 +1382,13 @@ export async function adjustSession(ctx: CommandContext, id: string, input: Adju
   if (s.version !== input.version) throw versionConflict(s.version, await reloadSession(ctx, s.id)); // BL-09
   const now = clock.now();
   const actor = actorIdOf(ctx);
+  const summaryPatch = await ownerSummaryPatch(ctx, s, input.workCompleted, input.reason);
+  if (input.checkInAt === undefined && input.checkOutAt === undefined && input.checkOutUnknown !== true) {
+    // Summary only: the times, the "adjusted" marker and any review item are untouched.
+    const ok = await repo.updateSession(ctx.tx, s.id, s.version, summaryPatch);
+    if (!ok) throw versionConflict();
+    return { session: await reloadSession(ctx, s.id), label: DEMO_LABEL };
+  }
   const newIn = input.checkInAt ? new Date(input.checkInAt) : new Date(s.effective_check_in_at);
   const unknown = input.checkOutUnknown === true ? true : input.checkOutAt ? false : s.check_out_unknown;
   const newOut = input.checkOutUnknown ? null : input.checkOutAt ? new Date(input.checkOutAt) : s.effective_check_out_at ? new Date(s.effective_check_out_at) : null;
@@ -1225,6 +1400,7 @@ export async function adjustSession(ctx: CommandContext, id: string, input: Adju
     effectiveCheckOutAt: newOut,
     checkOutUnknown: unknown,
     adjusted: true,
+    ...summaryPatch,
     ...(closes ? { state: 'closed', reviewResolvedAt: now, reviewResolvedBy: actor } : {}),
   });
   if (!ok) throw versionConflict();
@@ -1269,6 +1445,11 @@ export async function resolveReview(ctx: CommandContext, id: string, input: Reso
   if (s.version !== input.version) throw versionConflict(s.version, await reloadSession(ctx, s.id)); // BL-09
   const now = clock.now();
   const actor = actorIdOf(ctx);
+  // D4: a resolution that changes the recorded times needs a reason.
+  if ((input.checkOutAt !== undefined || input.checkOutUnknown === true) && !input.reason) {
+    throw validationError({ reason: ['A reason is required when the checkout is changed'] });
+  }
+  const summaryPatch = await ownerSummaryPatch(ctx, s, input.workCompleted, input.reason);
   const attempted = s.effective_check_out_at ?? s.checkout_attempted_at;
   const out = input.checkOutUnknown ? null : input.checkOutAt ? new Date(input.checkOutAt) : attempted ? new Date(attempted) : null;
   const unknown = input.checkOutUnknown === true || out === null;
@@ -1280,6 +1461,7 @@ export async function resolveReview(ctx: CommandContext, id: string, input: Reso
     effectiveCheckOutAt: out,
     checkOutUnknown: unknown,
     ...(changed ? { adjusted: true } : {}),
+    ...summaryPatch,
     reviewResolvedAt: now,
     reviewResolvedBy: actor,
   });
@@ -1295,7 +1477,7 @@ export async function resolveReview(ctx: CommandContext, id: string, input: Reso
       proposedCheckOutUnknown: unknown,
       previousCheckInAt: new Date(s.effective_check_in_at),
       previousCheckOutAt: s.effective_check_out_at ? new Date(s.effective_check_out_at) : null,
-      reason: input.reason ?? 'Review resolved',
+      reason: input.reason!,
       closedSessionProvisionally: false,
       createdBy: actor,
       decidedBy: actor,
@@ -1375,6 +1557,8 @@ export async function grantRemote(ctx: CommandContext, input: { employeeId: stri
   const emp = await repo.employeeExists(ctx.tx, input.employeeId);
   if (!emp) throw notFound();
   const actor = actorIdOf(ctx);
+  // D3: nobody grants their own remote exception.
+  if (input.employeeId === actor) throw selfDecision('You cannot grant yourself a remote exception');
   const now = clock.now();
   const endDate = input.endDate ?? input.startDate;
   const id = await repo.insertRemote(ctx.tx, {
@@ -1439,6 +1623,7 @@ export async function decideRemote(
   const t = REMOTE_TRANSITIONS[verb];
   const r = await repo.remoteById(ctx.tx, id, true);
   if (!r) throw notFound();
+  if (verb === 'approve' && r.employee_id === actorIdOf(ctx)) throw selfDecision('You cannot approve your own remote exception');
   if (r.status === t.to) return remoteDto(r);
   if (r.status !== t.from) throw stateConflict(`Only a ${t.from} exception can be changed this way`, { status: r.status });
   if (r.version !== input.version) throw versionConflict(r.version, remoteDto(r)); // BL-09
@@ -1477,7 +1662,8 @@ export async function overview(db: Queryable, q: OverviewQuery) {
   const today = workDateOf(now, s.timezone);
   const date = q.date ?? today;
   const missing = missingSettings(s);
-  const scheduleConfigured = Boolean(s.timezone);
+  // D1: schedule figures (expected, late, missing check-in) only from a complete Owner-saved version.
+  const scheduleConfigured = missing.length === 0;
   const reason = scheduleConfigured ? nonWorkingReason(date, s) : null;
   const workingDay = scheduleConfigured ? reason === null : null;
 
@@ -1485,17 +1671,20 @@ export async function overview(db: Queryable, q: OverviewQuery) {
   const rows = await repo.monitoringSessions(db, date, q.employeeId);
   const dtos = await sessionDtos(db, rows, info);
   const remoteToday = await repo.grantedRemoteEmployeesOn(db, date);
+  const offToday = await repo.employeesOffOn(db, date);
+  const ov = await overridesFor(db, employees.map((e) => e.id));
   const { rows: pending } = await repo.listCorrections(db, { status: 'submitted', scope: () => 'TRUE' }, { page: 1, pageSize: 100, order: 'desc' });
   const pendingBy = new Map<string, number>();
   for (const c of pending) pendingBy.set(c.employee_id, (pendingBy.get(c.employee_id) ?? 0) + 1);
 
-  // Missing check-in (AC-ATT-014): working day, past shift start + grace + alert minutes, no session.
+  // Missing check-in (AC-ATT-014): the employee's working day, past their start + grace + alert minutes, no session.
   const alertMinutes = await getSetting(db, 'notifications.missingCheckinAfterGraceMinutes');
-  const checkinDue =
-    scheduleConfigured && workingDay ? zonedToUtc(date, s.shiftStart, s.timezone).getTime() + (s.graceMinutes + alertMinutes) * 60_000 : null;
-  const checkinWindowPassed = checkinDue !== null && (date < today || now.getTime() >= checkinDue);
 
   const out: OverviewRowDto[] = employees.map((e) => {
+    const es = withOverride(s, ov.on(e.id, date));
+    const empWorking = scheduleConfigured ? nonWorkingReason(date, es) === null : null;
+    const checkinDue = empWorking ? zonedToUtc(date, es.shiftStart, es.timezone).getTime() + (es.graceMinutes + alertMinutes) * 60_000 : null;
+    const checkinWindowPassed = checkinDue !== null && (date < today || now.getTime() >= checkinDue);
     const mine = dtos.filter((d) => d.employeeId === e.id);
     const onDate = mine.filter((d) => d.workDate === date);
     const first = onDate[0] ?? null;
@@ -1520,10 +1709,13 @@ export async function overview(db: Queryable, q: OverviewQuery) {
       verification: monitorVerification(first),
       punctuality: first ? first.punctuality : null,
       missingCheckout: mine.some((d) => d.missingCheckout),
-      missingCheckin: !first && !openEarlier && checkinWindowPassed,
+      missingCheckin: !first && !openEarlier && checkinWindowPassed && !offToday.has(e.id),
       reviewPending: mine.some((d) => d.reviewPending),
       pendingCorrections: pendingBy.get(e.id) ?? 0,
       remoteExceptionToday: remoteToday.has(e.id),
+      dayOff: offToday.has(e.id),
+      workingDay: empWorking,
+      shiftStart: scheduleConfigured ? es.shiftStart : null,
       employee: { id: e.id, fullName: e.full_name, role: e.role },
       session: shown,
     };
@@ -1536,11 +1728,12 @@ export async function overview(db: Queryable, q: OverviewQuery) {
     employees: out.length,
     checkedIn: out.filter((r) => r.status === 'checked_in').length,
     checkedOut: out.filter((r) => r.status === 'checked_out').length,
-    notCheckedIn: out.filter((r) => r.status === 'not_checked_in').length,
+    notCheckedIn: out.filter((r) => r.status === 'not_checked_in' && !r.dayOff && r.workingDay !== false).length,
     late: out.filter((r) => r.punctuality === 'late').length,
     remote: dtos.filter((d) => d.workDate === date && d.remote).length,
     missingCheckout: out.filter((r) => r.missingCheckout).length,
     missingCheckin: out.filter((r) => r.missingCheckin).length,
+    daysOff: out.filter((r) => r.dayOff).length,
     reviewItems: reviewItems.length,
     pendingCorrections: pending.length,
   };
@@ -1562,7 +1755,7 @@ export async function overview(db: Queryable, q: OverviewQuery) {
             id: 'checkin_alerts_off',
             kind: 'checkin_alerts_off' as const,
             title: 'Missing check-in alerts are off',
-            detail: 'Company timezone and schedule are not configured.',
+            detail: 'Attendance settings are not configured (working days, start time, timezone, office IPs, holidays).',
             employeeId: null,
             occurredAt: null,
           },
@@ -1580,7 +1773,7 @@ export async function overview(db: Queryable, q: OverviewQuery) {
     counts,
     // FE2 OWN-004 summary cards; `null` = not configured (never 0, never "absent").
     summary: {
-      expected: scheduleConfigured && workingDay ? out.length : null,
+      expected: scheduleConfigured ? out.filter((r) => r.workingDay && !r.dayOff).length : null,
       checkedIn: counts.checkedIn,
       checkedOut: counts.checkedOut,
       notCheckedIn: scheduleConfigured ? counts.notCheckedIn : null,
@@ -1626,15 +1819,45 @@ export async function openWorkFor(db: Queryable, employeeIds: string[]): Promise
 // J-04 attendance exception check (every 5 min; never closes a session)
 // ---------------------------------------------------------------------------
 
-export async function runExceptionCheck(ctx: CommandContext): Promise<{ notConfigured: boolean; missingCheckin: number; missingCheckout: number }> {
+export async function runExceptionCheck(
+  ctx: CommandContext
+): Promise<{ notConfigured: boolean; missingCheckin: number; missingCheckout: number; checkoutReminders: number }> {
   const info = await currentSchedule(ctx.tx);
   const s = info.schedule;
   const now = clock.now();
-  const result = { notConfigured: false, missingCheckin: 0, missingCheckout: 0 };
+  const result = { notConfigured: false, missingCheckin: 0, missingCheckout: 0, checkoutReminders: 0 };
 
-  // Missing checkout (D5): every open session past its work date's shift end + flag hours.
+  if (missingSettings(s).length > 0) {
+    // D1 "Not configured" marker (plan §8): no J-04 alert runs on assumed values.
+    result.notConfigured = true;
+    await repo.insertException(ctx.tx, { kind: 'not_configured', workDate: now.toISOString().slice(0, 10), employeeId: null, sessionId: null, at: now });
+    return result;
+  }
+  const versionOf = scheduleResolver(ctx.tx, info);
+  const ov = await overridesFor(ctx.tx, (await repo.activeEmployees(ctx.tx)).map((e) => e.id));
+  // Session schedule = its settings version + the employee's override on its work date.
+  const resolve = async (r: repo.SessionRow) => withOverride(await versionOf(r), ov.on(r.employee_id, r.work_date));
+
+  // D18 checkout reminder: the employee, at shift end + 1 h, once per open session's work date.
+  const reminderMinutes = await getSetting(ctx.tx, 'notifications.missingCheckoutAfterShiftMinutes');
+  for (const r of await repo.openSessionsWithoutReminder(ctx.tx)) {
+    const end = shiftEndAt(r.work_date, await resolve(r));
+    if (!end || now.getTime() < end.getTime() + reminderMinutes * 60_000) continue;
+    const inserted = await repo.insertException(ctx.tx, { kind: 'missing_checkout_reminder', workDate: r.work_date, employeeId: r.employee_id, sessionId: r.id, at: now });
+    if (!inserted) continue;
+    await outbox.emit(ctx.tx, {
+      name: 'attendance.missing_checkout_reminder',
+      aggregateType: 'attendance_session',
+      aggregateId: r.id,
+      payload: { sessionId: r.id, employeeId: r.employee_id, workDate: r.work_date },
+    });
+    result.checkoutReminders += 1;
+  }
+
+  // Missing checkout (D5): every open session past its work date's shift end + flag hours. The Owner
+  // sees it in the review list and the next morning digest (attendance_exceptions rows).
   for (const r of await repo.openUnflaggedSessions(ctx.tx)) {
-    const sched = await scheduleResolver(ctx.tx, info)(r);
+    const sched = await resolve(r);
     const due = missingCheckoutDueAt(r.work_date, sched);
     if (!due || now.getTime() < due.getTime()) continue;
     const ok = await repo.updateSession(ctx.tx, r.id, r.version, { missingCheckoutFlaggedAt: now });
@@ -1656,21 +1879,19 @@ export async function runExceptionCheck(ctx: CommandContext): Promise<{ notConfi
     result.missingCheckout += 1;
   }
 
-  if (!s.timezone) {
-    // "Not configured" marker (plan §8): no missing check-in detection without a timezone/schedule.
-    result.notConfigured = true;
-    await repo.insertException(ctx.tx, { kind: 'not_configured', workDate: now.toISOString().slice(0, 10), employeeId: null, sessionId: null, at: now });
-    return result;
-  }
-
-  // Missing check-in (AC-ATT-014): working day only; never on weekends/holidays.
+  // Missing check-in (AC-ATT-014, D18): Owner at start + grace + 30 min, scheduled working days only;
+  // never on weekends/holidays, and not for an employee on an approved day off (repo filter).
+  // Per employee: their own start time / working days (company holidays and grace apply to all).
   const date = workDateOf(now, s.timezone);
-  if (nonWorkingReason(date, s)) return result;
+  if (s.holidays.includes(date)) return result;
   const alertMinutes = await getSetting(ctx.tx, 'notifications.missingCheckinAfterGraceMinutes');
-  const due = zonedToUtc(date, s.shiftStart, s.timezone).getTime() + (s.graceMinutes + alertMinutes) * 60_000;
-  if (now.getTime() < due) return result;
   // An earlier still-open session is a missing checkout, not a missing check-in.
-  for (const employeeId of await repo.employeesWithoutAttendance(ctx.tx, date)) {
+  const candidates = await repo.employeesWithoutAttendance(ctx.tx, date);
+  const cov = await overridesFor(ctx.tx, candidates);
+  for (const employeeId of candidates) {
+    const es = withOverride(s, cov.on(employeeId, date));
+    if (nonWorkingReason(date, es)) continue;
+    if (now.getTime() < zonedToUtc(date, es.shiftStart, es.timezone).getTime() + (es.graceMinutes + alertMinutes) * 60_000) continue;
     const e = { id: employeeId };
     const inserted = await repo.insertException(ctx.tx, { kind: 'missing_checkin', workDate: date, employeeId: e.id, sessionId: null, at: now });
     if (!inserted) continue;
@@ -1844,4 +2065,81 @@ export async function listSessionBreaks(db: Queryable, principal: Principal, ses
   return breaks.map(repo.breakToDto);
 }
 
+// ---------------------------------------------------------------------------
+// Approved employee days off (D1): Owner create / list / cancel, audited. They suppress the J-04
+// missing check-in alert and show as non-working for that employee in My Day and the overview.
+// ---------------------------------------------------------------------------
 
+function dayOffDto(r: repo.DayOffRow): DayOffDto {
+  return {
+    id: r.id,
+    employeeId: r.employee_id,
+    employeeName: r.employee_name,
+    startDate: r.start_date,
+    endDate: r.end_date,
+    reason: r.reason,
+    createdBy: r.created_by,
+    createdByName: r.created_by_name,
+    createdAt: iso(r.created_at)!,
+    cancelledAt: iso(r.cancelled_at),
+    cancelledBy: r.cancelled_by,
+    cancelReason: r.cancel_reason,
+    version: r.version,
+  };
+}
+
+/** POST /days-off (Owner). Overlapping active days off of the same employee are refused (422). */
+export async function createDayOff(ctx: CommandContext, input: CreateDayOffInput): Promise<DayOffDto> {
+  const emp = await repo.employeeExists(ctx.tx, input.employeeId);
+  if (!emp) throw notFound();
+  await repo.lockEmployeeAttendance(ctx.tx, input.employeeId);
+  const endDate = input.endDate ?? input.startDate;
+  const clash = await repo.overlappingDaysOff(ctx.tx, input.employeeId, input.startDate, endDate);
+  if (clash.length > 0) throw ruleViolation('These dates overlap another approved day off', { reason: 'OVERLAP', dayOffIds: clash });
+  const id = await repo.insertDayOff(ctx.tx, {
+    employeeId: input.employeeId,
+    startDate: input.startDate,
+    endDate,
+    reason: input.reason,
+    createdBy: actorIdOf(ctx),
+  });
+  await audit(ctx, {
+    eventName: 'attendance.day_off_created', // placeholder name (D1), needs approval (G2)
+    entityType: 'attendance_day_off',
+    entityId: id,
+    after: { employeeId: input.employeeId, startDate: input.startDate, endDate },
+    reason: input.reason,
+    sourceWorkflow: 'WF-ADMIN-001',
+  });
+  return dayOffDto((await repo.dayOffById(ctx.tx, id))!);
+}
+
+/** POST /days-off/:id/cancel (Owner, reason required). Additive: the row stays with cancelled_* set. */
+export async function cancelDayOff(ctx: CommandContext, id: string, input: { version: number; reason: string }): Promise<DayOffDto> {
+  const d = await repo.dayOffById(ctx.tx, id, true);
+  if (!d) throw notFound();
+  if (d.cancelled_at) return dayOffDto(d); // repeat = no-op (§4.5)
+  if (d.version !== input.version) throw versionConflict(d.version, dayOffDto(d)); // BL-09
+  const ok = await repo.cancelDayOff(ctx.tx, id, input.version, { cancelledBy: actorIdOf(ctx), cancelledAt: clock.now(), reason: input.reason });
+  if (!ok) throw versionConflict();
+  await audit(ctx, {
+    eventName: 'attendance.day_off_cancelled', // placeholder name (D1), needs approval (G2)
+    entityType: 'attendance_day_off',
+    entityId: id,
+    before: { cancelled: false, version: d.version },
+    after: { cancelled: true, version: d.version + 1 },
+    reason: input.reason,
+    sourceWorkflow: 'WF-ADMIN-001',
+  });
+  return dayOffDto((await repo.dayOffById(ctx.tx, id))!);
+}
+
+/** GET /days-off (Owner). Active only unless `includeCancelled=true`. */
+export async function listDaysOff(db: Queryable, q: DaysOffQuery) {
+  const { rows, total } = await repo.listDaysOff(
+    db,
+    { employeeId: q.employeeId, from: q.from, to: q.to, includeCancelled: q.includeCancelled },
+    q
+  );
+  return { ...toPage(rows.map(dayOffDto), total, q), label: DEMO_LABEL };
+}

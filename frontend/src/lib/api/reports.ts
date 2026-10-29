@@ -19,6 +19,19 @@ export interface DeveloperWorkloadItem {
   openTasksCount: number;
 }
 
+export interface DashboardTarget {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  metric: string;
+  period: 'daily' | 'weekly' | 'monthly' | 'quarterly';
+  targetValue: number;
+  currentValue: number | null;
+  progressNote: 'schedule_not_configured' | 'non_working_day' | 'unsupported_metric' | null;
+  startDate: string;
+  endDate: string;
+}
+
 export interface DashboardMetrics {
   period: 'today' | '7d' | '30d' | 'custom';
   companyTime: string;
@@ -63,27 +76,10 @@ export interface DashboardMetrics {
     suppressedDeliveriesCount: number;
     failedRemindersCount: number;
   };
+  /** D7: Owner-set targets active today, progress computed by the server. Empty = no target set. */
   targets: {
-    outreachProgress: {
-      current: number;
-      target: number;
-      percentage: number;
-    };
-    closedDealsProgress?: {
-      current: number;
-      target: number;
-      percentage: number;
-    };
-    contactedBusinessesProgress?: {
-      current: number;
-      target: number;
-      percentage: number;
-    };
-    deliveryProgress?: {
-      current: number;
-      target: number;
-      percentage: number;
-    };
+    scheduleConfigured: boolean;
+    items: DashboardTarget[];
   };
 }
 

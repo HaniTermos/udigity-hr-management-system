@@ -13,9 +13,10 @@ import { audit, type CommandContext } from '../../shared/tx.js';
 import { openItemsFor as callsOpenItemsFor, openFollowUpCounts } from '../calls/service.js';
 import { openItemsFor as dealsOpenItemsFor, openItemsForMany as dealsOpenItemsForMany } from '../deals/service.js';
 import { openItemsFor as projectsOpenItemsFor, openItemsForMany as projectsOpenItemsForMany } from '../projects/service.js';
-import { issueCredentialSetup, securitySummaries } from '../identity/service.js';
+import { invalidateCredentialsForReactivation, issueCredentialSetup, securitySummaries } from '../identity/service.js';
 import { openWorkFor as attendanceOpenWork } from '../attendance/service.js';
 import * as repo from './repo.js';
+import { ROLES } from './schemas.js';
 import type {
   CreateEmployeeInput,
   EmployeeDto,
@@ -196,12 +197,21 @@ export type CommandOutcome =
   | { kind: 'self' }
   | { kind: 'last_owner' };
 
+/**
+ * Fixed v1 scope (approved 2026-10-29): exactly four roles. Any other role id (custom roles included) is refused
+ * on create and update; existing custom-role rows are kept but cannot be assigned.
+ */
+function assertV1Role(role: string): void {
+  if (!(ROLES as readonly string[]).includes(role)) {
+    throw new HttpError(400, 'VALIDATION_ERROR', `Role "${role}" is not available: v1 has the Owner, Data Entry, Call Center and Developer roles only.`, {
+      role: ['Choose Owner, Data Entry, Call Center or Developer'],
+    });
+  }
+}
+
 /** POST /api/employees → E-01. */
 export async function createEmployee(ctx: CommandContext, input: CreateEmployeeInput): Promise<CommandOutcome> {
-  const { rows: r } = await ctx.tx.query('SELECT 1 FROM custom_roles WHERE id = $1', [input.role]);
-  if (!r[0]) {
-    throw new HttpError(400, 'VALIDATION_ERROR', `Role "${input.role}" does not exist.`, { role: ['Invalid role'] });
-  }
+  assertV1Role(input.role);
   if (await repo.emailTaken(ctx.tx, input.email)) return { kind: 'email_taken' };
   const created = await repo.insert(ctx.tx, {
     email: input.email,
@@ -239,12 +249,7 @@ export async function updateEmployee(
   if (!target) return { kind: 'not_found' };
   if (target.version !== input.version) return { kind: 'conflict', currentVersion: target.version, current: repo.toDto(target) }; // BL-09
 
-  if (input.role) {
-    const { rows: r } = await ctx.tx.query('SELECT 1 FROM custom_roles WHERE id = $1', [input.role]);
-    if (!r[0]) {
-      throw new HttpError(400, 'VALIDATION_ERROR', `Role "${input.role}" does not exist.`, { role: ['Invalid role'] });
-    }
-  }
+  if (input.role) assertV1Role(input.role);
 
   const next = {
     email: input.email ?? target.email,
@@ -350,6 +355,28 @@ export async function setEmployeeStatus(
   });
   if (!input.isActive) {
     await outbox.emit(ctx.tx, { name: 'account.deactivated', aggregateType: 'employee', aggregateId: id });
+  } else {
+    // D20 (approved): reactivation never restores old sessions, credentials or MFA. The old password and TOTP
+    // enrolment are invalidated and the employee sets a new password through the existing credential-setup
+    // invitation (E-01 template; the raw token goes only to MOD-notifications, never to the audit or logs).
+    const reset = await invalidateCredentialsForReactivation(ctx.tx, id);
+    const setup = await issueCredentialSetup(ctx.tx, id, ctx.now, actorId(ctx));
+    await audit(ctx, {
+      eventName: 'account.credentials_invalidated', // placeholder name; needs approval (G2)
+      entityType: 'employee',
+      entityId: id,
+      payload: { ...reset, securityTokenId: setup.securityTokenId },
+      securityEvent: true,
+      sourceWorkflow: 'WF-EMP-001',
+    });
+    // The existing set-password invitation: MOD-notifications' security e-mail consumer sends the
+    // credential-setup link for `account.created` (log/memory transport outside production).
+    await outbox.emit(ctx.tx, {
+      name: 'account.created',
+      aggregateType: 'employee',
+      aggregateId: id,
+      payload: { securityTokenId: setup.securityTokenId, reactivated: true },
+    });
   }
   // OQ-14 (Demonstration alternative — not approved): reactivation does not restore assignments.
   return { kind: 'ok', employee: (await withSecurity(ctx.tx, [updated]))[0] };

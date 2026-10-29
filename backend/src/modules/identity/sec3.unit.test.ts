@@ -1,6 +1,6 @@
 /**
  * BE1 SEC-3 unit tests (no DB): AES-GCM secret box, env loader (AU-13 key + DEV-R4 aliases),
- * recovery codes (AU-9), seed production guard (SE-4), bootstrap CLI args, capability map.
+ * recovery codes (AU-9), seed and demo-seed production guard (SE-4), bootstrap CLI args, capability map.
  */
 import crypto from 'crypto';
 import { describe, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import { loadBe1Env } from './env.js';
 import { SecretBoxError, openSecret, sealSecret } from './secretBox.js';
 import { generateRecoveryCode, hashEnrollmentToken, normalizeRecoveryCode } from './twoFactor.js';
 import { assertSeedAllowed, SeedRefusedError } from '../../db/seed.js';
+import { seedDemo } from '../../db/seed-demo.js';
 import { parseArgs } from './bootstrap.js';
 import { capabilitiesFor } from './schemas.js';
 import '../admin/schemas.js';
@@ -105,6 +106,18 @@ describe('SE-4 seed production guard', () => {
     expect(() => assertSeedAllowed('staging')).toThrow(SeedRefusedError);
     expect(() => assertSeedAllowed('development')).not.toThrow();
     expect(() => assertSeedAllowed('test')).not.toThrow();
+  });
+
+  it('the demo-data seed refuses outside development/test before it opens a DB connection', async () => {
+    const previous = process.env.NODE_ENV;
+    try {
+      for (const env of ['production', 'staging', '']) {
+        process.env.NODE_ENV = env;
+        await expect(seedDemo()).rejects.toThrow(SeedRefusedError);
+      }
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
   });
 });
 

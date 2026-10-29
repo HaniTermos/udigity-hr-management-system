@@ -36,6 +36,16 @@ interface WorkItemDbRow {
   updated_at: Date;
 }
 
+/**
+ * YYYY-MM-DD of a DATE column. node-pg parses DATE as local midnight, so the local calendar fields
+ * are the stored date (toISOString() would shift it a day on a server east of UTC).
+ */
+function dateKey(v: string | Date): string {
+  if (typeof v === 'string') return v.slice(0, 10);
+  const d = new Date(v);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function mapTarget(r: TargetDbRow): TargetDto {
   return {
     id: r.id,
@@ -44,9 +54,10 @@ function mapTarget(r: TargetDbRow): TargetDto {
     metric: r.metric,
     period: r.period,
     targetValue: Number(r.target_value),
-    currentValue: Number(r.current_value),
-    startDate: typeof r.start_date === 'string' ? r.start_date.slice(0, 10) : new Date(r.start_date).toISOString().slice(0, 10),
-    endDate: typeof r.end_date === 'string' ? r.end_date.slice(0, 10) : new Date(r.end_date).toISOString().slice(0, 10),
+    // D7: filled by the service from the actor columns (the stored column is no longer written).
+    currentValue: null,
+    startDate: dateKey(r.start_date),
+    endDate: dateKey(r.end_date),
     territory: r.territory,
     version: r.version,
     createdAt: r.created_at.toISOString(),
@@ -71,7 +82,7 @@ function mapWorkItem(r: WorkItemDbRow): WorkItemDto {
   };
 }
 
-export async function insertTarget(db: Queryable, input: CreateTargetInput): Promise<TargetDto> {
+export async function insertTarget(db: Queryable, input: CreateTargetInput & { endDate: string }): Promise<TargetDto> {
   const { rows } = await db.query<TargetDbRow>(
     `INSERT INTO targets
        (employee_id, metric, period, target_value, current_value, start_date, end_date, territory)
@@ -82,7 +93,7 @@ export async function insertTarget(db: Queryable, input: CreateTargetInput): Pro
       input.metric,
       input.period,
       input.targetValue,
-      input.currentValue ?? 0,
+      0, // D7: legacy column kept (additive-only schema); progress is computed, never stored.
       input.startDate,
       input.endDate,
       input.territory ?? null,
@@ -116,9 +127,7 @@ export async function updateTarget(
   const { rows } = await db.query<TargetDbRow>(
     `UPDATE targets
         SET target_value = COALESCE($3, target_value),
-            current_value = COALESCE($4, current_value),
-            period = COALESCE($5, period),
-            territory = COALESCE($6, territory),
+            territory = COALESCE($4, territory),
             version = version + 1,
             updated_at = CURRENT_TIMESTAMP
       WHERE id = $1 AND version = $2
@@ -127,8 +136,6 @@ export async function updateTarget(
       id,
       input.version,
       input.targetValue ?? null,
-      input.currentValue ?? null,
-      input.period ?? null,
       input.territory ?? null,
     ]
   );
@@ -175,6 +182,20 @@ export async function listTargets(
   );
 
   return { items: rows.map(mapTarget), total };
+}
+
+/** Targets whose period contains `date` (YYYY-MM-DD, company timezone); dashboard summary. */
+export async function listActiveTargets(db: Queryable, date: string, limit = 20): Promise<TargetDto[]> {
+  const { rows } = await db.query<TargetDbRow>(
+    `SELECT t.*, e.full_name AS employee_name
+       FROM targets t
+       LEFT JOIN employees e ON e.id = t.employee_id
+      WHERE t.start_date <= $1::date AND t.end_date >= $1::date
+      ORDER BY t.end_date, t.created_at
+      LIMIT $2`,
+    [date, limit]
+  );
+  return rows.map(mapTarget);
 }
 
 export async function insertWorkItem(db: Queryable, input: CreateWorkItemInput): Promise<WorkItemDto> {

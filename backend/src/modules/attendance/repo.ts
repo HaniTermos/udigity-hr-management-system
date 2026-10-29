@@ -1,7 +1,7 @@
 /**
  * MOD-attendance — repository (raw parameterised SQL). Owner: BE1.
  * Owned tables: attendance_sessions, attendance_corrections, attendance_settings_versions,
- * remote_exceptions, attendance_exceptions (migration 020). `employees` is joined read-only for display
+ * remote_exceptions, attendance_exceptions (migration 020), attendance_days_off (980), employee_schedules (981). `employees` is joined read-only for display
  * names (BE1 owns both modules). Every function takes a Queryable (pool or ctx.tx) first.
  */
 import type { Queryable } from '../../db/pool.js';
@@ -9,7 +9,6 @@ import type { Role } from '../../middleware/auth.js';
 import { SqlParams } from '../../shared/sql.js';
 import { orderByClause, pageClause, type PageQuery } from '../../shared/pagination.js';
 import type { BreakDto, RemoteStatus, SessionState } from './schemas.js';
-import type { VerificationMode } from './time.js';
 
 // ---------------------------------------------------------------------------
 // Settings versions
@@ -23,9 +22,12 @@ export interface SettingsVersionRow {
   shift_start: string;
   shift_end: string;
   grace_minutes: number;
-  verification_mode: VerificationMode;
+  /** 'ip'; legacy rows may hold a retired mode (treated as Not configured). */
+  verification_mode: string;
   office_ips: string[];
+  office_hostnames: string[];
   holidays: string[];
+  holidays_confirmed: boolean;
   summary_required: boolean;
   summary_min_length: number;
   missing_checkout_flag_hours: number;
@@ -36,7 +38,7 @@ export interface SettingsVersionRow {
 }
 
 const SV_COLS = `v.id, v.version_no, v.timezone, v.working_days, v.shift_start, v.shift_end, v.grace_minutes,
-  v.verification_mode, v.office_ips, to_json(v.holidays)::jsonb AS holidays, v.summary_required, v.summary_min_length,
+  v.verification_mode, v.office_ips, v.office_hostnames, to_json(v.holidays)::jsonb AS holidays, v.holidays_confirmed, v.summary_required, v.summary_min_length,
   v.missing_checkout_flag_hours, v.reason, v.created_by, e.full_name AS created_by_name, v.created_at`;
 
 function svRow(r: SettingsVersionRow): SettingsVersionRow {
@@ -84,7 +86,9 @@ export async function insertSettingsVersion(
     graceMinutes: number;
     verificationMode: string;
     officeIps: string[];
+    officeHostnames: string[];
     holidays: string[];
+    holidaysConfirmed: boolean;
     summaryRequired: boolean;
     summaryMinLength: number;
     missingCheckoutFlagHours: number;
@@ -94,11 +98,13 @@ export async function insertSettingsVersion(
 ): Promise<string> {
   const { rows } = await db.query<{ id: string }>(
     `INSERT INTO attendance_settings_versions (version_no, timezone, working_days, shift_start, shift_end, grace_minutes,
-       verification_mode, office_ips, holidays, summary_required, summary_min_length, missing_checkout_flag_hours, reason, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::date[], $10, $11, $12, $13, $14) RETURNING id`,
+       verification_mode, office_ips, holidays, holidays_confirmed, summary_required, summary_min_length, missing_checkout_flag_hours,
+       reason, created_by, office_hostnames)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::date[], $10, $11, $12, $13, $14, $15, $16) RETURNING id`,
     [
       v.versionNo, v.timezone, v.workingDays, v.shiftStart, v.shiftEnd, v.graceMinutes, v.verificationMode, v.officeIps,
-      v.holidays, v.summaryRequired, v.summaryMinLength, v.missingCheckoutFlagHours, v.reason, v.createdBy,
+      v.holidays, v.holidaysConfirmed, v.summaryRequired, v.summaryMinLength, v.missingCheckoutFlagHours, v.reason, v.createdBy,
+      v.officeHostnames,
     ]
   );
   return rows[0].id;
@@ -132,6 +138,8 @@ export interface SessionRow {
   summary_outstanding: string | null;
   summary_blockers: string | null;
   summary_notes: string | null;
+  /** D6: set when the Owner completed a missing summary; null = written by the employee. */
+  summary_written_by: string | null;
   settings_version_id: string | null;
   settings_version_no: number | null;
   missing_checkout_flagged_at: Date | null;
@@ -144,7 +152,7 @@ const S_COLS = `s.id, s.employee_id, e.full_name AS employee_name, e.role AS emp
   to_char(s.work_date, 'YYYY-MM-DD') AS work_date, s.check_in_at, s.check_out_at, s.checkout_attempted_at,
   s.effective_check_in_at, s.effective_check_out_at, s.check_out_unknown, s.adjusted, s.remote, s.remote_exception_id,
   s.check_in_verification, s.check_out_verification, s.checkout_failure_reason, s.summary_work_completed,
-  s.summary_outstanding, s.summary_blockers, s.summary_notes, s.settings_version_id, sv.version_no AS settings_version_no,
+  s.summary_outstanding, s.summary_blockers, s.summary_notes, s.summary_written_by, s.settings_version_id, sv.version_no AS settings_version_no,
   s.missing_checkout_flagged_at, s.review_resolved_at,
   (SELECT c.id FROM attendance_corrections c WHERE c.session_id = s.id AND c.status = 'submitted' LIMIT 1) AS pending_correction_id,
   s.version`;
@@ -239,6 +247,8 @@ const SESSION_SET: Record<string, string> = {
   summaryOutstanding: 'summary_outstanding',
   summaryBlockers: 'summary_blockers',
   summaryNotes: 'summary_notes',
+  summaryWrittenBy: 'summary_written_by',
+  summaryCompletionReason: 'summary_completion_reason',
   missingCheckoutFlaggedAt: 'missing_checkout_flagged_at',
   reviewResolvedAt: 'review_resolved_at',
   reviewResolvedBy: 'review_resolved_by',
@@ -630,7 +640,7 @@ export async function listRemote(
 /** Inserts one detection; false when it already exists (idempotent per kind/date/employee). */
 export async function insertException(
   db: Queryable,
-  v: { kind: 'missing_checkin' | 'missing_checkout' | 'not_configured'; workDate: string; employeeId: string | null; sessionId: string | null; at: Date }
+  v: { kind: 'missing_checkin' | 'missing_checkout' | 'missing_checkout_reminder' | 'not_configured'; workDate: string; employeeId: string | null; sessionId: string | null; at: Date }
 ): Promise<boolean> {
   const { rowCount } = await db.query(
     `INSERT INTO attendance_exceptions (kind, work_date, employee_id, session_id, detected_at)
@@ -651,17 +661,32 @@ export async function exceptionsOn(
   return rows;
 }
 
-/** Active employees with no session on the work date and no open session (J-04 missing check-in). */
+/**
+ * Active employees with no session on the work date, no open session and no approved day off
+ * (J-04 missing check-in; D1: days off suppress it).
+ */
 export async function employeesWithoutAttendance(db: Queryable, workDate: string): Promise<string[]> {
   const { rows } = await db.query<{ id: string }>(
     `SELECT e.id FROM employees e
      WHERE e.is_active = true
        AND NOT EXISTS (SELECT 1 FROM attendance_sessions s WHERE s.employee_id = e.id AND (s.work_date = $1::date OR s.state = 'open'))
+       AND NOT EXISTS (SELECT 1 FROM attendance_days_off d WHERE d.employee_id = e.id AND d.cancelled_at IS NULL
+                         AND d.start_date <= $1::date AND d.end_date >= $1::date)
        AND NOT EXISTS (SELECT 1 FROM attendance_exceptions x WHERE x.kind = 'missing_checkin' AND x.work_date = $1::date AND x.employee_id = e.id)
      ORDER BY e.id`,
     [workDate]
   );
   return rows.map((r) => r.id);
+}
+
+/** Open sessions that have not had the D18 shift-end + 1 h checkout reminder yet (J-04). */
+export async function openSessionsWithoutReminder(db: Queryable): Promise<SessionRow[]> {
+  const { rows } = await db.query<SessionRow>(
+    `SELECT ${S_COLS} FROM ${S_FROM} WHERE s.state = 'open'
+       AND NOT EXISTS (SELECT 1 FROM attendance_exceptions x WHERE x.kind = 'missing_checkout_reminder'
+                         AND x.work_date = s.work_date AND x.employee_id = s.employee_id)`
+  );
+  return rows;
 }
 
 /** Employees with any session on a work date (missing check-in detection). */
@@ -804,3 +829,136 @@ export async function autoCloseActiveBreaksForSession(db: Queryable, sessionId: 
   return rows;
 }
 
+// ---------------------------------------------------------------------------
+// Approved employee days off (D1, migration 980). Cancel is additive; rows are never deleted.
+// ---------------------------------------------------------------------------
+
+export interface DayOffRow {
+  id: string;
+  employee_id: string;
+  employee_name: string;
+  start_date: string;
+  end_date: string;
+  reason: string;
+  created_by: string;
+  created_by_name: string | null;
+  created_at: Date;
+  cancelled_at: Date | null;
+  cancelled_by: string | null;
+  cancel_reason: string | null;
+  version: number;
+}
+
+const D_COLS = `d.id, d.employee_id, e.full_name AS employee_name, to_char(d.start_date, 'YYYY-MM-DD') AS start_date,
+  to_char(d.end_date, 'YYYY-MM-DD') AS end_date, d.reason, d.created_by, c.full_name AS created_by_name, d.created_at,
+  d.cancelled_at, d.cancelled_by, d.cancel_reason, d.version`;
+const D_FROM = 'attendance_days_off d JOIN employees e ON e.id = d.employee_id LEFT JOIN employees c ON c.id = d.created_by';
+
+export async function insertDayOff(
+  db: Queryable,
+  v: { employeeId: string; startDate: string; endDate: string; reason: string; createdBy: string }
+): Promise<string> {
+  const { rows } = await db.query<{ id: string }>(
+    `INSERT INTO attendance_days_off (employee_id, start_date, end_date, reason, created_by)
+     VALUES ($1, $2::date, $3::date, $4, $5) RETURNING id`,
+    [v.employeeId, v.startDate, v.endDate, v.reason, v.createdBy]
+  );
+  return rows[0].id;
+}
+
+export async function dayOffById(db: Queryable, id: string, forUpdate = false): Promise<DayOffRow | null> {
+  const { rows } = await db.query<DayOffRow>(`SELECT ${D_COLS} FROM ${D_FROM} WHERE d.id = $1 ${forUpdate ? 'FOR UPDATE OF d' : ''}`, [id]);
+  return rows[0] ?? null;
+}
+
+/** Active (not cancelled) days off of one employee that overlap [from, to]. */
+export async function overlappingDaysOff(db: Queryable, employeeId: string, from: string, to: string): Promise<string[]> {
+  const { rows } = await db.query<{ id: string }>(
+    `SELECT id FROM attendance_days_off WHERE employee_id = $1 AND cancelled_at IS NULL AND start_date <= $3::date AND end_date >= $2::date`,
+    [employeeId, from, to]
+  );
+  return rows.map((r) => r.id);
+}
+
+export async function cancelDayOff(
+  db: Queryable,
+  id: string,
+  version: number,
+  v: { cancelledBy: string; cancelledAt: Date; reason: string }
+): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE attendance_days_off SET cancelled_at = $3, cancelled_by = $4, cancel_reason = $5, version = version + 1,
+       updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND version = $2 AND cancelled_at IS NULL`,
+    [id, version, v.cancelledAt, v.cancelledBy, v.reason]
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+export async function listDaysOff(
+  db: Queryable,
+  f: { employeeId?: string; from?: string; to?: string; includeCancelled?: boolean },
+  page: PageQuery
+): Promise<{ rows: DayOffRow[]; total: number }> {
+  const p = new SqlParams();
+  const where = ['TRUE'];
+  if (f.employeeId) where.push(`d.employee_id = ${p.add(f.employeeId)}`);
+  if (f.from) where.push(`d.end_date >= ${p.add(f.from)}::date`);
+  if (f.to) where.push(`d.start_date <= ${p.add(f.to)}::date`);
+  if (!f.includeCancelled) where.push('d.cancelled_at IS NULL');
+  const w = where.join(' AND ');
+  const { rows: c } = await db.query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM attendance_days_off d WHERE ${w}`, p.values);
+  const order = orderByClause(page, { startDate: 'd.start_date', createdAt: 'd.created_at' }, 'startDate');
+  const { rows } = await db.query<DayOffRow>(`SELECT ${D_COLS} FROM ${D_FROM} WHERE ${w} ${order}, d.id ${pageClause(page, p)}`, p.values);
+  return { rows, total: Number(c[0]?.n ?? 0) };
+}
+
+/** Employees with an active approved day off on a date (D1: non-working for them). */
+export async function employeesOffOn(db: Queryable, date: string): Promise<Set<string>> {
+  const { rows } = await db.query<{ employee_id: string }>(
+    `SELECT DISTINCT employee_id FROM attendance_days_off WHERE cancelled_at IS NULL AND start_date <= $1::date AND end_date >= $1::date`,
+    [date]
+  );
+  return new Set(rows.map((r) => r.employee_id));
+}
+
+// ---------------------------------------------------------------------------
+// Per-employee schedules (Owner decision 2026-10-29, migration 981). Rows are never edited.
+// ---------------------------------------------------------------------------
+
+export interface EmployeeScheduleRow {
+  id: string;
+  employee_id: string;
+  effective_from: string;
+  shift_start: string | null;
+  working_days: string[] | null;
+  reason: string | null;
+  created_by: string;
+  created_by_name: string | null;
+  created_at: Date;
+}
+
+const ES_COLS = `s.id, s.employee_id, to_char(s.effective_from, 'YYYY-MM-DD') AS effective_from, btrim(s.shift_start) AS shift_start,
+  s.working_days, s.reason, s.created_by, e.full_name AS created_by_name, s.created_at`;
+
+/** Every schedule row of the given employees, newest first (effective_from, then created_at). */
+export async function employeeScheduleRows(db: Queryable, employeeIds: string[]): Promise<EmployeeScheduleRow[]> {
+  if (employeeIds.length === 0) return [];
+  const { rows } = await db.query<EmployeeScheduleRow>(
+    `SELECT ${ES_COLS} FROM employee_schedules s LEFT JOIN employees e ON e.id = s.created_by
+     WHERE s.employee_id = ANY($1::uuid[]) ORDER BY s.effective_from DESC, s.created_at DESC, s.id DESC`,
+    [employeeIds]
+  );
+  return rows;
+}
+
+export async function insertEmployeeSchedule(
+  db: Queryable,
+  v: { employeeId: string; effectiveFrom: string; shiftStart: string | null; workingDays: string[] | null; reason: string | null; createdBy: string }
+): Promise<string> {
+  const { rows } = await db.query<{ id: string }>(
+    `INSERT INTO employee_schedules (employee_id, effective_from, shift_start, working_days, reason, created_by)
+     VALUES ($1, $2::date, $3, $4, $5, $6) RETURNING id`,
+    [v.employeeId, v.effectiveFrom, v.shiftStart, v.workingDays, v.reason, v.createdBy]
+  );
+  return rows[0].id;
+}

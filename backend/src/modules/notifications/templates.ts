@@ -35,6 +35,17 @@ const T: Record<EmailTemplateId, TemplateDef> = {
     link: { var: 'resetUrl', label: 'Reset password' },
     vars: ['name', 'resetUrl', 'ttlMinutes'],
   },
+  'ops.alert': {
+    subject: 'Udigity alert: {{kind}}',
+    body: [
+      'A failure was recorded by the Udigity system.',
+      'Kind: {{kind}}',
+      'Detail: {{detail}}',
+      'First seen: {{at}} (UTC). Occurrences in this 15-minute window: {{occurrences}}.',
+      'Check the server logs for this time. Repeats of the same kind in the window are not emailed again.',
+    ],
+    vars: ['kind', 'detail', 'at', 'occurrences'],
+  },
   'security.password_reset_completed': {
     subject: 'Your Udigity password was changed',
     body: ['Hello {{name}},', 'Your password was changed and all sessions were signed out. If this was not you, contact the Owner.'],

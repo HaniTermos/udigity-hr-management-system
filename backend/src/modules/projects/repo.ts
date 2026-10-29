@@ -19,6 +19,9 @@ export interface ProjectRow {
   target_date: string | null;
   delivered_at: Date | null;
   completed_at: Date | null;
+  cancel_reason: string | null;
+  cancelled_at: Date | null;
+  cancelled_by_id: string | null;
   provisioned_by: 'auto' | 'manual';
   provisioned_by_id: string | null;
   version: number;
@@ -29,6 +32,7 @@ export interface ProjectRow {
 /** DATE columns as text so no timezone shift happens in the driver. */
 const PROJECT_COLUMNS = `p.id, p.code, p.deal_id, p.business_id, p.name, p.status, p.status_note,
   p.start_date::text AS start_date, p.target_date::text AS target_date, p.delivered_at, p.completed_at,
+  p.cancel_reason, p.cancelled_at, p.cancelled_by_id,
   p.provisioned_by, p.provisioned_by_id, p.version, p.created_at, p.updated_at`;
 
 export async function findById(db: Queryable, id: string, forUpdate = false): Promise<ProjectRow | null> {
@@ -61,7 +65,17 @@ export async function insertProject(
   return rows[0] ? findById(db, rows[0].id) : null;
 }
 
-export type ProjectColumn = 'name' | 'status' | 'status_note' | 'start_date' | 'target_date' | 'delivered_at' | 'completed_at';
+export type ProjectColumn =
+  | 'name'
+  | 'status'
+  | 'status_note'
+  | 'start_date'
+  | 'target_date'
+  | 'delivered_at'
+  | 'completed_at'
+  | 'cancel_reason'
+  | 'cancelled_at'
+  | 'cancelled_by_id';
 const PROJECT_SETTABLE: ReadonlySet<ProjectColumn> = new Set<ProjectColumn>([
   'name',
   'status',
@@ -70,6 +84,9 @@ const PROJECT_SETTABLE: ReadonlySet<ProjectColumn> = new Set<ProjectColumn>([
   'target_date',
   'delivered_at',
   'completed_at',
+  'cancel_reason',
+  'cancelled_at',
+  'cancelled_by_id',
 ]);
 
 export async function updateProject(
@@ -189,9 +206,9 @@ export async function workload(db: Queryable, where: string[], params: SqlParams
   const td = p2.add(today);
   const { rows } = await db.query<{ active: string; overdue: string; open_tasks: string; completed_month: string }>(
     `SELECT
-        COUNT(*) FILTER (WHERE p.status NOT IN ('delivered','completed'))::text AS active,
-        COUNT(*) FILTER (WHERE p.status NOT IN ('delivered','completed') AND p.target_date < ${td}::date)::text AS overdue,
-        COALESCE(SUM(ot.n), 0)::text AS open_tasks,
+        COUNT(*) FILTER (WHERE p.status NOT IN ('delivered','completed','cancelled'))::text AS active,
+        COUNT(*) FILTER (WHERE p.status NOT IN ('delivered','completed','cancelled') AND p.target_date < ${td}::date)::text AS overdue,
+        COALESCE(SUM(ot.n) FILTER (WHERE p.status <> 'cancelled'), 0)::text AS open_tasks,
         COUNT(*) FILTER (WHERE p.status = 'completed' AND p.completed_at >= ${ms}::date)::text AS completed_month
        FROM projects p
        LEFT JOIN LATERAL (SELECT COUNT(*) AS n FROM tasks t WHERE t.project_id = p.id AND t.status IN ('todo','in_progress')) ot ON TRUE

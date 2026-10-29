@@ -11,7 +11,7 @@ import { Alert } from '@/components/ui/Alert';
 import { Badge, Tag } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
-import { Textarea } from '@/components/ui/Input';
+import { Select, Textarea } from '@/components/ui/Input';
 import { useToast } from '@/components/ui/Toast';
 import { CardSection } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
@@ -20,7 +20,7 @@ import { NoticePolicy, PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { StateView } from '@/components/ui/State';
 import { Tabs } from '@/components/ui/Tabs';
 import { PageHeader, type Crumb } from './PageHeader';
-import { useBusinessAccess, useBusinessHistory } from './hooks';
+import { useBusinessAccess, useBusinessHistory, useCategories } from './hooks';
 import { ErrorState, ListSkeleton } from './AsyncState';
 import { formatDateTime, formatDay, formatDayShort, formatFollowers, formatPhone } from './format';
 
@@ -207,18 +207,29 @@ function ArchivePanel({ business, onChanged }: { business: BusinessDetail; onCha
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const archived = business.archived;
+  // Owner decision 2026-10-29 "Pick a new category": restoring a business whose category was deactivated needs an
+  // active replacement. The select shows when the category is known inactive or the server says CATEGORY_INACTIVE.
+  const [needsCategory, setNeedsCategory] = useState(archived && !business.categoryActive);
+  const [categoryId, setCategoryId] = useState('');
+  const categories = useCategories();
+  const activeCategories = (categories.data ?? []).filter((c) => c.active);
 
   const run = async () => {
+    if (archived && needsCategory && !categoryId) {
+      setError('Choose an active category to restore this business.');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      if (archived) await restoreBusiness(business.id, business.version);
+      if (archived) await restoreBusiness(business.id, business.version, needsCategory ? categoryId : undefined);
       else await archiveBusiness(business.id, business.version, reason.trim() || undefined);
       toast.show({ tone: 'success', title: archived ? 'Business restored' : 'Business archived', body: business.name });
       setOpen(false);
       setReason('');
       onChanged();
     } catch (err) {
+      if (err instanceof ApiError && (err.details as { reason?: string } | null)?.reason === 'CATEGORY_INACTIVE') setNeedsCategory(true);
       setError(
         err instanceof ApiError
           ? err.isVersionConflict
@@ -262,6 +273,16 @@ function ArchivePanel({ business, onChanged }: { business: BusinessDetail; onCha
         <div className="flex flex-col gap-3">
           {!archived && (
             <Textarea label="Reason (optional)" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} counter={`${reason.length} / 500`} />
+          )}
+          {archived && needsCategory && (
+            <Select
+              label="New category"
+              helperText={`“${business.category}” was deactivated. Choose an active category; the change is recorded in the history.`}
+              placeholder="Choose a category"
+              value={categoryId}
+              onChange={(e) => setCategoryId(e.target.value)}
+              options={activeCategories.map((c) => ({ value: c.id, label: c.name }))}
+            />
           )}
           <NoticePolicy size="inline" dec="C-01" demo body="Archive only, never delete. The retention rule is not decided." />
           {error && (

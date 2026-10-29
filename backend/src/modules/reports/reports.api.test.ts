@@ -9,11 +9,12 @@ import request from 'supertest';
 import bcrypt from 'bcryptjs';
 import { authenticator } from 'otplib';
 import { app } from '../../app.js';
-import { query, withTransaction } from '../../db/pool.js';
+import { pool, query, withTransaction } from '../../db/pool.js';
 import { config } from '../../config/index.js';
 import { DEV_TOTP_SECRET } from '../../db/seed.js';
 import { storeEnrolledSecret } from '../identity/twoFactor.js';
-import { escapeCsvField, formatAsCsv } from './service.js';
+import { queryExportRows } from './repo.js';
+import { EXPORT_CHUNK_ROWS, EXPORT_LIMITS, createExportSerializer, dashboardRange, escapeCsvField, formatAsCsv } from './service.js';
 
 const hasTestDb = Boolean(process.env.TEST_DATABASE_URL);
 const ORIGIN = 'http://localhost:3000';
@@ -242,5 +243,123 @@ describe('R2-01 CSV formula injection', () => {
     expect(escapeCsvField(-5)).toBe('-5'); // numbers cannot carry a formula
     expect(escapeCsvField(null)).toBe('');
     expect(formatAsCsv([{ name: '=1+1', ok: 'x' }])).toBe("name,ok\r\n'=1+1,x");
+  });
+});
+
+describe('Streaming export serializer (Fixed v1 scope: synchronous streaming exports)', () => {
+  const rows = [
+    { id: 1, name: '=cmd', when: new Date('2026-10-29T08:00:00Z'), note: 'a,b\n"c"', none: null, obj: { k: [1, 2] } },
+    { id: 2, name: 'Plain', when: new Date('2026-10-30T08:00:00Z'), note: '', none: null, obj: {} },
+    { id: 3, name: '@x', when: new Date('2026-10-31T08:00:00Z'), note: 'x', none: 7, obj: { deep: { n: 'v\nw' } } },
+  ];
+  for (const split of [[3], [1, 2], [1, 1, 1], [0, 2, 0, 1]]) {
+    it(`chunked output equals the buffered output (chunks ${split.join('+')})`, () => {
+      for (const format of ['csv', 'json'] as const) {
+        const s = createExportSerializer(format);
+        let out = '';
+        let i = 0;
+        for (const n of split) {
+          out += s.chunk(rows.slice(i, i + n));
+          i += n;
+        }
+        out += s.end();
+        expect(out).toBe(format === 'csv' ? formatAsCsv(rows) : JSON.stringify(rows, null, 2));
+      }
+    });
+  }
+  it('no rows: CSV is empty, JSON is []', () => {
+    const c = createExportSerializer('csv');
+    expect(c.chunk([]) + c.end()).toBe(formatAsCsv([]));
+    const j = createExportSerializer('json');
+    expect(j.chunk([]) + j.end()).toBe(JSON.stringify([], null, 2));
+  });
+});
+
+describe('Dashboard company-timezone window (D7)', () => {
+  it('"today" starts at company midnight, not UTC midnight', () => {
+    // 2026-10-28T22:30Z is 00:30 on 29 Oct in Asia/Beirut (UTC+2 after the October DST change).
+    const now = new Date('2026-10-28T22:30:00Z');
+    const beirut = dashboardRange('today', now, 'Asia/Beirut');
+    expect(beirut.since.toISOString()).toBe('2026-10-28T22:00:00.000Z');
+    expect(beirut.todayStart.toISOString()).toBe('2026-10-28T22:00:00.000Z');
+    const utc = dashboardRange('today', now, '');
+    expect(utc.since.toISOString()).toBe('2026-10-28T00:00:00.000Z');
+  });
+  it('7d / 30d are whole company days including today; custom is [from 00:00, to + 1 day 00:00)', () => {
+    const now = new Date('2026-10-28T22:30:00Z');
+    expect(dashboardRange('7d', now, 'Asia/Beirut').since.toISOString()).toBe('2026-10-22T21:00:00.000Z'); // 23 Oct, UTC+3 (DST)
+    expect(dashboardRange('30d', now, 'Asia/Beirut').since.toISOString()).toBe('2026-09-29T21:00:00.000Z');
+    const c = dashboardRange('custom', now, 'Asia/Beirut', '2026-10-01', '2026-10-31');
+    expect(c.since.toISOString()).toBe('2026-09-30T21:00:00.000Z');
+    expect(c.until?.toISOString()).toBe('2026-10-31T22:00:00.000Z');
+  });
+});
+
+describe.skipIf(!hasTestDb)('Exports stream with bounded resources; dashboard has no invented quotas', () => {
+  let o: Agent;
+  /** A far-future day of its own per run, so reruns on one test DB never mix rows. */
+  const freshDay = () => new Date(Date.UTC(2040, 0, 1) + Math.floor(Math.random() * 20_000) * 86_400_000).toISOString().slice(0, 10);
+  // Archive the bulk rows afterwards: they would only slow other suites' unassigned-list walks.
+  afterAll(() => query(`UPDATE businesses SET archived_at = now() WHERE name LIKE 'Stream %' AND archived_at IS NULL`));
+  beforeAll(async () => {
+    o = await ownerAgent();
+    await query('UPDATE two_factor_factors SET last_used_step = NULL, failed_count = 0, locked_until = NULL WHERE employee_id = $1', [o.id]);
+    const r = await call(o, 'post', '/api/reports/export', { report: 'rep-4', format: 'json', totpCode: authenticator.generate(DEV_TOTP_SECRET) });
+    expect(r.status).toBe(200);
+  });
+
+  /** Businesses on a far-future day, so the export range isolates them from other suites' rows. */
+  async function seedDay(day: string, n: number) {
+    await query(
+      `INSERT INTO businesses (name, created_by, created_at)
+       SELECT 'Stream ' || $1 || ' ' || g || ' ' || $4, $2, ($1::date + time '12:00') AT TIME ZONE 'UTC' + make_interval(secs => g)
+         FROM generate_series(1, $3::int) g`,
+      [day, o.id, n, uniq()]
+    );
+  }
+
+  it('row cap: more rows than the cap → first rowCap rows, truncated flag, export record + audit; body equals the buffered CSV', async () => {
+    const day = freshDay();
+    await seedDay(day, EXPORT_LIMITS.rowCap + 5);
+    const r = await call(o, 'post', '/api/reports/export', { report: 'rep-4', format: 'csv', from: day, to: day });
+    expect(r.status).toBe(200);
+    expect(r.headers['x-export-truncated']).toBe('true');
+    expect(r.headers['x-export-row-count']).toBe(String(EXPORT_LIMITS.rowCap));
+    const expected = formatAsCsv(await queryExportRows(pool, 'rep-4', { from: day, to: day }, EXPORT_LIMITS.rowCap));
+    expect(r.text).toBe(expected);
+    expect(r.text.split('\r\n')).toHaveLength(EXPORT_LIMITS.rowCap + 1);
+    const { rows } = await query<{ row_count: number }>(
+      `SELECT row_count FROM export_records WHERE requested_by = $1 AND report_type = 'rep-4' ORDER BY created_at DESC LIMIT 1`,
+      [o.id]
+    );
+    expect(rows[0].row_count).toBe(EXPORT_LIMITS.rowCap);
+    const audit = await query<{ after: { truncated: boolean; rowCount: number } }>(
+      `SELECT after_state AS after FROM audit_events WHERE event_name = 'report.exported' AND actor_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [o.id]
+    );
+    expect(audit.rows[0].after).toMatchObject({ truncated: true, rowCount: EXPORT_LIMITS.rowCap });
+  });
+
+  it('under the cap: not truncated; JSON body equals the buffered JSON across several chunks', async () => {
+    const day = freshDay();
+    await seedDay(day, EXPORT_CHUNK_ROWS * 2 + 3);
+    const r = await call(o, 'post', '/api/reports/export', { report: 'rep-4', format: 'json', from: day, to: day });
+    expect(r.status).toBe(200);
+    expect(r.headers['x-export-truncated']).toBe('false');
+    expect(r.headers['x-export-row-count']).toBe(String(EXPORT_CHUNK_ROWS * 2 + 3));
+    const expected = JSON.stringify(await queryExportRows(pool, 'rep-4', { from: day, to: day }, 10_000), null, 2);
+    expect(r.text).toBe(expected);
+    const empty = await call(o, 'post', '/api/reports/export', { report: 'rep-4', format: 'json', from: '2039-12-31', to: '2039-12-31' });
+    expect(empty.text).toBe('[]');
+  });
+
+  it('dashboard: Owner-set targets only (no 500/12/200 quotas); open deals = every non-terminal stage', async () => {
+    const r = await call(o, 'get', '/api/dashboard?period=today');
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.targets.items)).toBe(true);
+    expect(r.body.targets).not.toHaveProperty('outreachProgress');
+    expect(typeof r.body.targets.scheduleConfigured).toBe('boolean');
+    const { rows } = await query<{ n: number }>(`SELECT count(*)::int AS n FROM deals WHERE stage NOT IN ('closed', 'not_proceeding')`);
+    expect(r.body.commercial.acceptedOpportunities).toBe(rows[0].n);
   });
 });

@@ -17,6 +17,9 @@ export type MatchClass = 'phone_exact' | 'name_branch_exact' | 'name_similar' | 
 /** Digits only. */
 const digits = (s: string) => s.replace(/\D+/g, '');
 
+/** E.164 country calling code as entered: optional `+`, first digit 1–9, at most 4 digits in total. */
+const COUNTRY_CODE = /^\+?[1-9]\d{0,3}$/;
+
 export interface NormalizedPhone {
   /** `+` followed by 8–15 digits. */
   normalized: string;
@@ -36,17 +39,25 @@ export function normalizePhone(countryCode: string | null | undefined, number: s
   const rawNumber = (number ?? '').trim();
   const display = rawNumber.replace(/\s+/g, ' ');
   if (!rawNumber || /[^\d\s().+-]/.test(rawNumber)) return { ok: false, reason: 'invalid' };
-  let cc = digits(countryCode ?? '');
+  // D11 (approved): valid numbers normalise to E.164. A country calling code never starts with 0 (so `+000`
+  // or `+0961` is rejected, never "normalised"), and a non-empty code must be `+` and 1–4 digits.
+  const rawCc = (countryCode ?? '').trim();
+  if (rawCc && !COUNTRY_CODE.test(rawCc.replace(/\s+/g, ''))) return { ok: false, reason: 'invalid' };
+  let cc = digits(rawCc);
   let national = digits(rawNumber);
   if (rawNumber.startsWith('+') || rawNumber.startsWith('00')) {
     // Fully international number: the prefix wins over the separate country-code field.
     const intl = rawNumber.startsWith('00') ? national.slice(2) : national;
-    if (intl.length < 8 || intl.length > 15) return { ok: false, reason: 'invalid' };
+    if (intl.length < 8 || intl.length > 15 || intl.startsWith('0')) return { ok: false, reason: 'invalid' };
     return { ok: true, phone: { normalized: `+${intl}`, countryCode: cc ? `+${cc}` : '', number: display } };
   }
-  if (!cc) cc = digits(defaultCountryCode ?? '');
-  if (!cc) return { ok: false, reason: 'no_country_code' };
-  if (cc.length > 4) return { ok: false, reason: 'invalid' };
+  if (!cc) {
+    // The company default applies only once the Owner has set it (no assumed country code, D11).
+    const def = (defaultCountryCode ?? '').trim();
+    if (!def) return { ok: false, reason: 'no_country_code' };
+    if (!COUNTRY_CODE.test(def.replace(/\s+/g, ''))) return { ok: false, reason: 'invalid' };
+    cc = digits(def);
+  }
   national = national.replace(/^0+/, '');
   const all = cc + national;
   if (national.length < 4 || all.length < 8 || all.length > 15) return { ok: false, reason: 'invalid' };

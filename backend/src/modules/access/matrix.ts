@@ -67,9 +67,9 @@ export const AUTHZ_MATRIX: Readonly<Record<string, MatrixRow>> = Object.freeze({
   'profile.update': row('3.2', ALL, 'Own; DEMO OQ-13'),
   'role.list': row('3.2', [O], 'List system and custom roles', true),
   'role.read': row('3.2', [O], 'Read role details and permissions', true),
-  'role.create': row('3.2', [O], 'Create custom role with permissions', true),
-  'role.update': row('3.2', [O], 'Update custom role and permissions', true),
-  'role.delete': row('3.2', [O], 'Delete custom role', true),
+  'role.create': row('3.2', [], 'Fixed v1 scope (approved 2026-10-29): no custom-role management'),
+  'role.update': row('3.2', [], 'Fixed v1 scope (approved 2026-10-29): no custom-role management'),
+  'role.delete': row('3.2', [], 'Fixed v1 scope (approved 2026-10-29): no custom-role management'),
   'permission.list': row('3.2', [O], 'List available system permissions', true),
 
   // §3.3 attendance
@@ -84,9 +84,11 @@ export const AUTHZ_MATRIX: Readonly<Record<string, MatrixRow>> = Object.freeze({
   'attendance.failed_checkout.review': grantableRow('3.3', 'DEMO attendance.failedCheckout; §3.11 grantable'),
   'attendance.overview.read': grantableRow('3.3', 'OWN-004 monitoring; BL-06 (BE1-R4); §3.11 grantable (read)'),
   'attendance.remote_exception.request': row('3.3', ALL, 'Own; DEMO DEC-010 attendance.remoteSelfRequest; BL-06 (BE1-R4)'),
-  'attendance.break.start': row('3.3', ALL, 'Own; start attendance break'),
-  'attendance.break.end': row('3.3', ALL, 'Own; end attendance break'),
-  'attendance.break.read': row('3.3', ALL, 'Owner all, others own'),
+  // Fixed v1 scope (approved 2026-10-29): no break tracking. Action ids kept, granted to nobody.
+  'attendance.break.start': row('3.3', [], 'Fixed v1 scope: no break tracking'),
+  'attendance.break.end': row('3.3', [], 'Fixed v1 scope: no break tracking'),
+  'attendance.break.read': row('3.3', [], 'Fixed v1 scope: no break tracking'),
+  'attendance.days_off.manage': row('3.3', [O], 'D1 approved employee days off (create/list/cancel)', true),
 
   // §3.4 business directory
   'business.list': row('3.4', ALL, 'scopeFilter; CC Asg; DV Ctx row 2 list only'),
@@ -94,6 +96,7 @@ export const AUTHZ_MATRIX: Readonly<Record<string, MatrixRow>> = Object.freeze({
   'business.read': row('3.4', ALL, 'DE §2.1–2.2; CC Asg (+ rows 1, 5); DV Ctx (rows 1–4)'),
   'business.create': row('3.4', [O, DE], 'Duplicate block is mandatory'),
   'business.duplicate_check': row('3.4', [O, DE], 'Rate-limited; DEMO DEC-003 (i), DEC-013'),
+  'business.duplicate_review_request': row('3.4', [DE], 'D10 Request Owner review of a blocking duplicate; audited; grants no access'),
   'business.update': row('3.4', [O, DE], 'Version check; DE Ctx row 6 apply only'),
   'business.archive': row('3.4', [O], 'DEMO C-01', true),
   'business.restore': row('3.4', [O], 'DEMO C-01', true),
@@ -136,10 +139,10 @@ export const AUTHZ_MATRIX: Readonly<Record<string, MatrixRow>> = Object.freeze({
   'follow_up.cancel': row('3.7', [O, CC]),
   'follow_up.read': row('3.7', [O, CC], 'Own responsibility'),
   'call_attempt.list_do_not_call': row('3.7', [O, CC], 'CC-008; CC Asg (scopeFilter); BL-06 (BE3-R5)'),
-  'call_attempt.list_opportunities': row('3.7', [O, CC], 'CC-007; CC Asg (scopeFilter); BL-06 (BE3-R5)'),
+  'call_attempt.list_opportunities': row('3.7', [O], 'CC-007; D15 (approved): accepted opportunities are the assigned Developer and the Owner only'),
 
   // §3.8 deals, meetings, projects, tasks
-  'deal.read': row('3.8', [O, CC, DV], 'CC row 1; DV assigned only (DEMO DEC-005)'),
+  'deal.read': row('3.8', [O, DV], 'D15 (approved): assigned Developer + Owner only; CC has no deal access'),
   'deal.list_closed': row('3.8', [O, DV], 'Company-wide, row 2'),
   'deal.assign_developer': row('3.8', [O, CC], 'Row 1 (E2)'),
   'deal.update_stage': row('3.8', [O, DV], 'Assigned DV; DEMO OQ-03'),

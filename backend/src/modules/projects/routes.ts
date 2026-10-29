@@ -12,6 +12,7 @@ import { auditOwnerHiddenRead } from '../access/schemas.js';
 import { idempotent } from '../platform/idempotency.js';
 import {
   AssignProjectDevelopersBody,
+  CancelProjectBody,
   CreateProjectBody,
   CreateTaskBody,
   IdParam,
@@ -87,6 +88,18 @@ router.post('/:id/reopen', authenticate, requireAction('project.reopen_completed
     const { id } = IdParam.parse(req.params);
     const body = ReopenProjectBody.parse(req.body);
     res.json({ project: await runCommand(req, (ctx) => service.reopenProject(ctx, id, body)) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// D17: the Owner cancels with a reason. No matrix row yet: gated by the Owner-only `project.reopen_completed`
+// (admin, 2FA; the nearest Owner lifecycle action) and narrowed to the Owner in the service.
+router.post('/:id/cancel', authenticate, requireAction('project.reopen_completed'), idempotent('project.cancel', { required: false }), async (req, res, next) => {
+  try {
+    const { id } = IdParam.parse(req.params);
+    const body = CancelProjectBody.parse(req.body);
+    res.json({ project: await runCommand(req, (ctx) => service.cancelProject(ctx, id, body)) });
   } catch (e) {
     next(e);
   }

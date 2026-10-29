@@ -4,11 +4,25 @@
  */
 import type { Request } from 'express';
 import { type Queryable } from '../../db/pool.js';
-import { notFound, versionConflict } from '../../shared/errors.js';
+import { HttpError, notFound, ruleViolation, versionConflict } from '../../shared/errors.js';
+import { isValidDate } from '../attendance/time.js';
+import { computeProgress, derivePeriodEnd, isMonday, progressContext, type ProgressContext } from './progress.js';
 import { access, type Action, type Principal } from '../../shared/access.js';
 import { runCommand, audit } from '../../shared/tx.js';
 import * as repo from './repo.js';
 import type { CreateTargetInput, CreateWorkItemInput, TargetDto, UpdateTargetInput, UpdateWorkItemInput, WorkItemDto } from './schemas.js';
+
+/** D7: fill `currentValue` (+ note) from the actor columns. Sequential: `db` may be a transaction client. */
+export async function withProgress(db: Queryable, items: TargetDto[], pctx?: ProgressContext): Promise<TargetDto[]> {
+  if (items.length === 0) return items;
+  const c = pctx ?? (await progressContext(db));
+  const out: TargetDto[] = [];
+  for (const t of items) {
+    const p = await computeProgress(db, c, t);
+    out.push({ ...t, currentValue: p.value, progressNote: p.note });
+  }
+  return out;
+}
 
 export async function listTargets(
   db: Queryable,
@@ -16,7 +30,8 @@ export async function listTargets(
   options: { employeeId?: string; limit?: number; offset?: number } = {}
 ): Promise<{ items: TargetDto[]; total: number }> {
   const targetEmployeeId = principal.role === 'owner' ? options.employeeId : principal.employeeId;
-  return repo.listTargets(db, { ...options, employeeId: targetEmployeeId });
+  const page = await repo.listTargets(db, { ...options, employeeId: targetEmployeeId });
+  return { items: await withProgress(db, page.items), total: page.total };
 }
 
 export async function getTarget(db: Queryable, principal: Principal, id: string): Promise<TargetDto> {
@@ -25,12 +40,35 @@ export async function getTarget(db: Queryable, principal: Principal, id: string)
   if (principal.role !== 'owner' && item.employeeId !== principal.employeeId) {
     throw notFound();
   }
-  return item;
+  return (await withProgress(db, [item]))[0];
+}
+
+const fieldError = (field: string, message: string) => new HttpError(400, 'VALIDATION_ERROR', 'Validation failed', { [field]: [message] });
+
+/**
+ * D7 period rules: weekly starts on a Monday and ends on the Sunday (start + 6, company timezone);
+ * the end date is derived on the server and, when sent, must match. A period that has already ended
+ * (end date before company-timezone today) cannot be targeted: no retroactive targets.
+ */
+function resolvePeriod(input: CreateTargetInput, today: string): string {
+  if (!isValidDate(input.startDate)) throw fieldError('startDate', 'Use a valid date (YYYY-MM-DD)');
+  if (input.period === 'weekly' && !isMonday(input.startDate)) {
+    throw fieldError('startDate', 'Weekly targets run Monday to Sunday: start on a Monday');
+  }
+  const end = derivePeriodEnd(input.startDate, input.period);
+  if (input.endDate !== undefined && input.endDate !== end) {
+    throw fieldError('endDate', `The ${input.period} period starting ${input.startDate} ends on ${end}`);
+  }
+  if (end < today) throw ruleViolation('This period has already ended; targets are not set retroactively', { field: 'startDate' });
+  return end;
 }
 
 export async function createTarget(req: Request, input: CreateTargetInput): Promise<TargetDto> {
   return runCommand(req, async (ctx) => {
-    const target = await repo.insertTarget(ctx.tx, input);
+    const pctx = await progressContext(ctx.tx);
+    const endDate = resolvePeriod(input, pctx.today);
+    const created = await repo.insertTarget(ctx.tx, { ...input, endDate });
+    const [target] = await withProgress(ctx.tx, [created], pctx);
     await audit(ctx, {
       eventName: 'target.assigned',
       entityType: 'target',
@@ -53,6 +91,15 @@ export async function updateTarget(req: Request, id: string, input: UpdateTarget
   return runCommand(req, async (ctx) => {
     const before = await repo.getTargetById(ctx.tx, id);
     if (!before) throw notFound();
+    // D7: no retroactive changes. A period that has ended is closed; the current period's change
+    // applies from today on and is recorded in the audit trail (no separate history table exists).
+    const pctx = await progressContext(ctx.tx);
+    if (before.endDate < pctx.today) {
+      throw ruleViolation('This target period has ended; past targets cannot be changed', { endDate: before.endDate });
+    }
+    if (input.period !== undefined && input.period !== before.period) {
+      throw ruleViolation('The period of a target cannot change; create a new target for another period', { field: 'period' });
+    }
 
     const res = await repo.updateTarget(ctx.tx, id, input);
     if (res.conflict) {
@@ -61,6 +108,7 @@ export async function updateTarget(req: Request, id: string, input: UpdateTarget
       throw versionConflict(res.currentVersion ?? current.version, current);
     }
     if (!res.target) throw notFound();
+    const [target] = await withProgress(ctx.tx, [res.target], pctx);
 
     await audit(ctx, {
       eventName: 'target.updated',
@@ -68,21 +116,20 @@ export async function updateTarget(req: Request, id: string, input: UpdateTarget
       entityId: id,
       before: {
         targetValue: before.targetValue,
-        currentValue: before.currentValue,
         period: before.period,
         territory: before.territory,
         version: before.version,
       },
       after: {
-        targetValue: res.target.targetValue,
-        currentValue: res.target.currentValue,
-        period: res.target.period,
-        territory: res.target.territory,
-        version: res.target.version,
+        targetValue: target.targetValue,
+        period: target.period,
+        territory: target.territory,
+        version: target.version,
+        effectiveFrom: before.startDate > pctx.today ? before.startDate : pctx.today,
       },
     });
 
-    return res.target;
+    return target;
   });
 }
 

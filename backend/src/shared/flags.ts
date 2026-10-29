@@ -131,7 +131,7 @@ export const POLICY_FLAGS = {
   'auth.rateLimitMax': int('IMPL-LOCKOUT', 'AUTH_RATE_LIMIT_MAX', 'CFG', 'BE1', 20, 1),
   'auth.rateLimitWindowMinutes': int('IMPL-LOCKOUT', 'AUTH_RATE_LIMIT_WINDOW_MINUTES', 'CFG', 'BE1', 15, 1),
   'auth.passwordMinLength': int('IMPL-PASSWORD', 'PASSWORD_MIN_LENGTH', 'CFG', 'BE1', 12, 8),
-  'auth.passwordResetTtlMinutes': int('IMPL-PASSWORD', 'PASSWORD_RESET_TTL_MINUTES', 'CFG', 'BE1', 60, 5),
+  'auth.passwordResetTtlMinutes': int('IMPL-PASSWORD', 'PASSWORD_RESET_TTL_MINUTES', 'CFG', 'BE1', 30, 5),
   'auth.recoveryCodeCount': int('OQ-12/IMPL-2FA', 'POLICY_AUTH_RECOVERY_CODE_COUNT', 'CFG', 'BE1', 10, 1),
 
   // --- Company values (BE1, SCR-OWN-011) ------------------------------------------------------
@@ -143,30 +143,37 @@ export const POLICY_FLAGS = {
 
   // --- Attendance (BE1) -----------------------------------------------------------------------
   'attendance.workingDays': list('DEC-007/DEC-022', 'POLICY_ATTENDANCE_WORKING_DAYS', 'SET', 'BE1', ['MON', 'TUE', 'WED', 'THU', 'FRI']),
+  // D1 (approved 2026-10-29): working days / start / timezone / office IPs / holidays are only pre-fill
+  // suggestions here; attendance enforcement starts only after the Owner saves a complete settings
+  // version. Shift end is derived (start + 9 h): POLICY_ATTENDANCE_SHIFT_END is removed.
   'attendance.shiftStart': str('DEC-007', 'POLICY_ATTENDANCE_SHIFT_START', 'SET', 'BE1', '09:00'),
-  'attendance.shiftEnd': str('DEC-007', 'POLICY_ATTENDANCE_SHIFT_END', 'SET', 'BE1', '18:00'),
   'attendance.graceMinutes': int('DEC-008', 'POLICY_ATTENDANCE_GRACE_MINUTES', 'SET', 'BE1', 10),
-  'attendance.verificationMode': oneOf('DEC-009', 'POLICY_ATTENDANCE_VERIFICATION_MODE', 'SET', 'BE1',
-    ['ip', 'geofence', 'ipOrLocation', 'ipAndLocation', 'disabled'] as const, 'ip'),
+  // D2: the IP/CIDR allowlist is the only office check; `disabled` and the location modes fail at startup.
+  'attendance.verificationMode': oneOf('DEC-009/D2', 'POLICY_ATTENDANCE_VERIFICATION_MODE', 'SET', 'BE1', ['ip'] as const, 'ip'),
   'attendance.officeIps': list('DEC-009/VAL-IP', 'POLICY_ATTENDANCE_OFFICE_IPS', 'SET', 'BE1', [], true),
   'attendance.holidays': list('DEC-022/VAL-HOLIDAYS', 'POLICY_ATTENDANCE_HOLIDAYS', 'SET', 'BE1', [], true),
   'attendance.remoteSelfRequest': bool('DEC-010', 'POLICY_ATTENDANCE_REMOTE_SELF_REQUEST', 'FLAG', 'BE1', false),
   'attendance.employeeRequests': bool('DEC-011', 'POLICY_ATTENDANCE_EMPLOYEE_REQUESTS', 'FLAG', 'BE1', true),
-  'attendance.summaryRequired': bool('DEC-012', 'POLICY_ATTENDANCE_SUMMARY_REQUIRED', 'SET', 'BE1', true),
-  'attendance.summaryMinLength': int('DEC-012', 'POLICY_ATTENDANCE_SUMMARY_MIN_LENGTH', 'SET', 'BE1', 10),
-  'attendance.failedCheckout': oneOf('DEC-026', 'POLICY_ATTENDANCE_FAILED_CHECKOUT', 'FLAG', 'BE1',
-    ['provisional', 'block', 'hold'] as const, 'provisional'),
+  // D6: the checkout summary is pinned (required, 10 non-whitespace characters); POLICY_ATTENDANCE_SUMMARY_*
+  // are removed. D5: a failed-office-check checkout closes provisionally; `block`/`hold` fail at startup.
+  'attendance.failedCheckout': oneOf('DEC-026/D5', 'POLICY_ATTENDANCE_FAILED_CHECKOUT', 'FLAG', 'BE1', ['provisional'] as const, 'provisional'),
+  // Fixed v1 scope "no break tracking": break routes 404 and the timer is hidden unless this is true.
+  'attendance.breaksEnabled': bool('V1-SCOPE', 'POLICY_ATTENDANCE_BREAKS_ENABLED', 'CFG', 'BE1', false),
   // FX-BE breaks (user decision 2026-10-28): allowance per session and a cap on break count.
   'attendance.breakAllowanceMinutes': int('ATT-BREAKS', 'POLICY_ATTENDANCE_BREAK_ALLOWANCE_MINUTES', 'SET', 'BE1', 60, 0),
   'attendance.maxBreaksPerSession': int('ATT-BREAKS', 'POLICY_ATTENDANCE_MAX_BREAKS_PER_SESSION', 'SET', 'BE1', 10, 1),
   'attendance.missingCheckoutFlagHours': int('D5', 'POLICY_ATTENDANCE_MISSING_CHECKOUT_FLAG_HOURS', 'SET', 'BE1', 6),
 
   // --- Work / targets (BE1) -------------------------------------------------------------------
-  'work.autofillPerAgentPerDay': int('DEC-021', 'POLICY_WORK_AUTOFILL_PER_AGENT_PER_DAY', 'SET', 'BE1', 40, 1),
-  'work.autofillScheduled': bool('DEC-021', 'POLICY_WORK_AUTOFILL_SCHEDULED', 'SET', 'BE1', false),
+  // D8 (policy baseline 2026-10-29): queue cap = current eligible assigned businesses per agent (not a
+  // per-day count, not a quota). Replaces work.autofillPerAgentPerDay; a value an Owner saved under the
+  // old key is still read by MOD-assignment as a fallback. No scheduled auto-fill in v1 (flag removed).
+  'work.autofillQueueCap': int('D8', 'POLICY_WORK_AUTOFILL_QUEUE_CAP', 'SET', 'BE1', 40, 1),
 
   // --- Visibility / access (BE2) --------------------------------------------------------------
-  'visibility.timerBasis': oneOf('DEC-001', 'POLICY_VISIBILITY_TIMER_BASIS', 'FLAG', 'BE2', ['creation', 'inactivity'] as const, 'creation'),
+  // D9 (approved 2026-10-29): 15 elapsed days from creation / assignment; interactions never reset it. The DEC-001
+  // `inactivity` basis is retired: setting it fails at startup (ConfigError) instead of silently changing access.
+  'visibility.timerBasis': oneOf('DEC-001/D9', 'POLICY_VISIBILITY_TIMER_BASIS', 'FLAG', 'BE2', ['creation'] as const, 'creation'),
   'visibility.dec002Rows': list('DEC-002', 'POLICY_VISIBILITY_DEC002_ROWS', 'CFG', 'BE2', ['R1', 'R2', 'R3', 'R4', 'R5', 'R6']),
   'visibility.callbackGraceHours': int('DEC-002 row 5', 'POLICY_VISIBILITY_CALLBACK_GRACE_HOURS', 'CFG', 'BE2', 48),
   'visibility.completedProjectDays': int('DEC-002 row 4/OI-18', 'POLICY_VISIBILITY_COMPLETED_PROJECT_DAYS', 'CFG', 'BE2', 15),
@@ -175,7 +182,8 @@ export const POLICY_FLAGS = {
 
   // --- Businesses (BE2) -----------------------------------------------------------------------
   'duplicates.nameSimilarityThreshold': num('DEC-013', 'POLICY_DUPLICATES_NAME_SIMILARITY_THRESHOLD', 'SET', 'BE2', 0.6),
-  'categories.dataEntryManage': bool('DEC-015', 'POLICY_CATEGORIES_DATA_ENTRY_MANAGE', 'FLAG', 'BE2', false),
+  // D12 (approved 2026-10-29): category management is Owner only; the DEC-015 `categories.dataEntryManage` toggle
+  // (POLICY_CATEGORIES_DATA_ENTRY_MANAGE) is removed: a future delegation needs an explicit policy change.
   'social.platforms': list('DEC-024', 'POLICY_SOCIAL_PLATFORMS', 'SET', 'BE2', ['facebook', 'instagram', 'tiktok', 'linkedin', 'x', 'youtube', 'other']),
 
   // --- Calling (BE3) --------------------------------------------------------------------------
@@ -194,7 +202,8 @@ export const POLICY_FLAGS = {
 
   // --- Deals / projects (BE4) -----------------------------------------------------------------
   'deals.developerPreClosure': oneOf('DEC-005', 'POLICY_DEALS_DEVELOPER_PRE_CLOSURE', 'FLAG', 'BE4', ['assigned', 'closedOnly'] as const, 'assigned'),
-  'deals.closureMode': oneOf('DEC-006', 'POLICY_DEALS_CLOSURE_MODE', 'FLAG', 'BE4', ['ownerVerify', 'direct'] as const, 'ownerVerify'),
+  // D16 (approved 2026-10-29): only Owner verification closes a deal; the Developer-finalizes `direct` mode is retired.
+  'deals.closureMode': oneOf('DEC-006/D16', 'POLICY_DEALS_CLOSURE_MODE', 'FLAG', 'BE4', ['ownerVerify'] as const, 'ownerVerify'),
   // OQ-15 (unresolved), ORCH-2 item 2: where Owner "Reopen" sends a Not proceeding deal.
   'deals.reopenTarget': oneOf('OQ-15', 'POLICY_DEALS_REOPEN_TARGET', 'FLAG', 'BE4',
     ['accepted_opportunity', 'previous_stage'] as const, 'accepted_opportunity'),

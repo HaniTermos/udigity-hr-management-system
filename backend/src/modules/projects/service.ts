@@ -40,6 +40,7 @@ import {
 import * as repo from './repo.js';
 import type { ProjectRow, TaskRow } from './repo.js';
 import {
+  FINAL_PROJECT_STATUSES,
   NOTE_REQUIRED_STATUSES,
   OPEN_TASK_STATUSES,
   OPEN_TASK_WARNING_TARGETS,
@@ -89,6 +90,10 @@ export async function projectInfoForDeals(db: Queryable, dealIds: string[]): Pro
 // Helpers
 // ---------------------------------------------------------------------------
 const today = () => new Date().toISOString().slice(0, 10);
+
+/** Completed or Cancelled: read-only (D17). */
+const isFinal = (s: ProjectStatus) => FINAL_PROJECT_STATUSES.includes(s);
+const READ_ONLY = 'A completed or cancelled project is read-only';
 
 async function developersOf(db: Queryable, projectId: string): Promise<string[]> {
   return (await repo.currentDevelopers(db, [projectId])).get(projectId) ?? [];
@@ -170,6 +175,7 @@ async function toProjectDtos(db: Queryable, viewer: Principal, rows: ProjectRow[
     const work = mayWork(viewer, developerIds);
     const owner = viewer.role === 'owner';
     const completed = r.status === 'completed';
+    const final = isFinal(r.status);
     return {
       id: r.id,
       code: r.code,
@@ -185,19 +191,22 @@ async function toProjectDtos(db: Queryable, viewer: Principal, rows: ProjectRow[
       targetDate: r.target_date,
       deliveredAt: iso(r.delivered_at),
       completedAt: iso(r.completed_at),
+      cancelReason: r.cancel_reason,
+      cancelledAt: iso(r.cancelled_at),
       provisionedBy: r.provisioned_by,
       developers: developerIds.map((id) => ({ id, fullName: names.get(id) ?? '' })),
       assignedToMe: developerIds.includes(viewer.employeeId),
-      deliveryOverdue: Boolean(r.target_date && r.target_date < now && r.status !== 'delivered' && !completed),
-      readOnly: completed,
+      deliveryOverdue: Boolean(r.target_date && r.target_date < now && r.status !== 'delivered' && !final),
+      readOnly: final,
       taskCounts: counts.get(r.id) ?? { total: 0, open: 0, done: 0, cancelled: 0 },
-      allowedNextStatuses: work && !completed ? [...PROJECT_TRANSITIONS[r.status]] : [],
+      allowedNextStatuses: work && !final ? [...PROJECT_TRANSITIONS[r.status]] : [],
       allowed: {
-        changeStatus: work && !completed,
-        editSchedule: work && !completed,
-        assignDevelopers: owner && !completed,
+        changeStatus: work && !final,
+        editSchedule: work && !final,
+        assignDevelopers: owner && !final,
         reopen: owner && completed,
-        createTask: work && !completed,
+        cancel: owner && !final,
+        createTask: work && !final,
       },
       createdAt: iso(r.created_at)!,
       updatedAt: iso(r.updated_at)!,
@@ -264,7 +273,7 @@ export async function listProjects(db: Queryable, viewer: Principal, q: ProjectL
   if (q.dealId) where.push(`p.deal_id = ${params.add(q.dealId)}::uuid`);
   if (q.developerId) where.push(assignedTo(params, q.developerId));
   if (q.scope === 'assigned_to_me') where.push(assignedTo(params, viewer.employeeId));
-  if (q.overdueOnly) where.push(`p.status NOT IN ('delivered','completed') AND p.target_date < ${params.add(today())}::date`);
+  if (q.overdueOnly) where.push(`p.status NOT IN ('delivered','completed','cancelled') AND p.target_date < ${params.add(today())}::date`);
   if (viewer.role === 'developer') where.push(assignedTo(params, viewer.employeeId));
   where.push(access.scopeFilter(viewer, 'project.read', 'project', { alias: 'p', params }));
   const listParams = new SqlParams();
@@ -328,7 +337,7 @@ export async function listTasks(db: Queryable, viewer: Principal, projectId: str
   if (viewer.role === 'developer' && !developerIds.includes(viewer.employeeId)) throw permissionDenied();
   const tasks = await repo.tasksForProject(db, projectId, status);
   const names = await employeeNames(db, tasks.map((t) => t.owner_id));
-  const editable = mayWork(viewer, developerIds) && r.status !== 'completed';
+  const editable = mayWork(viewer, developerIds) && !isFinal(r.status);
   return { items: tasks.map((t) => taskDto(t, names, editable)) };
 }
 
@@ -346,7 +355,7 @@ export async function openItemsFor(db: Queryable, employeeId: string): Promise<{
   const { rows } = await db.query<{ projects: string; tasks: string }>(
     `SELECT
        (SELECT COUNT(*) FROM project_developer_assignments pda JOIN projects p ON p.id = pda.project_id
-         WHERE pda.developer_id = $1 AND pda.unassigned_at IS NULL AND p.status <> 'completed')::text AS projects,
+         WHERE pda.developer_id = $1 AND pda.unassigned_at IS NULL AND p.status NOT IN ('completed','cancelled'))::text AS projects,
        (SELECT COUNT(*) FROM tasks t WHERE t.owner_id = $1 AND t.status IN ('todo','in_progress'))::text AS tasks`,
     [employeeId]
   );
@@ -363,7 +372,7 @@ export async function openItemsForMany(
   const projects = await db.query<{ id: string; n: string }>(
     `SELECT pda.developer_id AS id, COUNT(*)::text AS n
      FROM project_developer_assignments pda JOIN projects p ON p.id = pda.project_id
-     WHERE pda.developer_id = ANY($1::uuid[]) AND pda.unassigned_at IS NULL AND p.status <> 'completed'
+     WHERE pda.developer_id = ANY($1::uuid[]) AND pda.unassigned_at IS NULL AND p.status NOT IN ('completed','cancelled')
      GROUP BY pda.developer_id`,
     [employeeIds]
   );
@@ -548,7 +557,7 @@ export async function updateProject(
   body: { version: number; name?: string; startDate?: string | null; targetDate?: string | null }
 ): Promise<ProjectDetailDto> {
   const { project } = await lockProject(ctx, id, 'project.update_status');
-  if (project.status === 'completed') throw stateConflict('A completed project is read-only');
+  if (isFinal(project.status)) throw stateConflict(READ_ONLY);
   const set: Partial<Record<repo.ProjectColumn, unknown>> = {};
   if (body.name !== undefined && body.name !== project.name) set.name = body.name;
   if (body.startDate !== undefined && body.startDate !== project.start_date) set.start_date = body.startDate;
@@ -583,6 +592,8 @@ export async function changeProjectStatus(
   const noteRequired = NOTE_REQUIRED_STATUSES.includes(body.to);
   if (from === body.to && (!noteRequired || body.note === project.status_note)) return detailFor(ctx, project); // no-op
   if (from === 'completed') throw stateConflict('A completed project is read-only; the Owner can reopen it');
+  if (from === 'cancelled') throw stateConflict('A cancelled project is final');
+  if (body.to === 'cancelled') throw stateConflict('Only the Owner cancels a project, with a reason');
   const allowed = from === body.to ? [from] : PROJECT_TRANSITIONS[from];
   if (!allowed.includes(body.to)) throw stateConflict(`Cannot move from ${from} to ${body.to}`, { from, to: body.to, allowed: PROJECT_TRANSITIONS[from] });
   await assertProjectVersion(ctx, project, body.version);
@@ -646,11 +657,42 @@ export async function reopenProject(ctx: CommandContext, id: string, body: { ver
   return detailFor(ctx, next);
 }
 
+/**
+ * POST /api/projects/:id/cancel — Owner, reason required (D17). Any non-final status → Cancelled (final).
+ * History is preserved: the project row, its tasks and the deal are kept; one `status_changed` change
+ * (after.cancelled = true) and the `project.cancelled` audit event record it.
+ */
+export async function cancelProject(ctx: CommandContext, id: string, body: { version: number; reason: string }): Promise<ProjectDetailDto> {
+  requireOwner(ctx);
+  const { project } = await lockProject(ctx, id, 'project.reopen_completed');
+  if (project.status === 'cancelled') return detailFor(ctx, project); // already cancelled: no-op
+  if (project.status === 'completed') throw stateConflict('A completed project cannot be cancelled');
+  await assertProjectVersion(ctx, project, body.version);
+  const next = await saveProject(ctx, project, {
+    status: 'cancelled',
+    status_note: null,
+    cancel_reason: body.reason,
+    cancelled_at: ctx.now,
+    cancelled_by_id: actorIdOf(ctx),
+  });
+  await repo.insertChange(ctx.tx, {
+    projectId: id,
+    type: 'status_changed',
+    before: { status: project.status, note: project.status_note },
+    after: { status: 'cancelled', cancelled: true },
+    note: body.reason,
+    actorId: actorIdOf(ctx),
+    now: ctx.now,
+  });
+  await audit(ctx, { eventName: 'project.cancelled', entityType: 'project', entityId: id, before: { status: project.status }, after: { status: 'cancelled' }, reason: body.reason });
+  return detailFor(ctx, next);
+}
+
 /** POST /api/projects/:id/developers — Owner sets the current Developer set (OQ-07/08). */
 export async function setProjectDevelopers(ctx: CommandContext, id: string, body: { version: number; developerIds: string[] }): Promise<ProjectDetailDto> {
   requireOwner(ctx);
   const { project, developerIds } = await lockProject(ctx, id, 'project.assign_developers');
-  if (project.status === 'completed') throw stateConflict('A completed project is read-only');
+  if (isFinal(project.status)) throw stateConflict(READ_ONLY);
   const wanted = [...new Set(body.developerIds)];
   const add = wanted.filter((d) => !developerIds.includes(d));
   const remove = developerIds.filter((d) => !wanted.includes(d));
@@ -688,7 +730,7 @@ export async function createTask(
   }
 ): Promise<TaskDto> {
   const { project } = await lockProject(ctx, body.projectId, 'task.create');
-  if (project.status === 'completed') throw stateConflict('A completed project is read-only');
+  if (isFinal(project.status)) throw stateConflict(READ_ONLY);
   if (body.ownerId) await assertActiveEmployee(ctx.tx, body.ownerId, 'ownerId');
   const t = await repo.insertTask(ctx.tx, {
     projectId: project.id,
@@ -731,7 +773,7 @@ export async function updateTask(
   if (!t) throw notFound();
   await authorize(ctx, body.status === 'done' ? 'task.complete' : 'task.update', { type: 'task', id });
   const { project } = await lockProject(ctx, t.project_id, 'task.update');
-  if (project.status === 'completed') throw stateConflict('A completed project is read-only');
+  if (isFinal(project.status)) throw stateConflict(READ_ONLY);
   const set: Partial<Record<repo.TaskColumn, unknown>> = {};
   const fields: [keyof typeof body, repo.TaskColumn, unknown][] = [
     ['title', 'title', t.title],

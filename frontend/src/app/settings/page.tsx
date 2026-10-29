@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState } from 'react';
-import Link from 'next/link';
 import { AppShell } from '@/components/layout/AppShell';
 import { ApiErrorView } from '@/components/states/ApiErrorView';
 import { EnrollmentTokenPanel } from '@/components/owner/EnrollmentTokenPanel';
@@ -10,7 +9,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
-import { Input, Select } from '@/components/ui/Input';
+import { Checkbox, Input, Select } from '@/components/ui/Input';
 import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { Skeleton } from '@/components/ui/State';
 import { Tabs } from '@/components/ui/Tabs';
@@ -58,6 +57,14 @@ const COMMON_TIMEZONES = [
   { value: 'America/New_York', label: 'America/New York (EST / EDT)' },
   { value: 'America/Los_Angeles', label: 'America/Los Angeles (PST / PDT)' },
 ];
+
+/** D1: shift end = start + 9 h (display only; the server derives it the same way). */
+function shiftEndOf(start: string): string {
+  const m = /^(\d{2}):(\d{2})$/.exec(start);
+  if (!m) return '';
+  const t = (Number(m[1]) * 60 + Number(m[2]) + 9 * 60) % 1440;
+  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+}
 
 function saveErrorText(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
@@ -156,11 +163,13 @@ function AttendanceForm({
   const c = data.current;
   const [workingDays, setWorkingDays] = useState<WeekdayCode[]>(c.workingDays ?? []);
   const [shiftStart, setShiftStart] = useState(c.shiftStart ?? '');
-  const [shiftEnd, setShiftEnd] = useState(c.shiftEnd ?? '');
   const [graceMinutes, setGraceMinutes] = useState(String(c.graceMinutes ?? 0));
   const [timezone, setTimezone] = useState(c.timezone ?? '');
-  const [verificationMode, setVerificationMode] = useState(c.verificationMode === 'ip' ? 'ip' : 'disabled');
   const [officeIps, setOfficeIps] = useState((c.officeIps ?? []).join(', '));
+  const [officeHostnames, setOfficeHostnames] = useState((c.officeHostnames ?? []).join(', '));
+  // D1: the Owner states the holiday list (possibly empty) and confirms it; nothing is assumed.
+  const [holidays, setHolidays] = useState((c.holidays ?? []).join(', '));
+  const [holidaysConfirmed, setHolidaysConfirmed] = useState(Boolean(c.holidaysConfirmed));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
@@ -170,14 +179,19 @@ function AttendanceForm({
   const toggleDay = (d: WeekdayCode) => setWorkingDays((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]));
 
   const grace = Number(graceMinutes);
+  const shiftEnd = shiftEndOf(shiftStart);
   const problems: string[] = [];
   if (workingDays.length === 0) problems.push('Choose at least one working day.');
-  if (!shiftStart || !shiftEnd) problems.push('Set the shift start and end.');
-  else if (shiftEnd <= shiftStart) problems.push('Shift end must be after shift start.');
+  if (!shiftStart) problems.push('Set the shift start.');
   if (!Number.isInteger(grace) || grace < 0 || grace > 240) problems.push('Grace period must be a whole number from 0 to 240.');
   if (!timezone) problems.push('Choose the company timezone.');
   const ips = officeIps.split(',').map((s) => s.trim()).filter(Boolean);
-  if (verificationMode === 'ip' && ips.length === 0) problems.push('Add at least one office IP address for IP verification.');
+  const hosts = officeHostnames.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (ips.length === 0 && hosts.length === 0) problems.push('Add an office public IP / CIDR range or the dynamic DNS name of the office router.');
+  if (hosts.length > 5) problems.push('At most 5 office hostnames.');
+  const holidayList = holidays.split(',').map((s) => s.trim()).filter(Boolean);
+  if (holidayList.some((d) => !/^\d{4}-\d{2}-\d{2}$/.test(d))) problems.push('Write holidays as YYYY-MM-DD, separated by commas.');
+  if (!holidaysConfirmed) problems.push('Confirm the holiday calendar (it may be empty).');
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -186,16 +200,18 @@ function AttendanceForm({
     setError(null);
     setConflict(false);
     try {
-      // Only the fields this form edits. Holidays, summary rules and flag hours are not sent, so the server keeps them.
+      // D1: every company value is sent explicitly (the first save may not rely on defaults). Flag hours are kept.
       await putAttendanceSettings({
         version: c.versionNo ?? 0,
         timezone,
         workingDays,
         shiftStart,
-        shiftEnd,
         graceMinutes: grace,
-        verificationMode,
+        verificationMode: 'ip',
         officeIps: ips,
+        officeHostnames: hosts,
+        holidays: holidayList,
+        holidaysConfirmed,
         reason: 'Updated in Settings',
       });
       await onSaved();
@@ -211,7 +227,11 @@ function AttendanceForm({
   return (
     <form onSubmit={submit} className="space-y-6" noValidate>
       {!data.configured && (
-        <Alert tone="info" title="Schedule not configured" body="Attendance punctuality is not calculated until the shift, timezone and working days are saved." />
+        <Alert
+          tone="info"
+          title="Attendance not configured"
+          body="Check-in, lateness and attendance alerts stay off until you save the working days, start time, timezone, office IPs and the confirmed holiday calendar. The values shown are suggestions only."
+        />
       )}
       {conflict && (
         <Alert tone="warning" title="Someone else changed these settings" body="Your edits were not saved. Load the latest settings, then make your change again.">
@@ -260,7 +280,7 @@ function AttendanceForm({
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Input label="Shift start (24h)" type="time" value={shiftStart} onChange={(e) => setShiftStart(e.target.value)} required helperText="Check-ins after this time plus grace are marked late." />
-          <Input label="Shift end (24h)" type="time" value={shiftEnd} onChange={(e) => setShiftEnd(e.target.value)} required helperText="Expected end of the working day." />
+          <Input label="Shift end (24h)" type="time" value={shiftEnd} readOnly disabled helperText="Always the start plus the 9-hour workday." />
           <Input
             label="Late grace period (minutes)"
             type="number"
@@ -290,27 +310,43 @@ function AttendanceForm({
             Office verification
             <PolicyPendingChip dec="DEC-009" />
           </h2>
-          <p className="text-xs text-text-secondary mt-1">Require check-in from the office network, or allow any network.</p>
+          <p className="text-xs text-text-secondary mt-1">Check-in and check-out require the office network (its public IP). Remote work needs an exception per employee.</p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Select
-            label="Verification method"
-            value={verificationMode}
-            onChange={(e) => setVerificationMode(e.target.value)}
-            options={[
-              { value: 'disabled', label: 'Disabled (any network permitted)' },
-              { value: 'ip', label: 'Office IP verification (on-premise only)' },
-            ]}
-          />
           <Input
             label="Office IP addresses (comma-separated)"
             value={officeIps}
             onChange={(e) => setOfficeIps(e.target.value)}
             placeholder="e.g. 203.0.113.7, 198.51.100.0/24"
-            disabled={verificationMode === 'disabled'}
             helperText="Public IP addresses or CIDR ranges of the office."
           />
+          <Input
+            label="Office hostnames (comma-separated)"
+            value={officeHostnames}
+            onChange={(e) => setOfficeHostnames(e.target.value)}
+            placeholder="e.g. office.ddns.net"
+            helperText="Dynamic DNS name of the office router, e.g. office.ddns.net"
+          />
         </div>
+      </Card>
+
+      <Card className="p-6 space-y-4">
+        <div>
+          <h2 className="text-base font-semibold text-text-primary">Company holidays</h2>
+          <p className="text-xs text-text-secondary mt-1">No missing check-in alerts and no attendance obligation on these dates.</p>
+        </div>
+        <Input
+          label="Holidays (YYYY-MM-DD, comma-separated)"
+          value={holidays}
+          onChange={(e) => setHolidays(e.target.value)}
+          placeholder="e.g. 2026-12-25, 2027-01-01"
+          helperText="Leave empty if there are none yet; you can add them later."
+        />
+        <Checkbox
+          label="I confirm this holiday calendar (it may be empty)"
+          checked={holidaysConfirmed}
+          onChange={(e) => setHolidaysConfirmed(e.target.checked)}
+        />
       </Card>
 
       {problems.length > 0 && (
@@ -393,19 +429,15 @@ function AccessTab() {
     <Card className="p-6 space-y-4 max-w-2xl">
       <div>
         <h2 className="text-base font-semibold text-text-primary">Roles & permissions</h2>
-        <p className="text-xs text-text-secondary mt-1">Manage roles, what each role can do, and how far its data visibility reaches.</p>
+        {/* Fixed v1 scope (approved 2026-10-29): four fixed roles, no custom-role management (no studio link). */}
+        <p className="text-xs text-text-secondary mt-1">Udigity v1 has four fixed roles: Owner, Data Entry, Call Center and Developer. Custom roles are not part of v1.</p>
       </div>
-      <div className="p-4 bg-surface-subtle border border-border-subtle rounded-xl flex items-center justify-between gap-4">
-        <div className="space-y-1">
-          <div className="font-semibold text-sm text-text-primary flex items-center gap-2">
-            <Icon name="shield" size={16} className="text-brand-primary" />
-            Roles & Permissions Studio
-          </div>
-          <p className="text-xs text-text-secondary">Create custom roles, choose module privileges and review the Owner capability guide.</p>
+      <div className="p-4 bg-surface-subtle border border-border-subtle rounded-xl space-y-1">
+        <div className="font-semibold text-sm text-text-primary flex items-center gap-2">
+          <Icon name="shield" size={16} className="text-brand-primary" />
+          Fixed roles
         </div>
-        <Link href="/settings/roles">
-          <Button>Open studio</Button>
-        </Link>
+        <p className="text-xs text-text-secondary">Assign a role from the employee record. What each role can see and do is set by the approved policy.</p>
       </div>
     </Card>
   );

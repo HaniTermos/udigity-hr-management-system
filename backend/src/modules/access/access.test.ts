@@ -14,7 +14,8 @@ import {
   getActionPolicy,
   isSystemRole,
   registerDynamicRoleChecker,
-  registerSecondFactorVerifier,
+  CUSTOM_ROLES_ENABLED,
+  dynamicGrantFor,
   type Action,
   type DataScope,
   type Principal,
@@ -267,9 +268,22 @@ describe('rule table: both branches of every FLAG it reads', () => {
     return { fr, params, sql: combinedPredicate(fr) };
   };
 
-  it('DEC-001 visibility.timerBasis: creation uses created_at only; inactivity uses the last touchpoint', () => {
-    expect(frag('data_entry', 'business.read', { 'visibility.timerBasis': 'creation' }).fr.window).not.toContain('last_touchpoint_at');
-    expect(frag('data_entry', 'business.read', { 'visibility.timerBasis': 'inactivity' }).fr.window).toContain('GREATEST(af.created_at, COALESCE(af.last_touchpoint_at');
+  // Changed expectation (approved D9): the DEC-001 `inactivity` basis is retired. The window is 15 ELAPSED days
+  // (no calendar boundary, no touchpoint reset) and the flag refuses `inactivity` at load.
+  it('D9: Data Entry window = created_at + 15 elapsed days; never the last touchpoint; `inactivity` rejected at flag load', () => {
+    const de = frag('data_entry', 'business.read');
+    expect(de.fr.window.replace(/\$\d+/g, '$n')).toBe('(af.created_at + make_interval(days => 15) > $n::timestamptz)');
+    expect(de.fr.window).not.toContain('last_touchpoint_at');
+    expect(de.fr.window).not.toContain('timezone(');
+    expect(() => loadPolicyFlags({ POLICY_VISIBILITY_TIMER_BASIS: 'inactivity' })).toThrow(/POLICY_VISIBILITY_TIMER_BASIS/);
+    expect(loadPolicyFlags({ POLICY_VISIBILITY_TIMER_BASIS: 'creation' })['visibility.timerBasis']).toBe('creation');
+  });
+
+  it('D9: Call Center window = current assignment start + 15 elapsed days, for the current assignee only', () => {
+    const cc = frag('call_center', 'business.read');
+    expect(cc.fr.window.replace(/\$\d+/g, '$n')).toBe('(af.assignee_id = $n::uuid AND (af.assignment_started_at + make_interval(days => 15) > $n::timestamptz))');
+    expect(cc.fr.window).not.toContain('af.created_at');
+    expect(cc.fr.relation).toBe('(af.assignee_id = $1::uuid OR ($1::uuid = ANY(af.open_correction_requester_ids)))');
   });
 
   it('OI-02 access.dataEntryScope: DE-1 any business; DE-2 own-created plus correction queue', () => {
@@ -277,25 +291,60 @@ describe('rule table: both branches of every FLAG it reads', () => {
     expect(frag('data_entry', 'business.read', { 'access.dataEntryScope': 'DE-2' }).fr.scope).toContain('af.created_by = $1::uuid OR af.has_open_correction');
   });
 
-  it('DEC-005 deals.developerPreClosure: assigned grants row 1 to the assigned Developer; closedOnly never', () => {
+  // Changed expectation (approved D15): Call Center never holds row 1 (accepted opportunities).
+  it('DEC-005 / D15: row 1 = the assigned Developer only (flag `assigned`); never Call Center', () => {
     expect(frag('developer', 'deal.read', { 'deals.developerPreClosure': 'assigned' }).fr.rows.R1_ACCEPTED_OPPORTUNITY).toContain('ANY(af.deal_developer_ids)');
     expect(frag('developer', 'deal.read', { 'deals.developerPreClosure': 'closedOnly' }).fr.rows.R1_ACCEPTED_OPPORTUNITY).toBe('FALSE');
-    expect(frag('call_center', 'deal.read', { 'deals.developerPreClosure': 'closedOnly' }).fr.rows.R1_ACCEPTED_OPPORTUNITY).toContain('af.assignee_id');
+    for (const v of ['assigned', 'closedOnly'] as const) {
+      expect(frag('call_center', 'deal.read', { 'deals.developerPreClosure': v }).fr.rows.R1_ACCEPTED_OPPORTUNITY).toBe('FALSE');
+    }
   });
 
+  it('D9: row 5 (callback + 48 h) requires the CURRENT assignment as well as the responsibility', () => {
+    const r5 = frag('call_center', 'business.read').fr.rows.R5_SCHEDULED_CALLBACK;
+    expect(r5).toContain('af.assignee_id = $1::uuid AND af.open_follow_up_responsible_id = $1::uuid');
+  });
+
+  it('D9/D15: row 2 needs a project that is active (not completed/cancelled) or completed < 15 days ago', () => {
+    const r2 = frag('developer', 'business.read').fr.rows.R2_CLOSED_DEAL;
+    expect(r2).toContain("af.deal_stage = 'closed'");
+    expect(r2).toContain('af.project_id IS NOT NULL');
+    expect(r2).toContain("NOT IN ('completed', 'cancelled')");
+    expect(frag('developer', 'business.read').fr.rows.R3_ACTIVE_PROJECT).toContain("NOT IN ('completed', 'cancelled')");
+  });
+
+  it('D9: row 6 = requester of an open correction for every matrix role (Data Entry also as reviewer); never the Owner', () => {
+    expect(frag('data_entry', 'business.read').fr.rows.R6_OPEN_CORRECTION).toBe('(af.has_open_correction OR $1::uuid = ANY(af.open_correction_requester_ids))');
+    expect(frag('call_center', 'business.read').fr.rows.R6_OPEN_CORRECTION).toBe('($1::uuid = ANY(af.open_correction_requester_ids))');
+    expect(frag('developer', 'business.read').fr.rows.R6_OPEN_CORRECTION).toBe('($1::uuid = ANY(af.open_correction_requester_ids))');
+    expect(frag('developer', 'business.read').fr.relation).toContain('ANY(af.open_correction_requester_ids)');
+    expect(frag('owner', 'business.read').fr.rows.R6_OPEN_CORRECTION).toBe('FALSE');
+  });
+
+  it('D9/D20: archived businesses are excluded for every non-Owner role (related lists included)', () => {
+    for (const role of ['data_entry', 'call_center', 'developer'] as const) {
+      for (const action of ['business.read', 'deal.read', 'meeting.read', 'project.read', 'follow_up.read'] as Action[]) {
+        const f = frag(role, action);
+        expect(f.fr.live).toBe('af.archived_at IS NULL');
+        expect(f.sql.startsWith('(af.archived_at IS NULL AND ')).toBe(true);
+      }
+    }
+    expect(frag('owner', 'business.read').fr.live).toBe('TRUE');
+  });
+
+  // Changed expectation: the Developer now also carries row 6 (own open correction request, approved D9).
   it('DEC-002 visibility.dec002Rows gates each row; rows are role-specific', () => {
     const all = frag('developer', 'business.read').fr.rows;
     expect(all.R2_CLOSED_DEAL).not.toBe('FALSE');
     expect(all.R3_ACTIVE_PROJECT).not.toBe('FALSE');
     expect(all.R4_COMPLETED_PROJECT).not.toBe('FALSE');
     expect(all.R5_SCHEDULED_CALLBACK).toBe('FALSE');
-    expect(all.R6_OPEN_CORRECTION).toBe('FALSE');
+    expect(all.R6_OPEN_CORRECTION).not.toBe('FALSE');
     const none = frag('developer', 'business.read', { 'visibility.dec002Rows': [] });
     expect(Object.values(none.fr.rows).every((s) => s === 'FALSE')).toBe(true);
     expect(none.fr.relation).toBe('FALSE');
-    expect(none.sql).toBe('(TRUE AND FALSE AND FALSE)');
+    expect(none.sql).toBe('(af.archived_at IS NULL AND TRUE AND FALSE AND FALSE)');
     expect(frag('call_center', 'business.read', { 'visibility.dec002Rows': ['R1'] }).fr.rows.R5_SCHEDULED_CALLBACK).toBe('FALSE');
-    expect(frag('data_entry', 'business.read').fr.rows.R6_OPEN_CORRECTION).toBe('(af.has_open_correction)');
   });
 
   it('Table RT rule 4: context-limited items never reach general search; DV list = closed-deal list only', () => {
@@ -305,7 +354,8 @@ describe('rule table: both branches of every FLAG it reads', () => {
     expect(dv.R2_CLOSED_DEAL).not.toBe('FALSE');
     expect(dv.R1_ACCEPTED_OPPORTUNITY).toBe('FALSE');
     expect(dv.R3_ACTIVE_PROJECT).toBe('FALSE');
-    expect(frag('developer', 'business.search').sql).toBe('(TRUE AND FALSE AND FALSE)');
+    expect(dv.R6_OPEN_CORRECTION).toBe('FALSE');
+    expect(frag('developer', 'business.search').sql).toBe('(af.archived_at IS NULL AND TRUE AND FALSE AND FALSE)');
   });
 
   it('grace values come from the registry: callback 48 h (row 5) and completed-project 15 days (rows 2/4)', () => {
@@ -315,18 +365,27 @@ describe('rule table: both branches of every FLAG it reads', () => {
     expect(dv.params.values).toContain(9);
   });
 
-  it('company timezone NOT CONFIGURED fails closed at UTC+14 (security review R4), never UTC', () => {
-    expect(frag('data_entry', 'business.read', { 'company.timezone': '' }).params.values).toContain('Etc/GMT-14');
-    expect(frag('data_entry', 'business.read', { 'company.timezone': '' }).params.values).not.toContain('UTC');
-    expect(frag('data_entry', 'business.read', { 'company.timezone': 'Asia/Beirut' }).params.values).toContain('Asia/Beirut');
+  // Changed expectation (approved D9): elapsed time has no calendar boundary, so the company timezone (and its
+  // UTC+14 fail-closed fallback) no longer enters the rule table. `effectiveTimezone` keeps its own tests.
+  it('the 15-day window does not depend on the company timezone (elapsed days)', () => {
+    for (const tz of ['', 'UTC', 'Asia/Beirut']) {
+      const f = frag('data_entry', 'business.read', { 'company.timezone': tz });
+      expect(f.params.values).not.toContain('Etc/GMT-14');
+      if (tz) expect(f.params.values).not.toContain(tz);
+      expect(f.fr.window).not.toContain('timezone(');
+    }
   });
 });
 
 // ---------------------------------------------------------------------------
-// Custom roles (migration 014; authz-matrix.md §3.11): nothing by default, validated grants only,
-// data_scope enforced, system roles never widened, grantable admin rows behind the second factor.
+// Custom roles (migration 014; authz-matrix.md §3.11) — TURNED OFF in v1.
+// Fixed v1 scope (docs/policy-baseline-2026-10-29.md, approved): four roles, no custom-role management.
+// Changed expectations: these tests used to prove that validated grants opened access; they now prove that a
+// custom role id gets nothing even WITH a stored grant (the data is kept, the feature is off). The grant-
+// semantics tests that have no refusal equivalent (department scope, second-factor gate on grantable rows)
+// are skipped with that reason rather than deleted, so re-enabling the feature has a starting point.
 // ---------------------------------------------------------------------------
-describe('custom roles: rule table and route gate (§3.11)', () => {
+describe('custom roles are off in v1 (fixed four roles): refused everywhere, grants ignored', () => {
   const HR = 'human_resources';
   const grants: Record<string, Record<string, DataScope>> = {};
   beforeAll(() => {
@@ -357,78 +416,68 @@ describe('custom roles: rule table and route gate (§3.11)', () => {
     const fr = buildRuleFragments({ role, employeeId: U, action, resourceType: 'business', now: new Date(), flags: baseFlags(over), params, dataScope });
     return { fr, sql: combinedPredicate(fr) };
   };
+  const NOTHING = '(af.archived_at IS NULL AND FALSE AND FALSE AND FALSE)';
 
-  it('an unknown or custom role without a grant gets nothing: (FALSE AND FALSE AND FALSE) on every surface', () => {
-    for (const role of [HR, 'typo_role', 'OWNER']) {
-      for (const action of ['business.read', 'business.list', 'business.search', 'deal.read'] as Action[]) {
-        const { fr, sql } = frag(role, action, null);
-        expect(sql, `${role} ${action}`).toBe('(FALSE AND FALSE AND FALSE)');
-        expect(Object.values(fr.rows).every((s) => s === 'FALSE')).toBe(true);
-      }
-    }
+  it('the feature switch is off', () => {
+    expect(CUSTOM_ROLES_ENABLED).toBe(false);
     expect(isSystemRole(HR)).toBe(false);
   });
 
-  it('a grant opens the base scope per data_scope; the 15-day window still applies; DEC-002 rows never do', () => {
-    const g = frag(HR, 'business.read', 'global');
-    expect(g.fr).toMatchObject({ scope: 'TRUE', relation: 'TRUE' });
-    expect(g.fr.window).toContain('timezone(');
-    expect(Object.values(g.fr.rows).every((s) => s === 'FALSE')).toBe(true);
-    expect(g.sql).toBe(`(TRUE AND TRUE AND (${g.fr.window}))`);
-    expect(frag(HR, 'business.read', 'self').fr.relation).toBe('(af.created_by = $1::uuid)');
-    expect(frag(HR, 'business.read', 'department').fr.relation).toBe('(af.created_by = $1::uuid)');
-    const a = frag(HR, 'business.read', 'assigned_only').fr.relation;
-    expect(a).toContain('af.assignee_id = $1::uuid');
-    expect(a).toContain('ANY(af.deal_developer_ids)');
-    expect(a).toContain('ANY(af.project_developer_ids)');
-    // Context-limited surfaces stay closed for custom roles even with a global grant.
-    expect(frag(HR, 'business.search', 'global').fr.rows.R2_CLOSED_DEAL).toBe('FALSE');
+  it('rule table: a custom or unknown role gets nothing on every surface, with or without a grant', () => {
+    for (const role of [HR, 'typo_role', 'OWNER']) {
+      for (const action of ['business.read', 'business.list', 'business.search', 'deal.read'] as Action[]) {
+        for (const scope of [null, 'global', 'self', 'department', 'assigned_only'] as const) {
+          const { fr, sql } = frag(role, action, scope);
+          expect(sql, `${role} ${action} ${scope}`).toBe(NOTHING);
+          expect(Object.values(fr.rows).every((s) => s === 'FALSE')).toBe(true);
+        }
+      }
+    }
   });
 
   it('a system role ignores dataScope: the matrix rule is the whole answer', () => {
     expect(frag('developer', 'business.read', 'global').fr.window).toBe('FALSE');
     expect(frag('developer', 'business.read', 'global').fr.relation).toContain("af.deal_stage = 'closed'");
-    expect(frag('developer', 'business.search', 'global').sql).toBe('(TRUE AND FALSE AND FALSE)');
-    expect(frag('call_center', 'business.read', 'global').fr.relation).toContain('(af.assignee_id = $1::uuid OR (af.open_follow_up_responsible_id = $1::uuid');
+    expect(frag('developer', 'business.search', 'global').sql).toBe('(af.archived_at IS NULL AND TRUE AND FALSE AND FALSE)');
+    expect(frag('call_center', 'business.read', 'global').fr.relation).toContain('af.assignee_id = $1::uuid');
   });
 
-  it('Developer: never full through the window; relation = rows 1–4; list = row 2 only', () => {
+  it('Developer: never full through the window; relation = context rows; list = row 2 only', () => {
     const read = frag('developer', 'business.read', null, { 'deals.developerPreClosure': 'assigned' }).fr;
     expect(read.window).toBe('FALSE');
-    for (const r of ['R1_ACCEPTED_OPPORTUNITY', 'R2_CLOSED_DEAL', 'R3_ACTIVE_PROJECT', 'R4_COMPLETED_PROJECT'] as const) expect(read.relation).toContain(read.rows[r]);
+    for (const r of ['R1_ACCEPTED_OPPORTUNITY', 'R2_CLOSED_DEAL', 'R3_ACTIVE_PROJECT', 'R4_COMPLETED_PROJECT', 'R6_OPEN_CORRECTION'] as const) {
+      expect(read.relation).toContain(read.rows[r]);
+    }
     const list = frag('developer', 'business.list', null).fr;
     expect(list.relation).toBe(`(${list.rows.R2_CLOSED_DEAL})`);
     expect(list.rows.R3_ACTIVE_PROJECT).toBe('FALSE');
   });
 
-  it('requireAction: no grant → FORBIDDEN_ROLE on every matrix action; a grant passes non-privileged rows only', async () => {
+  it('requireAction: a custom role is FORBIDDEN_ROLE on every matrix action, even holding grants', async () => {
     delete grants[HR];
     for (const action of Object.keys(AUTHZ_MATRIX)) {
       const r = await run(action, HR);
       expect(r.nexted, action).toBe(false);
       expect(r.body?.code).toBe('FORBIDDEN_ROLE');
     }
-    grants[HR] = { 'attendance.read': 'global', 'employee.create': 'global', 'business.delete': 'global', 'attendance.overview.read': 'global' };
-    expect((await run('attendance.read', HR)).nexted).toBe(true);
-    expect((await run('employee.create', HR)).body?.code).toBe('FORBIDDEN_ROLE'); // admin, not grantable
-    expect((await run('business.delete', HR)).body?.code).toBe('FORBIDDEN_ROLE'); // nobody
-    expect(can({ employeeId: U, role: HR, sessionState: 'active' }, 'attendance.read' as Action)).toBe(true);
-    expect(can({ employeeId: U, role: HR, sessionState: 'active' }, 'employee.create' as Action)).toBe(false);
+    grants[HR] = { 'attendance.read': 'global', 'business.read': 'global', 'attendance.overview.read': 'global' };
+    for (const action of Object.keys(grants[HR])) {
+      const r = await run(action, HR);
+      expect(r.nexted, action).toBe(false);
+      expect(r.body?.code).toBe('FORBIDDEN_ROLE');
+    }
+    expect(can({ employeeId: U, role: HR, sessionState: 'active' }, 'attendance.read' as Action)).toBe(false);
+    delete grants[HR];
   });
 
-  it("a grantable admin row needs the holder's verified second factor (fail closed until identity registers one)", async () => {
-    grants[HR] = { 'attendance.overview.read': 'global' };
-    const closed = await run('attendance.overview.read', HR);
-    expect(closed.nexted).toBe(false);
-    expect(closed.body?.code).toBe('OWNER_2FA_REQUIRED');
-    registerSecondFactorVerifier((u) => u.sessionId === 's');
-    try {
-      expect((await run('attendance.overview.read', HR)).nexted).toBe(true);
-      expect((await run('attendance.overview.read', HR, 'pending_2fa_verification')).body?.code).toBe('OWNER_2FA_REQUIRED');
-    } finally {
-      registerSecondFactorVerifier(() => false);
+  it('custom-role management is allowed to nobody (role.create / role.update / role.delete)', async () => {
+    for (const a of ['role.create', 'role.update', 'role.delete']) {
+      expect(AUTHZ_MATRIX[a].roles).toEqual([]);
+      for (const role of ROLES) expect((await run(a, role)).body?.code, `${a} ${role}`).toBe('FORBIDDEN_ROLE');
     }
   });
+
+  it.skip("v1-disabled: a grantable admin row needs the holder's verified second factor (custom roles are off; nothing is grantable)", () => {});
 
   it('the four system roles are never widened by a grant', async () => {
     grants.data_entry = { 'employee.list': 'global', 'audit.read': 'global' };
@@ -444,62 +493,41 @@ describe('custom roles: rule table and route gate (§3.11)', () => {
     }
   });
 
-  it('engine: own-record types honour data_scope (global → all, department → same department, self → own)', async () => {
+  it('engine: own-record types ignore custom grants (own records only, never global)', async () => {
     registerResourceResolver('attendance_session', async (_db, id) => ({ kind: 'own', ownerIds: [id === B ? U : B2] }));
     const hr = (): Principal => ({ employeeId: U, role: HR, sessionState: 'active' });
     const e = engine();
     const ref = { type: 'attendance_session' as const, id: B2 };
-    delete grants[HR];
-    expect(await e.check(dbWith([]), hr(), 'attendance.read' as Action, ref)).toEqual({ allowed: false, reason: 'permission_denied' });
-    expect(e.scopeFilter(hr(), 'attendance.read' as Action, 'attendance_session', { alias: 's', params: new SqlParams() })).toBe('s.employee_id = $1');
-    grants[HR] = { 'attendance.read': 'global' };
-    expect(await e.check(dbWith([]), hr(), 'attendance.read' as Action, ref)).toEqual({ allowed: true, level: 'full' });
-    expect(e.scopeFilter(hr(), 'attendance.read' as Action, 'attendance_session', { alias: 's', params: new SqlParams() })).toBe('TRUE');
-    grants[HR] = { 'attendance.read': 'self' };
-    expect(await e.check(dbWith([]), hr(), 'attendance.read' as Action, ref)).toEqual({ allowed: false, reason: 'permission_denied' });
-    expect(await e.check(dbWith([]), hr(), 'attendance.read' as Action, { type: 'attendance_session', id: B })).toEqual({ allowed: true, level: 'full' });
-    grants[HR] = { 'attendance.read': 'department' };
-    const same = new FakeDb().on(/JOIN employees o ON o\.department = h\.department/, [{ ok: true }]);
-    expect(await e.check(same, hr(), 'attendance.read' as Action, ref)).toEqual({ allowed: true, level: 'full' });
-    const other = new FakeDb().on(/JOIN employees o ON o\.department = h\.department/, [{ ok: false }]);
-    expect(await e.check(other, hr(), 'attendance.read' as Action, ref)).toEqual({ allowed: false, reason: 'permission_denied' });
-    const sql = e.scopeFilter(hr(), 'attendance.read' as Action, 'attendance_session', { alias: 's', params: new SqlParams() });
-    expect(sql).toContain('s.employee_id = $1 OR EXISTS');
-    expect(sql).toContain('h.department IS NOT NULL');
-    // Owner-only types stay closed whatever the grant.
-    grants[HR] = { 'audit.read': 'global' };
-    expect(e.scopeFilter(hr(), 'audit.read' as Action, 'audit_event', { alias: 'a', params: new SqlParams() })).toBe('FALSE');
+    for (const scope of ['global', 'department', 'self'] as const) {
+      grants[HR] = { 'attendance.read': scope };
+      expect(await e.check(dbWith([]), hr(), 'attendance.read' as Action, ref)).toEqual({ allowed: false, reason: 'permission_denied' });
+      expect(e.scopeFilter(hr(), 'attendance.read' as Action, 'attendance_session', { alias: 's', params: new SqlParams() })).toBe('s.employee_id = $1');
+    }
     delete grants[HR];
   });
 
-  it('grantRefusal: matrix membership, nobody rows and unmarked admin rows', () => {
+  it.skip('v1-disabled: department data_scope on own-record types (custom roles are off; no grant is honoured)', () => {});
+
+  it('grantRefusal: matrix membership, nobody rows (custom-role management included) and unmarked admin rows', () => {
     expect(grantRefusal('business.read')).toBeUndefined();
-    expect(grantRefusal('attendance.overview.read')).toBeUndefined();
     expect(grantRefusal('nope.action')).toMatch(/not an action/);
-    expect(grantRefusal('business.delete')).toMatch(/nobody/);
-    expect(grantRefusal('audit.update')).toMatch(/nobody/);
-    for (const a of ['employee.create', 'employee.update', 'role.create', 'settings.update', 'report.export', 'audit.read', 'business.archive', 'deal.finalize']) {
+    for (const a of ['business.delete', 'audit.update', 'role.create', 'role.update', 'role.delete']) expect(grantRefusal(a), a).toMatch(/nobody/);
+    for (const a of ['employee.create', 'employee.update', 'settings.update', 'report.export', 'audit.read', 'business.archive', 'deal.finalize']) {
       expect(grantRefusal(a), a).toMatch(/Owner-only administrative/);
     }
   });
 
-  it('DynamicRoleCache loads from the database, drops system-role and non-grantable rows, and is ready only after a load', async () => {
+  it('DynamicRoleCache still loads the kept role_permissions data (read-only; the engine never consults it in v1)', async () => {
     const db = new FakeDb().on(/FROM role_permissions/, [
       { role_id: HR, action: 'business.read', data_scope: 'self' },
-      { role_id: HR, action: 'employee.create', data_scope: 'global' }, // not grantable: dropped
-      { role_id: HR, action: 'bogus.row', data_scope: 'global' }, // not in the matrix: dropped
       { role_id: 'data_entry', action: 'employee.list', data_scope: 'global' }, // system role: dropped
     ]);
     const cache = new DynamicRoleCache();
-    expect(cache.isLoaded()).toBe(false);
-    await expect(cache.ensureReady()).rejects.toThrow(/not attached/);
     cache.attach(db);
     await cache.ensureReady();
-    expect(cache.isLoaded()).toBe(true);
     expect(cache.grantFor(HR, 'business.read' as Action)).toBe('self');
-    expect(cache.grantFor(HR, 'employee.create' as Action)).toBeNull();
-    expect(cache.grantFor(HR, 'bogus.row' as Action)).toBeNull();
     expect(cache.grantFor('data_entry', 'employee.list' as Action)).toBeNull();
-    expect(db.find(/FROM role_permissions/)).toHaveLength(1);
+    registerDynamicRoleChecker(cache);
+    expect(dynamicGrantFor(HR, 'business.read' as Action)).toBeNull();
   });
 });

@@ -14,7 +14,10 @@ import { runtimeRoleProblems } from './shared/runtimeRole.js';
 export const app = express();
 
 // Security and utility middleware
-if (config.trustProxy) app.set('trust proxy', 1);
+// D2: X-Forwarded-For is honoured only from the explicitly trusted proxies (TRUSTED_PROXY_CIDRS). Unset:
+// development/test keep the legacy single hop (TRUST_PROXY=true); production trusts none (/readyz 503).
+if (config.trustedProxyCidrs) app.set('trust proxy', config.trustedProxyCidrs);
+else if (!config.isProduction && config.trustProxy) app.set('trust proxy', 1);
 app.disable('x-powered-by');
 app.use(requestId);
 app.use(helmet());
@@ -48,6 +51,11 @@ app.get('/readyz', async (_req, res) => {
           status: 'unready',
           error: `Essential configuration missing: ${problem}`,
         });
+        return;
+      }
+      // D2: the office check needs the trusted reverse-proxy list (no implicit hop count in production).
+      if (!config.trustedProxyCidrs) {
+        res.status(503).json({ status: 'unready', error: 'Essential configuration missing: TRUSTED_PROXY_CIDRS' });
         return;
       }
       // UDI-6: a role change after start-up (grants widened, wrong DATABASE_URL) also fails readiness.

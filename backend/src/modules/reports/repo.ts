@@ -27,7 +27,9 @@ export async function insertExportRecord(
 export async function queryDashboardStats(
   db: Queryable,
   since: Date,
-  until?: Date
+  until?: Date,
+  /** Start of company-timezone today (attendance snapshot). */
+  todayStart: Date = since
 ): Promise<{
   totalBusinesses: number;
   addedInPeriod: number;
@@ -51,12 +53,13 @@ export async function queryDashboardStats(
   suppressedDeliveries: number;
   failedReminders: number;
 }> {
+  // `until` is exclusive (company-timezone day boundary); open-ended when absent.
   const endDate = until ?? new Date('9999-12-31T23:59:59Z');
 
   // 1. Businesses counts
   const bizRes = await db.query<{ total: string; in_period: string }>(
     `SELECT count(*)::text AS total,
-            count(*) FILTER (WHERE created_at >= $1 AND created_at <= $2)::text AS in_period
+            count(*) FILTER (WHERE created_at >= $1 AND created_at < $2)::text AS in_period
        FROM businesses
       WHERE archived_at IS NULL`,
     [since, endDate]
@@ -98,10 +101,13 @@ export async function queryDashboardStats(
     closed_deals: string;
     closed_in_period: string;
   }>(
-    `SELECT count(*) FILTER (WHERE stage = 'accepted_opportunity')::text AS accepted_ops,
-            count(*) FILTER (WHERE stage = 'accepted_opportunity' AND created_at >= $1 AND created_at <= $2)::text AS accepted_in_period,
+    // Open deals = every stage except the two terminal ones (new intermediate stages count automatically).
+    // Accepted in period = opportunities created in the period, whatever their stage now. Closed in period
+    // uses closed_at (updated_at moved on any later edit).
+    `SELECT count(*) FILTER (WHERE stage NOT IN ('closed', 'not_proceeding'))::text AS accepted_ops,
+            count(*) FILTER (WHERE created_at >= $1 AND created_at < $2)::text AS accepted_in_period,
             count(*) FILTER (WHERE stage = 'closed')::text AS closed_deals,
-            count(*) FILTER (WHERE stage = 'closed' AND updated_at >= $1 AND updated_at <= $2)::text AS closed_in_period
+            count(*) FILTER (WHERE stage = 'closed' AND closed_at >= $1 AND closed_at < $2)::text AS closed_in_period
        FROM deals`,
     [since, endDate]
   );
@@ -127,14 +133,11 @@ export async function queryDashboardStats(
     `SELECT count(*)::text AS attempts,
             count(DISTINCT business_id)::text AS distinct_businesses
        FROM call_attempts
-      WHERE created_at >= $1 AND created_at <= $2`,
+      WHERE attempted_at >= $1 AND attempted_at < $2`,
     [since, endDate]
   );
 
-  // 8. Attendance snapshot (today)
-  const todayStart = new Date();
-  todayStart.setUTCHours(0, 0, 0, 0);
-
+  // 8. Attendance snapshot (company-timezone today)
   const attRes = await db.query<{ checked_in: string; checked_out: string; missing_checkout: string }>(
     `SELECT count(*) FILTER (WHERE check_in_at >= $1)::text AS checked_in,
             count(*) FILTER (WHERE check_out_at >= $1)::text AS checked_out,
@@ -264,9 +267,16 @@ export async function queryExportRows(
     }
     case 'rep-3':
     case 'deals': {
+      // D16: contract amount and payment received are separate columns; a missing amount is blank with an
+      // explicit *_missing flag, never 0. payment_received = a payment (first payment/deposit) is recorded.
       const { rows } = await db.query(
-        `SELECT d.id, b.name AS business_name, d.stage, d.signature_date, d.payment_date,
-                d.payment_amount, d.payment_currency, p.status AS project_status, d.created_at, d.updated_at
+        `SELECT d.id, b.name AS business_name, d.stage, d.signature_reference AS agreement_reference,
+                d.signature_date, d.payment_date,
+                d.contract_amount, d.contract_currency, (d.contract_amount IS NULL) AS contract_amount_missing,
+                (d.payment_date IS NOT NULL) AS payment_received,
+                d.payment_amount AS payment_received_amount, d.payment_currency AS payment_received_currency,
+                (d.payment_amount IS NULL) AS payment_received_amount_missing,
+                p.status AS project_status, d.created_at, d.updated_at
            FROM deals d
            JOIN businesses b ON b.id = d.business_id
            LEFT JOIN projects p ON p.deal_id = d.id

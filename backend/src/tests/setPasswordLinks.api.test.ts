@@ -56,10 +56,13 @@ async function ownerAgent(): Promise<{ cookie: string; csrf: string }> {
   return { cookie: cookieFrom(v), csrf: v.body.csrfToken };
 }
 
-/** Relay the whole backlog (earlier files share the DB), then run J-02 once. */
+/**
+ * Relay the whole backlog (earlier files share the DB), then dispatch until no due email is left: one J-02
+ * pass claims only the 25 oldest rows, so on a reused DB this test's own email could stay unclaimed.
+ */
 async function deliverAll(): Promise<void> {
   for (let i = 0; i < 500; i++) if ((await relayOutboxOnce()).claimed === 0) break;
-  await dispatchDueDeliveries();
+  for (let i = 0; i < 100; i++) if ((await dispatchDueDeliveries()).claimed === 0) break;
 }
 
 /** The one captured message to `email`: its template and the raw token in its link. */
@@ -80,7 +83,8 @@ async function credentialHash(employeeId: string): Promise<string | null> {
   return rows[0]?.password_hash ?? null;
 }
 
-describe.skipIf(!hasTestDb)('FX-MAIL set-password links (invitation and password reset)', () => {
+// 60 s per test: draining another file's backlog on a reused DB can take longer than the 5 s default.
+describe.skipIf(!hasTestDb)('FX-MAIL set-password links (invitation and password reset)', { timeout: 60_000 }, () => {
   let owner: { cookie: string; csrf: string };
 
   beforeAll(async () => {

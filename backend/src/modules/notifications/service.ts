@@ -20,6 +20,8 @@ import { decryptSecret, encryptSecret } from './secrets.js';
 import { EMAIL_NOT_CONFIGURED } from './emailConfig.js';
 import { getEmailTransport } from './transport.js';
 import type { DeliveryMonitorItemDto, NotificationDto } from './schemas.js';
+import { currentSchedule, employeeSchedule } from '../attendance/service.js';
+import { addDays, missingSettings, nonWorkingReason, REQUIRED_MINUTES, shiftEndAt, workDateOf, zonedToUtc, type Schedule } from '../attendance/time.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -107,6 +109,17 @@ export const securityEmailConsumer: OutboxConsumer = {
 // In-App Notifications (AR-14)
 // ---------------------------------------------------------------------------
 
+/** A non-negative integer from a stored summary (0 otherwise). */
+const count = (v: unknown): number => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : 0);
+
+/** 1440 → "24 hours", 60 → "1 hour", 90 → "90 minutes"; null when unknown. */
+function leadLabel(minutes: number): string | null {
+  if (minutes <= 0) return null;
+  if (minutes % 60 !== 0) return `${minutes} minutes`;
+  const h = minutes / 60;
+  return h === 1 ? '1 hour' : `${h} hours`;
+}
+
 function formatNotification(d: repo.DeliveryRow): NotificationDto {
   let title = 'System Notification';
   let message = 'You have a new update.';
@@ -128,11 +141,43 @@ function formatNotification(d: repo.DeliveryRow): NotificationDto {
       message = 'You have a scheduled follow-up call due soon.';
       link = '/calendar';
       break;
-    case 'business.meeting_reminder':
-      title = 'Meeting Reminder';
-      message = 'An upcoming commercial discovery meeting is scheduled.';
-      link = '/meetings';
+    case 'business.follow_up_overdue':
+      title = 'Follow-up Overdue';
+      message = 'A follow-up call assigned to you is more than an hour overdue.';
+      link = '/calendar';
       break;
+    case 'business.follow_up_digest': {
+      const n = count(d.summary?.dueToday);
+      title = "Today's Follow-ups";
+      message = n === 1 ? 'You have 1 follow-up call due today.' : `You have ${n} follow-up calls due today.`;
+      link = '/calendar';
+      break;
+    }
+    case 'business.owner_digest': {
+      const overdue = count(d.summary?.overdueFollowUps);
+      const missing = count(d.summary?.missingCheckouts);
+      const parts: string[] = [];
+      if (overdue > 0) parts.push(`${overdue} overdue follow-up${overdue === 1 ? '' : 's'}`);
+      if (missing > 0) parts.push(`${missing} missing checkout${missing === 1 ? '' : 's'} from the previous working day`);
+      title = 'Morning Digest';
+      message = parts.length > 0 ? `Waiting for review: ${parts.join(' and ')}.` : 'Nothing is waiting for review.';
+      link = missing > 0 && overdue === 0 ? '/attendance' : '/calendar';
+      break;
+    }
+    case 'business.meeting_reminder': {
+      const lead = count(d.summary?.leadMinutes);
+      const when = leadLabel(lead);
+      title = 'Meeting Reminder';
+      if (d.source_type === 'business') {
+        // Redacted (D15): the recipient may see the business but not the deal or meeting.
+        message = when ? `A client meeting for one of your assigned businesses starts in ${when}.` : 'A client meeting for one of your assigned businesses is coming up.';
+        link = '/queue';
+      } else {
+        message = when ? `An upcoming commercial discovery meeting starts in ${when}.` : 'An upcoming commercial discovery meeting is scheduled.';
+        link = '/meetings';
+      }
+      break;
+    }
     case 'business.correction_request':
       title = 'Correction Request Update';
       message = 'A data correction request has an update.';
@@ -163,11 +208,18 @@ function formatNotification(d: repo.DeliveryRow): NotificationDto {
       message = 'A closed deal could not create its project. It is retried automatically.';
       link = '/projects';
       break;
-    case 'business.delivery_failure':
+    case 'business.duplicate_review':
+      title = 'Duplicate Review Requested';
+      message = 'An employee asked you to review a blocked duplicate business.';
+      link = d.source_id ? `/businesses/${d.source_id}` : '/businesses';
+      break;
+    case 'business.delivery_failure': {
+      const n = count(d.summary?.count) || 1;
       title = 'Delivery Failed';
-      message = 'A notification or reminder could not be delivered.';
+      message = n > 1 ? `${n} notifications or reminders of the same kind could not be delivered.` : 'A notification or reminder could not be delivered.';
       link = '/delivery-monitor';
       break;
+    }
     case 'security.recovery_code_used':
       title = 'Recovery Code Used';
       message = 'A recovery code was used to sign in to your account. If this was not you, contact the Owner.';
@@ -204,6 +256,7 @@ function formatNotification(d: repo.DeliveryRow): NotificationDto {
 
 /** Source types whose access is re-checked when the inbox is read (AR-14 / R2-16). */
 const RECHECKED_SOURCES: Record<string, { type: ResourceType; action: string }> = {
+  business: { type: 'business', action: 'business.read' },
   deal: { type: 'deal', action: 'deal.read' },
   meeting: { type: 'meeting', action: 'meeting.read' },
   follow_up: { type: 'follow_up', action: 'follow_up.read' },
@@ -341,6 +394,10 @@ export const reminderPlannerConsumer: OutboxConsumer = {
     'meeting.cancelled',
     'meeting.held',
     'meeting.missed',
+    'opportunity.developer_assigned',
+    'opportunity.developer_reassigned',
+    'calling_assignment.assigned',
+    'calling_assignment.reassigned',
   ],
   async handle(ctx: CommandContext, event: DeliveredEvent) {
     const { name, aggregateType, aggregateId } = event;
@@ -365,10 +422,25 @@ export const reminderPlannerConsumer: OutboxConsumer = {
       );
       const fup = rows[0];
       if (!fup) return;
+      // D18 overdue: the current assignee, once per due time, `followUpOverdueAlertMinutes` (60) after it.
+      // Stored as a follow-up reminder with a negative lead; already past (e.g. late reassignment) → now.
+      const overdueMinutes = await getSetting(ctx.tx, 'notifications.followUpOverdueAlertMinutes');
+      const overdueAt = new Date(fup.scheduled_for.getTime() + overdueMinutes * 60_000);
+      await repo.upsertOverdueReminder(ctx.tx, {
+        dedupeKey: `rem:fupod:${fup.id}:${fup.scheduled_for.getTime()}`,
+        sourceId: fup.id,
+        recipientId: fup.responsible_id,
+        scheduledFor: overdueAt.getTime() >= ctx.now.getTime() ? overdueAt : ctx.now,
+        leadMinutes: -overdueMinutes,
+      });
+      // D18 due: the current assignee, `followUpLeadMinutes` (15) before.
       const leadMinutes = await getSetting(ctx.tx, 'notifications.followUpLeadMinutes');
       const scheduledFor = plan(fup.scheduled_for, leadMinutes);
       if (!scheduledFor) {
-        await repo.cancelRemindersForSource(ctx.tx, 'follow_up', fup.id);
+        // Only the "due" reminder: the overdue alert above stays armed.
+        await ctx.tx.query(`UPDATE reminders SET state = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE dedupe_key = $1 AND state = 'pending'`, [
+          `rem:fup:${fup.id}`,
+        ]);
         return;
       }
       await repo.upsertReminder(ctx.tx, {
@@ -384,45 +456,87 @@ export const reminderPlannerConsumer: OutboxConsumer = {
         await repo.cancelRemindersForSource(ctx.tx, 'meeting', aggregateId);
         return;
       }
-      const { rows: meetings } = await ctx.tx.query<{ id: string; starts_at: Date }>(
-        `SELECT id, starts_at FROM meetings WHERE id = $1 AND status = 'scheduled'`,
-        [aggregateId]
-      );
-      const meeting = meetings[0];
-      if (!meeting) return;
-      // R2-13 / R3-29: current attendees only; reminders of removed attendees are cancelled.
-      const { rows: attendees } = await ctx.tx.query<{ employee_id: string }>(
-        'SELECT employee_id FROM meeting_attendees WHERE meeting_id = $1 AND removed_at IS NULL',
-        [aggregateId]
-      );
-      const current = attendees.map((a) => a.employee_id);
-      await ctx.tx.query(
-        `UPDATE reminders SET state = 'cancelled', updated_at = CURRENT_TIMESTAMP
-          WHERE source_type = 'meeting' AND source_id = $1 AND state = 'pending' AND NOT (recipient_id = ANY($2::uuid[]))`,
-        [meeting.id, current]
-      );
-      const leads = [...new Set(await getSetting(ctx.tx, 'notifications.meetingLeadMinutes'))];
-      for (const employeeId of current) {
-        for (const leadMinutes of leads) {
-          const key = `rem:meet:${meeting.id}:${employeeId}:${leadMinutes}`;
-          const scheduledFor = plan(meeting.starts_at, leadMinutes);
-          if (!scheduledFor) {
-            await ctx.tx.query(`UPDATE reminders SET state = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE dedupe_key = $1 AND state = 'pending'`, [key]);
-            continue;
-          }
-          await repo.upsertReminder(ctx.tx, {
-            dedupeKey: key,
-            sourceType: 'meeting',
-            sourceId: meeting.id,
-            recipientId: employeeId,
-            scheduledFor,
-            leadMinutes,
-          });
-        }
-      }
+      await planMeetingReminders(ctx, aggregateId, plan, name !== 'meeting.rescheduled');
+    } else if (name === 'opportunity.developer_assigned' || name === 'opportunity.developer_reassigned') {
+      // D18: the deal's current Developer is a meeting-reminder recipient; re-plan its open meetings.
+      const { rows } = await ctx.tx.query<{ id: string }>(`SELECT id FROM meetings WHERE deal_id = $1 AND status = 'scheduled'`, [aggregateId]);
+      for (const m of rows) await planMeetingReminders(ctx, m.id, plan, true);
+    } else if (name === 'calling_assignment.assigned' || name === 'calling_assignment.reassigned') {
+      // D18: the business's assigned Call Center agent is a meeting-reminder recipient.
+      const businessId = str(event.payload.businessId);
+      if (!businessId) return;
+      const { rows } = await ctx.tx.query<{ id: string }>(`SELECT id FROM meetings WHERE business_id = $1 AND status = 'scheduled'`, [businessId]);
+      for (const m of rows) await planMeetingReminders(ctx, m.id, plan, true);
     }
   },
 };
+
+/**
+ * D18 meeting-reminder recipients: the deal's current assigned Developer and the business's current
+ * assigned Call Center agent, plus the meeting's current attendees (R2-13 / R3-29). Active accounts only;
+ * each recipient's access is re-checked when the reminder is sent (C6).
+ */
+async function meetingReminderRecipients(db: Queryable, meetingId: string): Promise<string[]> {
+  const { rows } = await db.query<{ employee_id: string | null }>(
+    `SELECT d.assigned_developer_id AS employee_id
+       FROM meetings m JOIN deals d ON d.id = m.deal_id WHERE m.id = $1
+     UNION
+     SELECT ca.assignee_id FROM meetings m
+       JOIN calling_assignments ca ON ca.business_id = m.business_id AND ca.ended_at IS NULL WHERE m.id = $1
+     UNION
+     SELECT a.employee_id FROM meeting_attendees a WHERE a.meeting_id = $1 AND a.removed_at IS NULL`,
+    [meetingId]
+  );
+  return activeOnly(db, rows.map((r) => r.employee_id));
+}
+
+/** `keepSent`: a reminder already sent for the current start time is not repeated (recipient re-plans). */
+async function planMeetingReminders(
+  ctx: CommandContext,
+  meetingId: string,
+  plan: (eventAt: Date, leadMinutes: number) => Date | null,
+  keepSent: boolean
+): Promise<void> {
+  const { rows: meetings } = await ctx.tx.query<{ id: string; starts_at: Date }>(
+    `SELECT id, starts_at FROM meetings WHERE id = $1 AND status = 'scheduled'`,
+    [meetingId]
+  );
+  const meeting = meetings[0];
+  if (!meeting) return;
+  const current = await meetingReminderRecipients(ctx.tx, meeting.id);
+  // Reminders of people who are no longer recipients are cancelled.
+  await ctx.tx.query(
+    `UPDATE reminders SET state = 'cancelled', updated_at = CURRENT_TIMESTAMP
+      WHERE source_type = 'meeting' AND source_id = $1 AND state = 'pending' AND NOT (recipient_id = ANY($2::uuid[]))`,
+    [meeting.id, current]
+  );
+  const leads = [...new Set(await getSetting(ctx.tx, 'notifications.meetingLeadMinutes'))];
+  for (const employeeId of current) {
+    for (const leadMinutes of leads) {
+      const key = `rem:meet:${meeting.id}:${employeeId}:${leadMinutes}`;
+      const scheduledFor = plan(meeting.starts_at, leadMinutes);
+      if (!scheduledFor) {
+        await ctx.tx.query(`UPDATE reminders SET state = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE dedupe_key = $1 AND state = 'pending'`, [key]);
+        continue;
+      }
+      if (keepSent) {
+        const { rows: sent } = await ctx.tx.query<{ id: string }>(
+          `SELECT id FROM reminders WHERE dedupe_key = $1 AND state = 'sent' AND scheduled_for >= $2`,
+          [key, new Date(meeting.starts_at.getTime() - leadMinutes * 60_000)]
+        );
+        if (sent[0]) continue;
+      }
+      await repo.upsertReminder(ctx.tx, {
+        dedupeKey: key,
+        sourceType: 'meeting',
+        sourceId: meeting.id,
+        recipientId: employeeId,
+        scheduledFor,
+        leadMinutes,
+      });
+    }
+  }
+}
 
 /** Active employees among `ids` (in-app notices go to active accounts only, C6). */
 async function activeOnly(db: Queryable, ids: (string | null | undefined)[]): Promise<string[]> {
@@ -473,6 +587,68 @@ async function notifyInApp(
 const str = (v: unknown): string | null => (typeof v === 'string' && UUID_RE.test(v) ? v : null);
 
 /**
+ * D18 data-correction recipient: the business's creator when that account is active and may still review
+ * corrections on the business (C6 / D9 access re-check at send time), else null. Owners are added separately.
+ */
+async function responsibleDataEntry(db: Queryable, creatorId: string | null, businessId: string): Promise<string | null> {
+  if (!creatorId) return null;
+  const { rows } = await db.query<{ role: string }>('SELECT role FROM employees WHERE id = $1 AND is_active = true', [creatorId]);
+  if (!rows[0] || rows[0].role === 'owner') return null;
+  const principal: Principal = { employeeId: creatorId, role: rows[0].role as Principal['role'], sessionState: 'active' };
+  const decision = await access.check(db, principal, 'correction.review', { type: 'business', id: businessId });
+  return decision.allowed ? creatorId : null;
+}
+
+/** D18: an open failure alert is merged into for this long (or until the Owner reads it). */
+export const FAILURE_ALERT_WINDOW_HOURS = 24;
+
+/** Failure group: the failed delivery's template, or the failed reminder's source type. */
+async function failureGroup(db: Queryable, sourceType: 'reminder' | 'notification_delivery', id: string): Promise<string> {
+  if (sourceType === 'reminder') {
+    const { rows } = await db.query<{ source_type: string }>('SELECT source_type FROM reminders WHERE id = $1', [id]);
+    return `reminder:${rows[0]?.source_type ?? 'unknown'}`;
+  }
+  const { rows } = await db.query<{ template: string }>('SELECT template FROM notification_deliveries WHERE id = $1', [id]);
+  return `delivery:${rows[0]?.template ?? 'unknown'}`;
+}
+
+async function notifyDeliveryFailure(
+  ctx: CommandContext,
+  event: DeliveredEvent,
+  sourceType: 'reminder' | 'notification_delivery',
+  recipients: string[]
+): Promise<void> {
+  const group = await failureGroup(ctx.tx, sourceType, event.aggregateId);
+  const enabled = await getSetting(ctx.tx, 'notifications.inApp');
+  const since = new Date(ctx.now.getTime() - FAILURE_ALERT_WINDOW_HOURS * 3600_000);
+  for (const recipientId of recipients) {
+    await repo.lockKey(ctx.tx, `ntf-failure:${recipientId}:${group}`);
+    const open = enabled ? await repo.openFailureAlert(ctx.tx, recipientId, group, since) : null;
+    if (open) {
+      await repo.bumpFailureAlert(ctx.tx, open.id, event.aggregateId);
+      continue;
+    }
+    await repo.insertDelivery(
+      ctx.tx,
+      {
+        dedupeKey: `notif:delivery_failure:${event.id}:${recipientId}`,
+        eventId: event.id,
+        family: 'business',
+        template: 'business.delivery_failure',
+        channel: 'in_app',
+        recipientId,
+        sourceType,
+        sourceId: event.aggregateId,
+        state: enabled ? 'sent' : 'suppressed',
+        lastError: enabled ? null : 'in-app notifications are off',
+        summary: { group, count: 1 },
+      },
+      ctx.now
+    );
+  }
+}
+
+/**
  * In-app notices for business events (E-07..E-15, E-17, BL-03, BL-17). Payload keys follow the
  * emitters (FX-BE / F-05): `assigneeId`, `holderId`; correction requesters are re-read from the
  * request row (ids-only payloads). Every name listed here has a branch; see `NO_CONSUMER_EVENTS`.
@@ -493,11 +669,13 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
     'attendance.checkout_pending_review',
     'attendance.missing_checkin_detected',
     'attendance.missing_checkout_detected',
+    'attendance.missing_checkout_reminder',
     'contact_reservation.overridden',
     'deal.closure_requested',
     'deal.closed',
     'deal.closure_rejected',
     'project.provisioning_failed',
+    'business.duplicate_review_requested',
     'two_factor.recovery_succeeded',
     'notification.failed',
     'notification.suppressed',
@@ -545,14 +723,22 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
         });
         return;
       case 'data_correction_request.submitted': {
-        // E-09: reviewers (Data Entry); the Owner when no Data Entry account is active.
-        let reviewers = await activeByRole(ctx.tx, 'data_entry');
-        if (reviewers.length === 0) reviewers = await owners();
-        const { rows } = await ctx.tx.query<{ requested_by: string }>('SELECT requested_by FROM data_correction_requests WHERE id = $1', [aggregateId]);
+        // D18 / E-09: the business's responsible Data Entry employee (its creator, while active and still
+        // allowed to review corrections on it) and every active Owner; never the requester.
+        const { rows } = await ctx.tx.query<{ requested_by: string; business_id: string; created_by: string | null }>(
+          `SELECT r.requested_by, r.business_id, b.created_by
+             FROM data_correction_requests r JOIN businesses b ON b.id = r.business_id WHERE r.id = $1`,
+          [aggregateId]
+        );
+        const req = rows[0];
+        if (!req) return;
+        const recipients = await owners();
+        const responsible = await responsibleDataEntry(ctx.tx, req.created_by, req.business_id);
+        if (responsible && !recipients.includes(responsible)) recipients.push(responsible);
         await notifyInApp(ctx, event, {
           key: 'correction',
           template: 'business.correction_request',
-          recipients: reviewers.filter((id) => id !== rows[0]?.requested_by),
+          recipients: recipients.filter((id) => id !== req.requested_by),
           sourceType: 'data_correction_request',
           sourceId: aggregateId,
         });
@@ -584,9 +770,13 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
           sourceId: str(payload.correctionId) ?? str(payload.sessionId) ?? aggregateId,
         });
         return;
+      case 'attendance.missing_checkout_detected':
+        // D18: the employee was already reminded at shift end + 1 h; the shift end + 6 h flag only feeds the
+        // Owner's review list and the next morning digest (`runDailyDigests`). No second notice.
+        return;
       case 'attendance.missing_checkin_detected':
-      case 'attendance.missing_checkout_detected': {
-        // E-12: the employee; a missing check-out is also an Owner exception (D5).
+      case 'attendance.missing_checkout_reminder': {
+        // E-12: the employee (D18: the checkout reminder at shift end + 1 h).
         const recipients = await activeOnly(ctx.tx, [str(payload.employeeId)]);
         await notifyInApp(ctx, event, {
           key: 'att_alert',
@@ -595,13 +785,14 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
           sourceType: 'attendance_session',
           sourceId: str(payload.sessionId),
         });
-        if (name === 'attendance.missing_checkout_detected') {
+        if (name === 'attendance.missing_checkin_detected') {
+          // D18 (attendance agent): missing check-in → Owner in-app at shift start + grace + 30 min.
           await notifyInApp(ctx, event, {
             key: 'att_owner',
             template: 'business.attendance_review',
             recipients: (await owners()).filter((id) => !recipients.includes(id)),
-            sourceType: 'attendance_session',
-            sourceId: str(payload.sessionId),
+            sourceType: 'employee',
+            sourceId: str(payload.employeeId),
           });
         }
         return;
@@ -632,6 +823,10 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
         // E-15: active Owners.
         await notifyInApp(ctx, event, { key: 'provisioning', template: 'business.provisioning_failed', recipients: await owners(), sourceType: 'deal', sourceId: aggregateId });
         return;
+      case 'business.duplicate_review_requested':
+        // D10 (BE2): "Request Owner review" of a blocking duplicate → active Owners. Grants the requester nothing.
+        await notifyInApp(ctx, event, { key: 'dup_review', template: 'business.duplicate_review', recipients: await owners(), sourceType: 'business', sourceId: aggregateId });
+        return;
       case 'two_factor.recovery_succeeded':
         // E-04: security notice to the account holder.
         await notifyInApp(ctx, event, {
@@ -645,14 +840,9 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
         return;
       case 'notification.failed':
       case 'reminder.failed':
-        // E-17 / D6: a delivery failure is an Owner item on the delivery monitor.
-        await notifyInApp(ctx, event, {
-          key: 'delivery_failure',
-          template: 'business.delivery_failure',
-          recipients: await owners(),
-          sourceType: name === 'reminder.failed' ? 'reminder' : 'notification_delivery',
-          sourceId: aggregateId,
-        });
+        // E-17 / D6: a delivery failure is an Owner item on the delivery monitor (every failed row stays
+        // there). D18: one open in-app alert per Owner and failure group; repeats bump its count.
+        await notifyDeliveryFailure(ctx, event, name === 'reminder.failed' ? 'reminder' : 'notification_delivery', await owners());
         return;
       case 'notification.suppressed':
       case 'reminder.suppressed':
@@ -683,30 +873,45 @@ export const NO_CONSUMER_EVENTS: Readonly<Record<string, string>> = {
 /** Reminders that throw this many times are recorded `failed` (R2-30: no endless re-claim). */
 const REMINDER_MAX_ATTEMPTS = 3;
 
-type ReminderCheck = { ok: true } | { ok: false; state: 'suppressed' | 'cancelled'; reason: string };
+/**
+ * `redactTo`: the recipient may not see the meeting (D15: a Call Center agent has no deal / meeting access)
+ * but may still see its business, so the notice points at the business and names no deal detail (D18
+ * "respect current access when generating notification content").
+ */
+type ReminderCheck =
+  | { ok: true; redactTo?: { sourceType: 'business'; sourceId: string } }
+  | { ok: false; state: 'suppressed' | 'cancelled'; reason: string };
 
 /** C6 / HR-7 send-time re-check: recipient active, source still open, recipient still allowed. */
 async function recheckReminder(db: Queryable, rem: repo.ReminderRow): Promise<ReminderCheck> {
   const { rows: emp } = await db.query<{ role: string; is_active: boolean }>('SELECT role, is_active FROM employees WHERE id = $1', [rem.recipient_id]);
   if (!emp[0] || !emp[0].is_active) return { ok: false, state: 'suppressed', reason: 'recipient inactive' };
+  const principal: Principal = { employeeId: rem.recipient_id, role: emp[0].role as Principal['role'], sessionState: 'active' };
   if (rem.source_type === 'follow_up') {
     const { rows } = await db.query<{ state: string; responsible_id: string }>('SELECT state, responsible_id FROM follow_ups WHERE id = $1', [rem.source_id]);
     if (!rows[0] || rows[0].state !== 'scheduled') return { ok: false, state: 'cancelled', reason: 'follow-up no longer scheduled' };
     if (rows[0].responsible_id !== rem.recipient_id) return { ok: false, state: 'cancelled', reason: 'recipient no longer responsible' };
-  } else {
-    const { rows } = await db.query<{ status: string; attending: boolean }>(
-      `SELECT m.status, EXISTS (SELECT 1 FROM meeting_attendees a WHERE a.meeting_id = m.id AND a.employee_id = $2 AND a.removed_at IS NULL) AS attending
-         FROM meetings m WHERE m.id = $1`,
-      [rem.source_id, rem.recipient_id]
-    );
-    if (!rows[0] || rows[0].status !== 'scheduled') return { ok: false, state: 'cancelled', reason: 'meeting no longer scheduled' };
-    if (!rows[0].attending) return { ok: false, state: 'cancelled', reason: 'recipient no longer attending' };
+    const decision = await access.check(db, principal, 'follow_up.read', { type: 'follow_up', id: rem.source_id });
+    if (!decision.allowed) return { ok: false, state: 'suppressed', reason: 'recipient may no longer see the source' };
+    return { ok: true };
   }
-  const principal: Principal = { employeeId: rem.recipient_id, role: emp[0].role as Principal['role'], sessionState: 'active' };
-  const action = (rem.source_type === 'follow_up' ? 'follow_up.read' : 'meeting.read') as Action;
-  const decision = await access.check(db, principal, action, { type: rem.source_type, id: rem.source_id });
-  if (!decision.allowed) return { ok: false, state: 'suppressed', reason: 'recipient may no longer see the source' };
-  return { ok: true };
+  const { rows } = await db.query<{ status: string; business_id: string }>('SELECT status, business_id FROM meetings WHERE id = $1', [rem.source_id]);
+  if (!rows[0] || rows[0].status !== 'scheduled') return { ok: false, state: 'cancelled', reason: 'meeting no longer scheduled' };
+  // D18: still the deal's Developer, the business's Call Center agent or an attendee.
+  if (!(await meetingReminderRecipients(db, rem.source_id)).includes(rem.recipient_id)) {
+    return { ok: false, state: 'cancelled', reason: 'recipient no longer a meeting recipient' };
+  }
+  const decision = await access.check(db, principal, 'meeting.read', { type: 'meeting', id: rem.source_id });
+  if (decision.allowed) return { ok: true };
+  const business = await access.check(db, principal, 'business.read', { type: 'business', id: rows[0].business_id });
+  if (business.allowed) return { ok: true, redactTo: { sourceType: 'business', sourceId: rows[0].business_id } };
+  return { ok: false, state: 'suppressed', reason: 'recipient may no longer see the source' };
+}
+
+/** Follow-up reminders with a negative lead are the D18 overdue alert (planned after the due time). */
+function reminderTemplate(rem: repo.ReminderRow): string {
+  if (rem.source_type === 'meeting') return 'business.meeting_reminder';
+  return rem.lead_minutes < 0 ? 'business.follow_up_overdue' : 'business.follow_up_reminder';
 }
 
 export async function dispatchDueReminders(): Promise<{ claimed: number; dispatched: number }> {
@@ -734,12 +939,13 @@ export async function dispatchDueReminders(): Promise<{ claimed: number; dispatc
             dedupeKey: `notif:rem:${rem.id}:${rem.scheduled_for.getTime()}`,
             eventId: null,
             family: 'business',
-            template: rem.source_type === 'follow_up' ? 'business.follow_up_reminder' : 'business.meeting_reminder',
+            template: reminderTemplate(rem),
             channel: 'in_app',
             recipientId: rem.recipient_id,
-            sourceType: rem.source_type,
-            sourceId: rem.source_id,
+            sourceType: check.redactTo?.sourceType ?? rem.source_type,
+            sourceId: check.redactTo?.sourceId ?? rem.source_id,
             state: 'sent',
+            summary: { leadMinutes: rem.lead_minutes },
           },
           ctx.now
         );
@@ -761,6 +967,148 @@ export async function dispatchDueReminders(): Promise<{ claimed: number; dispatc
   }
 
   return { claimed: claimed.length, dispatched };
+}
+
+// ---------------------------------------------------------------------------
+// J-13 D18 daily digests (in-app only; no e-mail mapping exists for these templates)
+// ---------------------------------------------------------------------------
+
+export interface DigestResult {
+  /** No Owner-saved attendance settings version (or no timezone): nothing is sent on assumed values. */
+  notConfigured: boolean;
+  /** Not a scheduled working day (weekend / company holiday), or outside today's shift. */
+  skipped: 'non_working_day' | 'before_shift' | 'after_shift' | null;
+  agentDigests: number;
+  ownerDigests: number;
+}
+
+/**
+ * D1 / D18: the schedule the digests run on, only while attendance is configured (attendance's own
+ * `missingSettings` gate: an Owner-saved version with timezone, days, start, office IPs and confirmed
+ * holidays). Env defaults (assumed Mon–Fri / 09:00) never count ("do not activate using assumed values").
+ */
+async function configuredSchedule(db: Queryable): Promise<Schedule | null> {
+  const { schedule } = await currentSchedule(db);
+  return missingSettings(schedule).length === 0 ? schedule : null;
+}
+
+/** The scheduled working day before `date` (skips weekends and company holidays); null if none in 31 days. */
+function previousWorkingDay(date: string, s: Schedule): string | null {
+  for (let i = 1; i <= 31; i++) {
+    const d = addDays(date, -i);
+    if (!nonWorkingReason(d, s)) return d;
+  }
+  return null;
+}
+
+/**
+ * J-13 (every 5 min, idempotent): from company shift start on a scheduled working day —
+ *  - each assigned agent gets one in-app digest of their open follow-ups due today (access re-checked);
+ *  - each active Owner gets one morning digest: overdue follow-ups (`followUps.overdueMinutes`, the same
+ *    "overdue" as the calling queue) and the previous scheduled day's missing-checkout flags (J-04).
+ * One row per recipient per company date (dedupe key); nothing is sent when there is nothing to report.
+ * A run after the shift has ended (worker down all day) sends nothing for that day.
+ */
+export async function runDailyDigests(ctx: CommandContext): Promise<DigestResult> {
+  const out: DigestResult = { notConfigured: false, skipped: null, agentDigests: 0, ownerDigests: 0 };
+  const s = await configuredSchedule(ctx.tx);
+  if (!s) {
+    out.notConfigured = true;
+    return out;
+  }
+  const now = ctx.now;
+  const date = workDateOf(now, s.timezone);
+  // Owner decision 2026-10-29: each recipient's own start time / working days decide their digest
+  // window (attendance `employeeSchedule`); company holidays apply to everyone. `skipped` reports the
+  // company-default window.
+  const windowOf = (es: Schedule): DigestResult['skipped'] => {
+    if (nonWorkingReason(date, es)) return 'non_working_day';
+    const start = zonedToUtc(date, es.shiftStart, es.timezone);
+    // D1: shift end = scheduled start + 9 h.
+    const end = shiftEndAt(date, es) ?? new Date(start.getTime() + REQUIRED_MINUTES * 60_000);
+    if (now.getTime() < start.getTime()) return 'before_shift';
+    if (now.getTime() >= end.getTime()) return 'after_shift';
+    return null;
+  };
+  out.skipped = windowOf(s);
+  if (s.holidays.includes(date)) return out;
+  const inWindow = async (employeeId: string) => windowOf(await employeeSchedule(ctx.tx, employeeId, date)) === null;
+  const enabled = await getSetting(ctx.tx, 'notifications.inApp');
+  const inApp = (key: string, template: string, recipientId: string, summary: Record<string, unknown>) =>
+    repo.insertDelivery(
+      ctx.tx,
+      {
+        dedupeKey: key,
+        eventId: null,
+        family: 'business',
+        template,
+        channel: 'in_app',
+        recipientId,
+        sourceType: 'digest',
+        sourceId: date,
+        state: enabled ? 'sent' : 'suppressed',
+        lastError: enabled ? null : 'in-app notifications are off',
+        summary,
+      },
+      now
+    );
+
+  // Follow-up digest: the current assignee of each open follow-up due today (company date).
+  const dayStart = zonedToUtc(date, '00:00', s.timezone);
+  const dayEnd = zonedToUtc(addDays(date, 1), '00:00', s.timezone);
+  const { rows: due } = await ctx.tx.query<{ id: string; responsible_id: string; role: string }>(
+    `SELECT f.id, f.responsible_id, e.role
+       FROM follow_ups f JOIN employees e ON e.id = f.responsible_id AND e.is_active = true
+      WHERE f.state = 'scheduled' AND f.scheduled_for >= $1 AND f.scheduled_for < $2
+        AND NOT EXISTS (SELECT 1 FROM notification_deliveries n WHERE n.dedupe_key = 'notif:digest:fup:' || $3 || ':' || f.responsible_id::text)
+        -- D1: an Owner-approved day off suppresses the agent's attendance-day notices (read-only, attendance table).
+        AND NOT EXISTS (SELECT 1 FROM attendance_days_off o WHERE o.employee_id = f.responsible_id AND o.cancelled_at IS NULL
+                          AND $3::date BETWEEN o.start_date AND o.end_date)
+      ORDER BY f.responsible_id, f.scheduled_for`,
+    [dayStart, dayEnd, date]
+  );
+  const byAgent = new Map<string, { role: string; ids: string[] }>();
+  for (const r of due) {
+    const a = byAgent.get(r.responsible_id) ?? { role: r.role, ids: [] };
+    a.ids.push(r.id);
+    byAgent.set(r.responsible_id, a);
+  }
+  for (const [agentId, a] of byAgent) {
+    if (!(await inWindow(agentId))) continue;
+    // C6 / D9: count only the follow-ups the agent may still see now.
+    const principal: Principal = { employeeId: agentId, role: a.role as Principal['role'], sessionState: 'active' };
+    const decisions = await access.checkMany(ctx.tx, principal, 'follow_up.read', a.ids.map((id) => ({ type: 'follow_up' as const, id })));
+    const visible = a.ids.filter((id) => decisions.get(id)?.allowed).length;
+    if (visible === 0) continue;
+    if (await inApp(`notif:digest:fup:${date}:${agentId}`, 'business.follow_up_digest', agentId, { date, dueToday: visible })) out.agentDigests++;
+  }
+
+  // Owner morning digest (one per Owner per company date).
+  const ownerIds = await activeByRole(ctx.tx, 'owner');
+  if (ownerIds.length === 0) return out;
+  const overdueMinutes = await getSetting(ctx.tx, 'followUps.overdueMinutes');
+  const { rows: od } = await ctx.tx.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM follow_ups WHERE state = 'scheduled' AND scheduled_for + make_interval(mins => $2::int) < $1`,
+    [now, overdueMinutes]
+  );
+  const prev = previousWorkingDay(date, s);
+  let missing = 0;
+  if (prev) {
+    // Read-only: the missing-checkout flags J-04 (attendance.exception_check) writes to attendance_exceptions.
+    const { rows: mc } = await ctx.tx.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM attendance_exceptions WHERE kind = 'missing_checkout' AND work_date = $1::date`,
+      [prev]
+    );
+    missing = mc[0]?.n ?? 0;
+  }
+  const overdue = od[0]?.n ?? 0;
+  if (overdue === 0 && missing === 0) return out;
+  const summary = { date, overdueFollowUps: overdue, missingCheckouts: missing, missingCheckoutDate: prev };
+  for (const ownerId of ownerIds) {
+    if (!(await inWindow(ownerId))) continue;
+    if (await inApp(`notif:digest:owner:${date}:${ownerId}`, 'business.owner_digest', ownerId, summary)) out.ownerDigests++;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -882,6 +1230,9 @@ export async function dispatchDueDeliveries(): Promise<DispatchResult> {
   const retries = await retrySchedule();
   const transport = getEmailTransport();
   // smtp success = accepted by the provider; log / memory success = captured (never delivered).
+  // D18 delivery states: queued (pending / retry_pending), provider-accepted, failed, test-captured. "Delivered"
+  // is NOT recorded for e-mail: it cannot be confirmed without provider delivery webhooks, which v1 does not
+  // have. In-app rows are `sent` (delivered by being written).
   const okState: repo.DeliveryState = transport.kind === 'smtp' ? 'accepted' : 'captured';
 
   for (const d of claimed) {
