@@ -1,0 +1,5 @@
+# Shell scripts and Dockerfiles run inside Linux containers: always LF, even on a Windows checkout.
+*.sh text eol=lf
+*.Dockerfile text eol=lf
+Dockerfile text eol=lf
+devops/nginx/** text eol=lf

@@ -6,7 +6,7 @@ add_header X-Frame-Options "DENY" always;
 # Referrer-Policy: single source. proxy-common.inc hides the upstream header; $edge_referrer_policy (nginx.conf map)
 # is "no-referrer" for /reset-password and /session-ended, otherwise strict-origin-when-cross-origin.
 add_header Referrer-Policy $edge_referrer_policy always;
-add_header Permissions-Policy "camera=(), microphone=(), geolocation=(self), payment=()" always;
+add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
 add_header Cross-Origin-Opener-Policy "same-origin" always;
 # CSP: the Next proxy (frontend/proxy.ts) sends the per-request nonce policy with script-src/style-src/etc. Browsers
 # enforce EVERY CSP header they receive, so the edge must not carry default-src/script-src (an edge default-src

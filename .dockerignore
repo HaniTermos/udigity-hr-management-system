@@ -17,6 +17,7 @@
 assets
 docs
 devops/backup
+!devops/backup/*.sh
 devops/env/*.env
 **/*.log
 **/npm-debug.log*

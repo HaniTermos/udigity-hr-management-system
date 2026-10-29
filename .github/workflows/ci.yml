@@ -1,9 +1,14 @@
 name: CI
 
+# Free-plan budget (private repo, 2,000 min/month): every PR push runs the light jobs (secret scan + verify,
+# ~8 min). The heavy jobs (Docker build, E2E, prod smoke) run on pushes to main, on "Run workflow"
+# (workflow_dispatch) and on PRs carrying the `full-ci` label. Security checks are unchanged.
 on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -107,6 +112,7 @@ jobs:
     name: Docker images (build only, no push)
     runs-on: ubuntu-latest
     needs: verify
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -136,7 +142,7 @@ jobs:
       - name: Validate compose files
         run: |
           mkdir -p devops/env
-          for f in backend frontend postgres migrate; do cp devops/env/$f.env.example devops/env/$f.env; done
+          for f in backend frontend postgres migrate backup; do cp devops/env/$f.env.example devops/env/$f.env; done
           docker compose -f docker-compose.prod.yml config -q
           docker compose -f docker-compose.test.yml config -q
           docker compose config -q
@@ -145,6 +151,7 @@ jobs:
     name: E2E (Playwright, built app, postgres service)
     runs-on: ubuntu-latest
     needs: verify
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     timeout-minutes: 40
 
     services:
@@ -207,6 +214,7 @@ jobs:
     name: Production stack smoke test (docker compose, own project)
     runs-on: ubuntu-latest
     needs: verify
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

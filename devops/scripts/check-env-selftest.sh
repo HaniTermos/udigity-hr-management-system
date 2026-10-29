@@ -18,6 +18,7 @@ echo "MIGRATION_DATABASE_URL=postgres://udigity_owner:$OWN@db:5432/udigity" > "$
 cat > "$T/backend.env" <<E
 NODE_ENV=production
 TRUST_PROXY=true
+TRUSTED_PROXY_CIDRS=172.16.0.0/12
 DATABASE_URL=postgres://udigity_api:$APP@db:5432/udigity
 SESSION_SECRET=$(openssl rand -hex 32)
 TOTP_ENC_KEY=$(openssl rand -hex 32)
@@ -27,6 +28,14 @@ POLICY_COMPANY_TIMEZONE=Asia/Beirut
 COMPANY_TIMEZONE=Asia/Beirut
 E
 printf 'NODE_ENV=production\nINTERNAL_API_URL=http://backend:5000\n' > "$T/frontend.env"
+BKP="bkp$(openssl rand -hex 12)"
+cat > "$T/backup.env" <<E
+BACKUP_DB_USER=udigity_backup
+BACKUP_DB_PASSWORD=$BKP
+TZ=Asia/Beirut
+BACKUP_TIME=02:30
+AGE_RECIPIENT=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq
+E
 
 FAILS=0
 expect() { # want(0|1) label dir
@@ -42,6 +51,13 @@ mut sed -i "s#udigity_api:$APP@#udigity_api:wrong@#" "$T.m/backend.env"; expect 
 mut sed -i "s#^APP_DB_USER=.*#APP_DB_USER=udigity_owner#" "$T.m/postgres.env"; expect 1 "APP_DB_USER equal to POSTGRES_USER is rejected" "$T.m"
 mut sed -i "s#^APP_DB_PASSWORD=.*#APP_DB_PASSWORD=$OWN#" "$T.m/postgres.env"; expect 1 "same password for both roles is rejected" "$T.m"
 mut rm "$T.m/migrate.env"; expect 1 "missing migrate.env is rejected" "$T.m"
+mut sed -i "/^TRUSTED_PROXY_CIDRS=/d" "$T.m/backend.env"; expect 1 "missing TRUSTED_PROXY_CIDRS is rejected (D2)" "$T.m"
+mut bash -c "echo POLICY_ATTENDANCE_VERIFICATION_MODE=disabled >> '$T.m/backend.env'"; expect 1 "allow-all office mode is rejected (D2)" "$T.m"
 mut bash -c "echo MIGRATION_DATABASE_URL=postgres://x:y@db/z >> '$T.m/backend.env'"; expect 1 "MIGRATION_DATABASE_URL in backend.env is rejected" "$T.m"
+mut rm "$T.m/backup.env"; expect 1 "missing backup.env is rejected (D19)" "$T.m"
+mut sed -i "s#^BACKUP_DB_USER=.*#BACKUP_DB_USER=udigity_owner#" "$T.m/backup.env"; expect 1 "backup role equal to the owner is rejected" "$T.m"
+mut sed -i "s#^BACKUP_DB_PASSWORD=.*#BACKUP_DB_PASSWORD=$APP#" "$T.m/backup.env"; expect 1 "backup password equal to the app password is rejected" "$T.m"
+mut sed -i "s#^AGE_RECIPIENT=.*#AGE_RECIPIENT=age1CHANGE_ME#" "$T.m/backup.env"; expect 1 "placeholder AGE_RECIPIENT is rejected" "$T.m"
+mut sed -i "s#^BACKUP_TIME=.*#BACKUP_TIME=2:30am#" "$T.m/backup.env"; expect 1 "malformed BACKUP_TIME is rejected" "$T.m"
 rm -rf "$T.m"
 [ "$FAILS" = 0 ] && echo "check-env self-test PASSED" || { echo "check-env self-test FAILED ($FAILS)"; exit 1; }

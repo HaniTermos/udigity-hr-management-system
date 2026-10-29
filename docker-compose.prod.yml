@@ -6,9 +6,11 @@
 #   cp devops/env/migrate.env.example  devops/env/migrate.env    # owner credentials, loaded ONLY by the migrate job
 #   docker compose -f docker-compose.prod.yml build
 #   docker compose -f docker-compose.prod.yml --profile tools run --rm migrate    # runs as the owner role
-#   docker compose -f docker-compose.prod.yml up -d      # db, backend, worker, frontend, nginx
+#   cp devops/env/backup.env.example   devops/env/backup.env     # age PUBLIC key + backup role password
+#   docker compose -f docker-compose.prod.yml up -d      # db, backend, worker, frontend, nginx, backup
 #
-# Local smoke test: devops/scripts/prod-smoke.sh (overrides UDIGITY_ENV_DIR, NGINX_CERTS_DIR, HTTP_PORT, HTTPS_PORT).
+# Local smoke test: devops/scripts/prod-smoke.sh (overrides UDIGITY_ENV_DIR, NGINX_CERTS_DIR, HTTP_PORT, HTTPS_PORT;
+# runs without the backup service: --scale backup=0).
 name: udigity
 
 x-logging: &logging
@@ -21,13 +23,30 @@ services:
   db:
     image: postgres:17-alpine
     restart: unless-stopped
-    env_file: ${UDIGITY_ENV_DIR:-devops/env}/postgres.env
+    env_file:
+      - ${UDIGITY_ENV_DIR:-devops/env}/postgres.env
+      # BACKUP_DB_PASSWORD for the backup role (devops/postgres/init/20-backup-role.sh). Optional for the smoke test.
+      - path: ${UDIGITY_ENV_DIR:-devops/env}/backup.env
+        required: false
     environment:
       TZ: UTC
       PGDATA: /var/lib/postgresql/data/pgdata
+    # Continuous WAL archiving (policy D19, RPO <= 15 min): each completed WAL segment is copied to the wal_archive
+    # volume; archive_timeout forces a segment switch at least every 15 minutes when there were writes. The backup
+    # service encrypts and moves the segments within a minute. /wal is created owned by postgres before start-up.
+    entrypoint: ["sh", "-c", "mkdir -p /wal && chown postgres:postgres /wal && chmod 700 /wal && exec docker-entrypoint.sh \"$$@\"", "--"]
+    command:
+      - postgres
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=test ! -f /wal/%f && cp %p /wal/%f.tmp && mv /wal/%f.tmp /wal/%f
+      - -c
+      - archive_timeout=900
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Creates the limited runtime login role (APP_DB_USER) on the first start of an empty data directory.
+      - wal_archive:/wal
+      # Creates the limited runtime login role (APP_DB_USER) and the backup role on the first start of an empty data directory.
       - ./devops/postgres/init:/docker-entrypoint-initdb.d:ro
     networks: [internal]
     # No published port: only the backend and the backup job reach the database.
@@ -163,6 +182,40 @@ services:
       start_period: 30s
     logging: *logging
 
+  # Backups (policy D19; Owner-approved exception 2026-10-29: stored on THIS server in the "backups" volume, so losing
+  # the server or its disk loses the database and the backups together; off-server copy: devops/DEPLOY.md section 11).
+  # Nightly encrypted pg_dump at BACKUP_TIME (TZ), weekly encrypted base backup, WAL encrypted within a minute.
+  # Connects as the read-only backup role (backup.env), never the owner or app role. Healthy = a successful nightly
+  # dump in the last 26 h. Run one now: docker compose -f docker-compose.prod.yml exec backup backupd nightly
+  backup:
+    build:
+      context: .
+      dockerfile: devops/backup.Dockerfile
+    image: udigity-backup:${UDIGITY_TAG:-latest}
+    restart: unless-stopped
+    env_file: ${UDIGITY_ENV_DIR:-devops/env}/backup.env
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    volumes:
+      - ${BACKUP_VOLUME:-backups}:/backups
+      - wal_archive:/wal
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "/opt/backup/backupd.sh", "health"]
+      interval: 5m
+      timeout: 10s
+      retries: 1
+      start_period: 30m
+    logging: *logging
+
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
@@ -201,3 +254,7 @@ networks:
 
 volumes:
   pgdata: {}
+  # Raw WAL from archive_command; the backup service empties it every minute (encrypted copies go to "backups").
+  wal_archive: {}
+  # Encrypted backups. BACKUP_VOLUME may point at a host path instead (owned by uid 70, mode 700).
+  backups: {}

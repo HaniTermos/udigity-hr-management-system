@@ -48,6 +48,7 @@ cat > "$TMP/env/backend.env" <<E
 NODE_ENV=production
 PORT=5000
 TRUST_PROXY=true
+TRUSTED_PROXY_CIDRS=uniquelocal
 DATABASE_URL=postgres://udigity_api:$APPPW@db:5432/udigity
 SESSION_SECRET=$(openssl rand -hex 32)
 TOTP_ENC_KEY=$(openssl rand -hex 32)
@@ -62,6 +63,8 @@ cat > "$TMP/env/frontend.env" <<E
 NODE_ENV=production
 INTERNAL_API_URL=http://backend:5000
 E
+# The backup service is not started here (--scale backup=0: it needs a real age key); compose still needs the file.
+echo "# smoke: no backup role, no key" > "$TMP/env/backup.env"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=$HOST" \
   -keyout "$TMP/certs/privkey.pem" -out "$TMP/certs/fullchain.pem" >/dev/null 2>&1 || { echo "openssl failed"; exit 2; }
 
@@ -70,8 +73,8 @@ echo "== build =="
 echo "== db + migrate =="
 "${DC[@]}" up -d --wait db || { echo "db failed"; exit 2; }
 "${DC[@]}" --profile tools run --rm migrate || { echo "migrate failed"; exit 2; }
-echo "== up (waits for healthy) =="
-"${DC[@]}" up -d --wait --wait-timeout 240 || { echo "stack did not become healthy"; "${DC[@]}" ps; "${DC[@]}" logs --tail=40 backend worker frontend nginx; exit 2; }
+echo "== up (waits for healthy; the backup service needs a real age key and is not started here) =="
+"${DC[@]}" up -d --wait --wait-timeout 240 --scale backup=0 || { echo "stack did not become healthy"; "${DC[@]}" ps; "${DC[@]}" logs --tail=40 backend worker frontend nginx; exit 2; }
 "${DC[@]}" ps
 
 internal() { "${DC[@]}" exec -T backend node -e "fetch('http://127.0.0.1:5000$1').then(async r=>{console.log(r.status);process.exit(0)}).catch(()=>{console.log(0)})"; }

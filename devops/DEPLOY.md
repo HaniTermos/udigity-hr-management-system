@@ -9,10 +9,11 @@ Stack: `nginx` (80/443, the only published ports) -> `frontend` and `backend` ->
 internet route. The `worker` is on the internal network plus an outbound-only `egress` network (it needs the external
 SMTP server); it publishes no port and is not on the public network, so nothing reaches it from outside.
 
-Two database roles: `udigity_owner` (superuser/owner) runs migrations and backups through the one-shot `migrate` job;
+Three database roles: `udigity_owner` (superuser/owner) runs migrations through the one-shot `migrate` job;
 the API and worker run as `udigity_api`, a limited login role (member of the group role `udigity_app` from migration
 012: DML on all tables, `SELECT` + `INSERT` only on `audit_events`, no `UPDATE`/`DELETE`, owns nothing). The owner
-credentials live in `migrate.env`, which only the `migrate` job loads.
+credentials live in `migrate.env`, which only the `migrate` job loads. The `backup` service connects as
+`udigity_backup` (read-only + replication, password in `backup.env`; section 11).
 
 Sizing: 2 vCPU, 4 GB RAM, 40 GB disk is a sensible minimum.
 
@@ -111,9 +112,12 @@ Fill in the values (never commit these files, never paste them into chat or tick
 | `POSTGRES_PASSWORD` (postgres.env) and the password inside `MIGRATION_DATABASE_URL` (migrate.env) | owner role `udigity_owner`: `openssl rand -base64 32 \| tr -d '/+='` (same value in both) |
 | `APP_DB_PASSWORD` (postgres.env) and the password inside `DATABASE_URL` (backend.env) | runtime role `udigity_api`: a **different** value, same generator (same value in both files) |
 | `APP_ORIGIN`, `PUBLIC_APP_URL` | `https://app.example.com` (your host) |
-| `POLICY_COMPANY_TIMEZONE` | required (BL-16), IANA name, e.g. `Asia/Beirut`; confirm with the Owner. Without it (and no Owner-saved value) `/readyz` answers 503. The alias `COMPANY_TIMEZONE` is only a fallback |
-| `POLICY_ATTENDANCE_OFFICE_IPS` | office public IP(s), comma-separated; may stay empty ("Not configured") |
+| `POLICY_COMPANY_TIMEZONE` | required (BL-16), IANA name: the **company-confirmed** value (proposed `Asia/Beirut`, pending confirmation; the example ships it empty). Without it (and no Owner-saved value) `/readyz` answers 503. The alias `COMPANY_TIMEZONE` is only a fallback. Attendance enforcement (lateness, alerts, check-in) still starts only after the Owner saves the complete attendance settings in Settings (D1) |
+| `TRUSTED_PROXY_CIDRS` | required in production (D2): the nginx proxy address(es) whose `X-Forwarded-For` entry is trusted for the office-IP check, as IPs/CIDRs (or `loopback`, `linklocal`, `uniquelocal`), e.g. the compose network subnet from `docker network inspect <project>_default`. Unset → no proxy is trusted and `/readyz` answers 503. `TRUST_PROXY` is a development/test fallback only |
+| `POLICY_ATTENDANCE_OFFICE_IPS` | office public IP(s), comma-separated; a pre-fill suggestion only: the Owner saves the office IP list in Settings ("Not configured" until then) |
 | `AGE_RECIPIENT` (backup.env) | public key from `age-keygen -o udigity-backup.agekey` run on the Owner's machine (section 11) |
+| `BACKUP_DB_PASSWORD` (backup.env) | backup role `udigity_backup`: a third, **different** value, same generator |
+| `TZ` (backup.env) | same IANA zone as `POLICY_COMPANY_TIMEZONE`; `BACKUP_TIME` (default `02:30`) is read in it |
 
 Then validate (prints key names only, never values; exits 1 on any error):
 
@@ -130,9 +134,10 @@ query or credentials); the API and the worker refuse to start otherwise. Links n
 ```sh
 export UDIGITY_TAG=$(git rev-parse --short HEAD)       # image tag; keep it exported for the rest of the session
 docker compose -f docker-compose.prod.yml build
-docker compose -f docker-compose.prod.yml up -d db   # first start of an empty volume creates the udigity_api login role
+docker compose -f docker-compose.prod.yml up -d db   # first start of an empty volume creates the udigity_api and udigity_backup roles
 docker compose -f docker-compose.prod.yml --profile tools run --rm migrate
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml exec db sh /docker-entrypoint-initdb.d/20-backup-role.sh   # ops_alerts grant (needs the migrations)
+docker compose -f docker-compose.prod.yml up -d      # also starts "backup": first dump + base backup right away
 docker compose -f docker-compose.prod.yml ps            # every service should reach "healthy"
 ```
 
@@ -209,6 +214,21 @@ SMTP_USER=...
 SMTP_PASS=...
 SMTP_FROM=no-reply@your-domain     # plain address, domain with SPF/DKIM/DMARC
 EMAIL_ALLOW_REAL_SEND=true
+ALERT_EMAIL_TO=ops@your-domain     # optional: failure alerts (API 500s, dead jobs/events, crashes), 1 email per kind per 15 min
+```
+
+**Gmail account (the Owner's choice, 2026-10-29).** Turn on 2-Step Verification on the Google account, then create an
+App Password (Google Account → Security → App passwords). Gmail only sends as the signed-in address, and allows about
+500 messages a day. No DNS records are needed.
+
+```
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=<the Gmail address>
+SMTP_PASS=<the 16-character App Password; never the account password>
+SMTP_FROM=<the same Gmail address>
+EMAIL_ALLOW_REAL_SEND=true
 ```
 
 ```sh
@@ -227,63 +247,99 @@ development / tests (log or memory transport: nothing left the machine). **sent*
 
 ## 11. Backups
 
-Policy C1: RPO 24 h, RTO 4 h, retention 14 daily / 8 weekly / 6 monthly, restore drill quarterly.
+Policy D19: nightly dump + continuous WAL archiving, encrypted, retention 14 daily / 8 weekly / 6 monthly, RPO 15 min,
+RTO 4 h, restore drill before launch and quarterly. Details: `devops/backup/README.md`.
+
+**RPO 15 min and RTO 4 h are objectives, not yet demonstrated.** They count as met only after a restore drill (both
+(a) and (b) below) on the real server's backups, recorded in the drill log. What the setup is designed to deliver:
+WAL is archived at least every 15 min (`archive_timeout=900`), so a point-in-time restore loses at most the last
+~15 min of writes; the nightly dump alone loses up to 24 h.
+
+**Owner-approved exception (2026-10-29): backups are stored on the same server**, in the `backups` Docker volume,
+not "outside the application server" as D19 says. Risk: losing the server or its disk loses the database and every
+backup together; only a provider snapshot or an off-server copy protects against that. Upgrade path: copy the volume
+off-server (the files are already encrypted), e.g. a host cron
+`rclone sync "$(docker volume inspect -f '{{.Mountpoint}}' udigity_backups)" remote:udigity-backups`.
 
 1. On the **Owner's workstation** (not the VPS) generate the key pair: `age-keygen -o udigity-backup.agekey`. Keep two
    offline copies of that file (password manager plus a USB stick in a safe). Only the public key (`age1...`) goes on the
-   server: set `AGE_RECIPIENT` in `devops/env/backup.env`. For gpg instead, set `BACKUP_ENCRYPTION=gpg` and
-   `GPG_RECIPIENT` (see `devops/backup/README.md`).
-2. Set `BACKUP_DIR` (default `/var/backups/udigity`) and, for the off-site copy, `RCLONE_REMOTE` (an rclone remote such
-   as `s3remote:udigity-backups`; install rclone and run `rclone config` as the cron user). Files are already encrypted
-   before they leave the server. Re-run `devops/scripts/check-env.sh`.
-3. Run one backup by hand and look at the result:
+   server: `AGE_RECIPIENT` in `devops/env/backup.env`, with `BACKUP_DB_PASSWORD` and `TZ` (section 7).
+2. `docker compose -f docker-compose.prod.yml up -d` starts the `backup` service (section 8). Check it:
    ```sh
-   sudo mkdir -p /var/backups/udigity && sudo chown deploy:deploy /var/backups/udigity
-   devops/backup/pg-backup.sh && ls -l /var/backups/udigity/daily
+   docker compose -f docker-compose.prod.yml logs --tail=30 backup       # "wrote /backups/daily/...", "wrote /backups/base/..."
+   docker compose -f docker-compose.prod.yml exec backup ls -lR /backups
+   docker compose -f docker-compose.prod.yml ps backup                    # healthy = a nightly dump in the last 26 h
    ```
-4. Schedule it (`crontab -e` as `deploy`) and rotate its log:
-   ```
-   30 2 * * * /opt/udigity/devops/backup/pg-backup.sh >> /var/log/udigity-backup.log 2>&1
-   ```
-   ```sh
-   printf '/var/log/udigity-backup.log {\n  weekly\n  rotate 8\n  compress\n  missingok\n  notifempty\n}\n' | sudo tee /etc/logrotate.d/udigity-backup
-   sudo touch /var/log/udigity-backup.log && sudo chown deploy /var/log/udigity-backup.log
-   ```
-5. **Off-site check:** confirm `rclone ls $RCLONE_REMOTE` lists the newest `udigity-*.dump.age` the morning after the first
-   cron run.
+3. Alerts: failures land in `ops_alerts` and the worker emails them to `ALERT_EMAIL_TO`. Set that address.
+4. A dump by hand (e.g. before an update, section 12): `docker compose -f docker-compose.prod.yml exec backup backupd nightly`.
 
-### Restore drill (before go-live, then quarterly, on a workstation with Docker)
+### Restore drill (before go-live, then quarterly, on a workstation with Docker and the private key)
 
-Copy a backup and its `.sha256` from the server (or from the off-site store), then:
+Copy the encrypted backups off the server, then run both drills:
 
 ```sh
-AGE_IDENTITY=~/keys/udigity-backup.agekey devops/backup/restore-drill.sh udigity-<stamp>.dump.age
+docker run --rm -v udigity_backups:/b alpine tar -C /b -cf - . > udigity-backups.tar     # on the server; scp it over
+mkdir backups && tar -xf udigity-backups.tar -C backups
+export AGE_IDENTITY=~/keys/udigity-backup.agekey
+devops/backup/restore-drill.sh backups/daily/udigity-<stamp>.dump.age                    # (a) nightly dump
+devops/backup/restore-drill.sh pitr backups/base/base-<stamp>.tar.gz.age backups/wal     # (b) base + all WAL
+devops/backup/restore-drill.sh pitr backups/base/base-<stamp>.tar.gz.age backups/wal '2026-11-02 14:05:00+02'
 ```
 
-It verifies the checksum, restores into a throwaway `postgres:17-alpine` container (tmpfs, no published port), prints
-migration, table and row counts and removes the container. Record the date, the file and the duration in the drill
-log (below). On Git Bash for Windows prefix with `MSYS_NO_PATHCONV=1`.
+Both verify checksums, restore into a throwaway `postgres:17-alpine` container (no published port), print migration,
+table and row counts (for (b) also the last replayed commit time) and remove the container. Record date, files and
+durations in the drill log below. On Git Bash for Windows prefix with `MSYS_NO_PATHCONV=1`.
 
-### Real restore (disaster)
+### Real restore (disaster). Objective: service back within 4 h
+
+Take a fresh dump of the broken state first if it can still be dumped (`backupd nightly`). The private key has to be
+brought to the server for this (or decrypt on a workstation and copy over a secure channel); remove it afterwards.
+
+**(a) From a nightly dump** (simplest; loses everything after that dump):
 
 ```sh
-docker compose -f docker-compose.prod.yml stop backend worker frontend nginx
+docker compose -f docker-compose.prod.yml stop backend worker frontend nginx backup
 age -d -i ~/keys/udigity-backup.agekey < udigity-<stamp>.dump.age > /dev/shm/restore.dump     # RAM only
 docker compose -f docker-compose.prod.yml exec -T db sh -c \
   'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner --no-privileges' < /dev/shm/restore.dump
 shred -u /dev/shm/restore.dump
-# The restore drops privileges (--no-privileges): recreate the limited runtime role and its grants (idempotent).
+# The restore drops privileges (--no-privileges): recreate the roles and their grants (idempotent).
 docker compose -f docker-compose.prod.yml exec -T db sh /docker-entrypoint-initdb.d/10-app-role.sh
+docker compose -f docker-compose.prod.yml exec -T db sh /docker-entrypoint-initdb.d/20-backup-role.sh
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-If the broken database can still be dumped, take a fresh backup of it first.
+**(b) Point in time** (base backup + WAL; loses at most ~15 min, or stops just before a bad change):
+
+1. Run drill (b) with the wanted target time first, to confirm the files and the time.
+2. `docker compose -f docker-compose.prod.yml down` (keeps the volumes). Keep the old data, do not delete it:
+   `docker run --rm -v udigity_pgdata:/d alpine mv /d/pgdata /d/pgdata.broken`
+3. Unpack the newest base backup taken **before** the target time and stage all WAL files after it (decrypted, in RAM):
+   ```sh
+   K=~/keys/udigity-backup.agekey
+   age -d -i $K < base/base-<stamp>.tar.gz.age | docker run --rm -i -v udigity_pgdata:/d postgres:17-alpine \
+     sh -c 'install -d -o postgres -g postgres -m 700 /d/pgdata && tar -xzf - -C /d/pgdata && chown -R postgres:postgres /d/pgdata'
+   mkdir -p /dev/shm/wal && for f in wal/*.age; do age -d -i $K < "$f" > /dev/shm/wal/"$(basename "$f" .age)"; done
+   docker run --rm -v /dev/shm/wal:/src:ro -v udigity_wal_archive:/wal alpine \
+     sh -c 'mkdir -p /wal/restore && cp /src/* /wal/restore/ && chown -R 70:70 /wal/restore'
+   ```
+4. Append to `/d/pgdata/postgresql.auto.conf` (same `docker run ... -v udigity_pgdata:/d alpine vi ...`) and create
+   the empty file `/d/pgdata/recovery.signal` (owner 70:70):
+   ```
+   restore_command = 'cp /wal/restore/%f %p'
+   recovery_target_time = '2026-11-02 14:05:00+02'
+   recovery_target_action = 'promote'
+   ```
+5. `docker compose -f docker-compose.prod.yml up -d db` and watch `logs -f db` for `recovery stopping before ...` and
+   `database system is ready to accept connections`. Check the data; then delete those three lines, `/wal/restore`
+   and `/dev/shm/wal`, and `docker compose -f docker-compose.prod.yml up -d`. Roles and grants come back with the
+   physical copy. Recovery starts a new timeline: take a new base backup at once (`backupd base`).
 
 ## 12. Updates and rollback
 
 ```sh
 cd /opt/udigity
-devops/backup/pg-backup.sh                                       # 1. backup first
+docker compose -f docker-compose.prod.yml exec backup backupd nightly   # 1. backup first
 PREV=${UDIGITY_TAG:-$(docker inspect --format '{{.Config.Image}}' $(docker compose -f docker-compose.prod.yml ps -q backend) | cut -d: -f2)}
 echo "$PREV" > /opt/udigity/.previous-tag                         # 2. remember the running tag
 git pull
@@ -319,13 +375,13 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://app.example.com/login         
 
 Wire an external uptime monitor to `https://app.example.com/login` (the only public probe) and alert on the worker
 check by running the `/health/worker` command above from cron and mailing/paging on a non-200. Also watch disk
-(`df -h /var/lib/docker /var/backups/udigity`), the age of the newest file in `/var/backups/udigity/daily`, and the
+(`df -h /var/lib/docker`: the `backups` and `wal_archive` volumes live there), the `backup` service health (unhealthy =
+no successful nightly dump for 26 h; failures are also emailed via `ops_alerts`), and the
 certificate expiry (`sudo certbot certificates`).
 
 Logs: every service uses Docker's json-file driver with 10 MB x 5 files per service (set in
 `docker-compose.prod.yml`), so container logs rotate by themselves. Read them with
-`docker compose -f docker-compose.prod.yml logs --tail=100 <backend|worker|frontend|nginx|db>`. The backup log is rotated by
-the logrotate rule in section 11. Do not log or share env values.
+`docker compose -f docker-compose.prod.yml logs --tail=100 <backend|worker|frontend|nginx|db|backup>`. Do not log or share env values.
 
 ---
 
@@ -334,5 +390,6 @@ the logrotate rule in section 11. Do not log or share env values.
 | Date | File | Where | Result |
 |---|---|---|---|
 | 2026-10-26 | `udigity-20261026T113527Z.dump.gpg` (408 KB, gpg, test DB `udigity_test`) | Windows workstation, Docker Desktop | Checksum OK; restored in 86 s into a throwaway `postgres:17-alpine`; 28 migrations (latest `903_access_facts_v4.sql`), 51 tables, 201 employees, 178 businesses; container removed. Backup itself took 4 s. age was not installed on this machine, so the gpg path was exercised; the age path was verified earlier (2026-10-23). |
+| 2026-10-29 | backup container, local compose project `udigity-bkp-test` (fresh DB, 44 migrations, throwaway age key) | Windows workstation, Docker Desktop | (a) `udigity-20261029T130554Z.dump.age` (208 KB): checksum OK, restored in 30 s, 44 migrations, 58 tables. (b) PITR `base-20261029T130320Z.tar.gz.age` (4.2 MB) + 4 WAL segments: full replay in 108 s (last commit 13:07:44 UTC recovered); with `recovery_target_time` 13:07:00 it stopped before the 13:07:25 commit (91 s). WAL reached the encrypted store 2 s after `pg_switch_wal()`. Not a production drill: RPO/RTO still to be proven on the real server. |
 
 Add one row per quarterly drill, from the production backup.
