@@ -79,5 +79,3 @@ export interface ErrorBody {
 /** Access outcome attached to detail responses (plan.md §5). */
 export type AccessLevel = 'full' | 'context_limited' | 'owner';
 
-/** Label every UI element that depends on an unapproved policy with this text (policy-defaults.md). */
-export const DEMO_POLICY_LABEL = 'Demonstration alternative — not approved';

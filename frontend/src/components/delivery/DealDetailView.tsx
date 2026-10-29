@@ -9,7 +9,6 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardInset, CardSection } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { NoticeAccess } from '@/components/ui/NoticeAccess';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { Skeleton } from '@/components/ui/State';
 import { useToast } from '@/components/ui/Toast';
 import { ACTIONS } from '@/lib/actions';
@@ -38,8 +37,7 @@ import {
   LoadError,
   MEETING_STATUS_LABEL,
   MEETING_TONE,
-  PAYMENT_PENDING_VERIFICATION,
-} from './shared';
+  PAYMENT_PENDING_VERIFICATION } from './shared';
 
 export function DealDetailView({ id }: { id: string }) {
   const { user } = useAuth();
@@ -122,7 +120,6 @@ export function DealDetailView({ id }: { id: string }) {
             ))}
             {a.reopen && !closed && (
               <>
-                <PolicyPendingChip dec="OQ-15" demo />
                 <Button variant="secondary" onClick={() => setAction({ kind: 'reopen' })}>
                   Reopen deal…
                 </Button>
@@ -475,7 +472,6 @@ function ProvisioningNotice({
               Retry provisioning
             </Button>
           )}
-          <PolicyPendingChip dec="F3" demo />
         </div>
         <ActionError route={retrySave.route} error={retrySave.error} onRetry={() => void retrySave.retry()} />
       </div>
@@ -486,8 +482,8 @@ function ProvisioningNotice({
       <div className="space-y-2">
         <Alert
           tone="info"
-          title="Project provisioning pending"
-          body={deal.policy.autoProvision ? 'The project is created automatically after closure.' : 'Projects are created manually for now (F2).'}
+          title="Project setup pending"
+          body={deal.policy.autoProvision ? 'The project is created automatically after closure.' : 'Projects are created manually.'}
         />
         <div className="flex flex-wrap items-center gap-3">
           {!deal.policy.autoProvision && canCreate && (
@@ -495,7 +491,6 @@ function ProvisioningNotice({
               Create project
             </Button>
           )}
-          <PolicyPendingChip dec="F2" demo />
         </div>
         <ActionError route={createSave.route} error={createSave.error} onRetry={() => void createSave.retry()} />
       </div>

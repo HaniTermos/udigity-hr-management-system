@@ -11,7 +11,7 @@
  *   ~30 businesses with categories, phones and social accounts (Lebanese areas; phones in the fictional
  *   `+961 0X 555 XXX` block), calling assignments, ~45 days of call attempts with reservations, follow-ups
  *   and outcomes, deals in every stage (incl. closed and not proceeding), projects with tasks, meetings,
- *   data-correction requests, attendance (no breaks: v1 scope) for the last ~32 working days, targets for the
+ *   data-correction requests, attendance with breaks for the last ~32 working days, targets for the
  *   current periods and a few work items. Derived rows are written like the services write them:
  *   business edit history, calling state, deal/project/meeting/follow-up change rows and audit events
  *   (audit `source_workflow = 'seed-demo'`, so seeded history is identifiable).
@@ -1295,7 +1295,30 @@ class DemoSeeder {
     this.count('attendance_sessions');
     await this.audit(checkIn, person, { eventName: 'attendance.checked_in', entityType: 'attendance_session', entityId: s.id, after: { state: 'open', checkInAt: checkIn.toISOString(), workDate: date, verification: verification.result, mode: 'ip', remote: kind === 'remote' } });
 
-    // No break rows (policy baseline 2026-10-29, fixed v1 scope "no break tracking"; the tables stay).
+    // Breaks: lunch (unpaid) and sometimes a short paid coffee break, in gaps without logged work. Within the
+    // Owner limits (2026-10-29): at most 2 of 3 breaks and at most 44 + 15 of 60 minutes per session.
+    const busy = (from: number, to: number) => work.some((w) => w >= from - MIN && w <= to + MIN);
+    const breaks: [Date, Date, 'paid' | 'unpaid', string | null][] = [];
+    const lunchFrom = at(date, this.rng.int(12 * 60 + 45, 13 * 60 + 15), this.rng.int(0, 59));
+    const lunchTo = new Date(lunchFrom.getTime() + this.rng.int(25, 44) * MIN);
+    if (!busy(lunchFrom.getTime(), lunchTo.getTime()) && lunchTo.getTime() < (checkOut ?? this.cal.now).getTime() - 5 * MIN && lunchFrom.getTime() > checkIn.getTime()) {
+      breaks.push([lunchFrom, lunchTo, 'unpaid', 'Lunch']);
+    }
+    if (this.rng.chance(0.4)) {
+      const coffeeFrom = at(date, this.rng.int(15 * 60 + 30, 16 * 60 + 20), this.rng.int(0, 59));
+      const coffeeTo = new Date(coffeeFrom.getTime() + this.rng.int(8, 15) * MIN);
+      if (!busy(coffeeFrom.getTime(), coffeeTo.getTime()) && coffeeTo.getTime() < (checkOut ?? this.cal.now).getTime() - 5 * MIN) breaks.push([coffeeFrom, coffeeTo, 'paid', null]);
+    }
+    for (const [from, to, type, notes] of breaks) {
+      const br = await this.one<{ id: string }>(
+        `INSERT INTO attendance_breaks (session_id, employee_id, started_at, ended_at, duration_seconds, break_type, notes, version, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 2, $3, $4) RETURNING id`,
+        [s.id, person.id, from, to, Math.round((to.getTime() - from.getTime()) / 1000), type, notes]
+      );
+      this.count('attendance_breaks');
+      await this.audit(from, person, { eventName: 'attendance.break.started', entityType: 'attendance_break', entityId: br.id, payload: { sessionId: s.id, breakType: type } });
+      await this.audit(to, person, { eventName: 'attendance.break.ended', entityType: 'attendance_break', entityId: br.id, payload: { sessionId: s.id, durationSeconds: Math.round((to.getTime() - from.getTime()) / 1000) } });
+    }
 
     if (checkOut) {
       const event = kind === 'provisional' ? 'attendance.checkout_provisional' : 'attendance.checked_out';

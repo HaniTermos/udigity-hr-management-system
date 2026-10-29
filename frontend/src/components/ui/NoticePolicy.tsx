@@ -7,21 +7,13 @@ export const DEMO_ALTERNATIVE_LABEL = 'Demonstration alternative — not approve
 export const POLICY_PENDING_LABEL = 'Policy pending';
 
 /**
- * IDs settled by the Owner-approved baseline (docs/policy-baseline-2026-10-29.md, decisions.md): no
- * "pending" marker is shown for them (DEC-004 was selected by the Owner the same day). Company inputs that
- * are still missing show as "not configured" states in the screens themselves.
+ * 2026-10-29: the Owner approved the policy baseline and then every remaining open item as currently
+ * built (docs/decisions.md "Approved as built"), so no policy is pending in v1 and these markers no longer
+ * render. Company inputs that are still missing show as "not configured" states in the screens themselves.
+ * The components stay so existing call sites need no change; reintroduce a marker only for a newly opened
+ * decision.
  */
-const SETTLED_POLICY_IDS = new Set<string>([
-  ...Array.from({ length: 34 }, (_, i) => `DEC-${String(i + 1).padStart(3, '0')}`),
-  'C-01', // archive only → DEC-031
-  'F-01', // correction on an open session → pending review (D4/D5)
-  'F-02', // provisional checkout keeps the summary (D5)
-  'AR-13', // delivery monitor "Send again" only: built implementation choice, not a pending policy
-]);
-
-export function isPolicySettled(dec: string): boolean {
-  return SETTLED_POLICY_IDS.has(dec);
-}
+export const POLICY_MARKERS_ENABLED = false;
 
 const TONE = {
   policy: 'bg-status-policy-bg border-status-policy-border text-status-policy-fg',
@@ -43,7 +35,7 @@ export interface NoticePolicyProps {
 }
 
 export function NoticePolicy({ tone = 'policy', size = 'block', dec, body, demo = false, className }: NoticePolicyProps) {
-  if (isPolicySettled(dec)) return null;
+  if (!POLICY_MARKERS_ENABLED) return null;
   if (size === 'chip') {
     return <PolicyPendingChip dec={dec} demo={demo} tone={tone} className={className} />;
   }
@@ -91,7 +83,7 @@ export function PolicyPendingChip({
   tone?: 'policy' | 'decision';
   className?: string;
 }) {
-  if (isPolicySettled(dec)) return null;
+  if (!POLICY_MARKERS_ENABLED) return null;
   const text = demo ? DEMO_ALTERNATIVE_LABEL : (label ?? (tone === 'decision' ? 'Implementation decision' : POLICY_PENDING_LABEL));
   return (
     <span

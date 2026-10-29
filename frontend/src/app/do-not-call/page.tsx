@@ -9,7 +9,6 @@ import { CardSection } from '@/components/ui/Card';
 import { Alert } from '@/components/ui/Alert';
 import { Icon } from '@/components/ui/Icon';
 import { SearchInput } from '@/components/ui/Input';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { StateView } from '@/components/ui/State';
 import { Table, TableContainer, TBody, TD, TH, THead, TR } from '@/components/ui/Table';
 import { ApiErrorView } from '@/components/states';
@@ -56,8 +55,8 @@ export default function DoNotCallPage() {
           title={isOwner ? 'You can reopen a business' : 'Reopening is controlled'}
           body={
             isOwner
-              ? 'Reopening needs a reason and returns the business to Pending. The rejection stays in the history (DEC-016, demonstration alternative).'
-              : 'You can view this list but only the Owner can reopen a business (DEC-016, demonstration alternative).'
+              ? 'Reopening needs a reason and returns the business to Pending. The rejection stays in the history.'
+              : 'You can view this list but only the Owner can reopen a business.'
           }
         />
 
@@ -69,10 +68,6 @@ export default function DoNotCallPage() {
             <div className="flex flex-wrap items-center gap-2">
               <SearchInput label="Search by business name" placeholder="Search by business name" value={q} onChange={(e) => setQ(e.target.value)} wrapperClassName="sm:w-[260px]" />
               <Badge tone="brand">Rejected ({data.total})</Badge>
-              <span className="ml-auto flex flex-wrap gap-2">
-                <NoticePolicy size="chip" dec="DEC-016" demo />
-                <NoticePolicy size="chip" dec="D4" demo />
-              </span>
             </div>
 
             {data.items.length === 0 || !current ? (
@@ -156,7 +151,6 @@ export default function DoNotCallPage() {
                           ? 'Reopen asks for a reason and moves the business back to Pending.'
                           : 'Reopen is not permitted for your role: only the Owner can reopen a business.'}
                       </p>
-                      <NoticePolicy size="block" dec="DEC-016" demo body="Who may reopen a Rejected business, and to which outcome, is undecided." />
                     </div>
                   </div>
                 </CardSection>

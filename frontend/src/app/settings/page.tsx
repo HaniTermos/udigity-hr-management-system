@@ -10,7 +10,6 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { Checkbox, Input, Select } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { Skeleton } from '@/components/ui/State';
 import { Tabs } from '@/components/ui/Tabs';
 import { useToast } from '@/components/ui/Toast';
@@ -22,8 +21,7 @@ import {
   putAttendanceSettings,
   type AttendanceSettingsDto,
   type SettingsDto,
-  type WeekdayCode,
-} from '@/lib/api/admin';
+  type WeekdayCode } from '@/lib/api/admin';
 import { identityPaths, type TwoFactorStatusDto } from '@/lib/api/identity';
 import { useAuth } from '@/lib/auth';
 import { useApi } from '@/lib/hooks/useApi';
@@ -170,6 +168,9 @@ function AttendanceForm({
   // D1: the Owner states the holiday list (possibly empty) and confirms it; nothing is assumed.
   const [holidays, setHolidays] = useState((c.holidays ?? []).join(', '));
   const [holidaysConfirmed, setHolidaysConfirmed] = useState(Boolean(c.holidaysConfirmed));
+  // Break limits per session (Owner decision 2026-10-29: 60 minutes, at most 3 breaks by default).
+  const [breakMinutes, setBreakMinutes] = useState(String(data.breaks?.allowanceMinutes ?? 60));
+  const [maxBreaks, setMaxBreaks] = useState(String(data.breaks?.maxPerSession ?? 3));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
@@ -192,6 +193,10 @@ function AttendanceForm({
   const holidayList = holidays.split(',').map((s) => s.trim()).filter(Boolean);
   if (holidayList.some((d) => !/^\d{4}-\d{2}-\d{2}$/.test(d))) problems.push('Write holidays as YYYY-MM-DD, separated by commas.');
   if (!holidaysConfirmed) problems.push('Confirm the holiday calendar (it may be empty).');
+  const breakMin = Number(breakMinutes);
+  const breakMax = Number(maxBreaks);
+  if (!Number.isInteger(breakMin) || breakMin < 0 || breakMin > 480) problems.push('Break time must be a whole number of minutes from 0 to 480.');
+  if (!Number.isInteger(breakMax) || breakMax < 1 || breakMax > 20) problems.push('Breaks per session must be a whole number from 1 to 20.');
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -212,6 +217,8 @@ function AttendanceForm({
         officeHostnames: hosts,
         holidays: holidayList,
         holidaysConfirmed,
+        breakAllowanceMinutes: breakMin,
+        maxBreaksPerSession: breakMax,
         reason: 'Updated in Settings',
       });
       await onSaved();
@@ -248,8 +255,6 @@ function AttendanceForm({
         <div>
           <h2 className="text-base font-semibold text-text-primary flex flex-wrap items-center gap-2">
             Working days & shift hours
-            <PolicyPendingChip dec="DEC-007" />
-            <PolicyPendingChip dec="DEC-008" />
           </h2>
           <p className="text-xs text-text-secondary mt-1">Scheduled working days, shift times and the grace allowance for punctuality.</p>
         </div>
@@ -308,7 +313,6 @@ function AttendanceForm({
         <div>
           <h2 className="text-base font-semibold text-text-primary flex flex-wrap items-center gap-2">
             Office verification
-            <PolicyPendingChip dec="DEC-009" />
           </h2>
           <p className="text-xs text-text-secondary mt-1">Check-in and check-out require the office network (its public IP). Remote work needs an exception per employee.</p>
         </div>
@@ -348,6 +352,35 @@ function AttendanceForm({
           onChange={(e) => setHolidaysConfirmed(e.target.checked)}
         />
       </Card>
+
+      {data.breaks?.enabled !== false && (
+        <Card className="p-6 space-y-4">
+          <div>
+            <h2 className="text-base font-semibold text-text-primary">Breaks</h2>
+            <p className="text-xs text-text-secondary mt-1">Limits per attendance session. Breaks do not reduce the recorded working time.</p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Input
+              label="Total break time (minutes)"
+              type="number"
+              min={0}
+              max={480}
+              value={breakMinutes}
+              onChange={(e) => setBreakMinutes(e.target.value)}
+              helperText="Going over is allowed but flagged."
+            />
+            <Input
+              label="Breaks per session"
+              type="number"
+              min={1}
+              max={20}
+              value={maxBreaks}
+              onChange={(e) => setMaxBreaks(e.target.value)}
+              helperText="A new break is refused once this is reached."
+            />
+          </div>
+        </Card>
+      )}
 
       {problems.length > 0 && (
         <ul className="text-xs text-text-secondary list-disc pl-5 space-y-0.5" aria-label="Fix before saving">

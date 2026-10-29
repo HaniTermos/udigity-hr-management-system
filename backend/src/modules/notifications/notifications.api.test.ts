@@ -180,6 +180,10 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
   });
 
   it('FX-MAIL: production without a real sender → failed "email transport not configured" on the Delivery monitor', async () => {
+    // Send other files' backlog with the normal test transport first, so only this test's email fails below
+    // (otherwise thousands of unrelated failed rows bury it on the monitor of a reused DB).
+    await relayAll();
+    await dispatchAll();
     const emp = await employee();
     const { tokenId } = await requestReset(emp.id);
     await relayAll();
@@ -195,11 +199,11 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
     const secret = await query('SELECT ciphertext FROM notification_secrets WHERE ref_id = $1', [tokenId]);
     expect(secret.rows[0].ciphertext).not.toBeNull();
 
-    // Page through the monitor: rows written under a pinned future clock by other files sort ahead of this one.
+    // Filter to failed rows and page: rows written under a pinned future clock by other files sort ahead of this one.
     const cookie = await ownerCookie();
     let item: { id: string } | undefined;
     for (let page = 1; !item && page <= 50; page++) {
-      const monitor = await request(app).get('/api/delivery-monitor').query({ kind: 'notification', pageSize: 100, page }).set('Cookie', cookie);
+      const monitor = await request(app).get('/api/delivery-monitor').query({ kind: 'notification', state: 'failed', pageSize: 100, page }).set('Cookie', cookie);
       expect(monitor.status).toBe(200);
       item = (monitor.body.items as { id: string }[]).find((i) => i.id === d.id);
       if ((monitor.body.items as unknown[]).length < 100) break;
@@ -207,7 +211,8 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
     expect(item).toMatchObject({ state: 'failed', lastError: EMAIL_NOT_CONFIGURED, sentAt: null, templateOrSource: 'security.password_reset' });
 
     // Once SMTP is configured, the re-queued row is accepted with the original (still valid) link.
-    await query(`UPDATE notification_deliveries SET state = 'pending', next_attempt_at = now(), attempt_count = 0, last_error = NULL WHERE id = $1`, [d.id]);
+    // Due earlier than any backlog row (dispatch claims the oldest due first), so a reused DB can't starve it.
+    await query(`UPDATE notification_deliveries SET state = 'pending', next_attempt_at = '2000-01-01', attempt_count = 0, last_error = NULL WHERE id = $1`, [d.id]);
     setEmailTransport(new AcceptingSmtpStub());
     await dispatchAll();
     expect((await delivery(tokenId)).state).toBe('accepted');

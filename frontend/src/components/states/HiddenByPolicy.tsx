@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { NoticeAccess } from '@/components/ui/NoticeAccess';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
-import { PolicyPendingChip, NoticePolicy } from '@/components/ui/NoticePolicy';
 import { cn } from '@/lib/utils';
 
 /*
@@ -24,7 +23,7 @@ export interface HiddenByPolicyProps {
   className?: string;
 }
 
-export function HiddenByPolicy({ variant = 'direct', backHref, backLabel, showPolicyChips = false, className }: HiddenByPolicyProps) {
+export function HiddenByPolicy({ variant = 'direct', backHref, backLabel, className }: HiddenByPolicyProps) {
   return (
     <div className={cn('w-full flex flex-col gap-6', className)}>
       {variant === 'stale' && (
@@ -46,16 +45,6 @@ export function HiddenByPolicy({ variant = 'direct', backHref, backLabel, showPo
             </Link>
           }
         />
-        {showPolicyChips && (
-          <div className="flex flex-col items-center gap-3">
-            <div className="flex flex-wrap justify-center gap-2">
-              <PolicyPendingChip dec="DEC-001" demo />
-              <PolicyPendingChip dec="DEC-002" demo />
-              <PolicyPendingChip dec="DEC-003" demo />
-            </div>
-            <NoticePolicy size="block" dec="No DEC ID" body="A “Request access” option appears only if one is adopted." />
-          </div>
-        )}
       </div>
     </div>
   );

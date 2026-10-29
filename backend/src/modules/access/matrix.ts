@@ -84,10 +84,11 @@ export const AUTHZ_MATRIX: Readonly<Record<string, MatrixRow>> = Object.freeze({
   'attendance.failed_checkout.review': grantableRow('3.3', 'DEMO attendance.failedCheckout; §3.11 grantable'),
   'attendance.overview.read': grantableRow('3.3', 'OWN-004 monitoring; BL-06 (BE1-R4); §3.11 grantable (read)'),
   'attendance.remote_exception.request': row('3.3', ALL, 'Own; DEMO DEC-010 attendance.remoteSelfRequest; BL-06 (BE1-R4)'),
-  // Fixed v1 scope (approved 2026-10-29): no break tracking. Action ids kept, granted to nobody.
-  'attendance.break.start': row('3.3', [], 'Fixed v1 scope: no break tracking'),
-  'attendance.break.end': row('3.3', [], 'Fixed v1 scope: no break tracking'),
-  'attendance.break.read': row('3.3', [], 'Fixed v1 scope: no break tracking'),
+  // Owner decision 2026-10-29 (supersedes DEC-033 "no break tracking"): breaks are back, grants as before
+  // (a959fef). The CFG flag attendance.breaksEnabled can still switch the routes off (404).
+  'attendance.break.start': row('3.3', ALL, 'Own; start attendance break'),
+  'attendance.break.end': row('3.3', ALL, 'Own; end attendance break'),
+  'attendance.break.read': row('3.3', ALL, 'Owner all, others own'),
   'attendance.days_off.manage': row('3.3', [O], 'D1 approved employee days off (create/list/cancel)', true),
 
   // §3.4 business directory

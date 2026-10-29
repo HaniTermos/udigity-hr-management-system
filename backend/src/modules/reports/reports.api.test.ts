@@ -362,4 +362,35 @@ describe.skipIf(!hasTestDb)('Exports stream with bounded resources; dashboard ha
     const { rows } = await query<{ n: number }>(`SELECT count(*)::int AS n FROM deals WHERE stage NOT IN ('closed', 'not_proceeding')`);
     expect(r.body.commercial.acceptedOpportunities).toBe(rows[0].n);
   });
+
+  it('dashboard charts: calls per company day (zero-filled) and deal count per stage', async () => {
+    // A random 3-day window in 2001 of its own per run; calls at 12:00 UTC fall on the same date in UTC and Beirut.
+    const d1 = new Date(Date.UTC(2001, 0, 1) + Math.floor(Math.random() * 300) * 86_400_000);
+    const day = (n: number) => new Date(d1.getTime() + n * 86_400_000).toISOString().slice(0, 10);
+    const { rows: biz } = await query<{ id: string }>(
+      `INSERT INTO businesses (name, created_by, created_at) SELECT 'Chart ' || $1 || ' ' || g, $2, '2000-12-01' FROM generate_series(1, 2) g RETURNING id`,
+      [uniq(), o.id]
+    );
+    const attempt = (businessId: string, d: string) =>
+      query(
+        `INSERT INTO call_attempts (business_id, agent_id, attempted_at, outcome, idempotency_key)
+         VALUES ($1, $2, ($3::date + time '12:00') AT TIME ZONE 'UTC', 'on_hold', gen_random_uuid())`,
+        [businessId, o.id, d]
+      );
+    await attempt(biz[0].id, day(0));
+    await attempt(biz[0].id, day(0));
+    await attempt(biz[1].id, day(2));
+
+    const r = await call(o, 'get', `/api/dashboard?period=custom&from=${day(0)}&to=${day(2)}`);
+    expect(r.status).toBe(200);
+    expect(r.body.calling.daily).toEqual([
+      { day: day(0), attempts: 2, contacted: 1 },
+      { day: day(1), attempts: 0, contacted: 0 },
+      { day: day(2), attempts: 1, contacted: 1 },
+    ]);
+
+    const { rows: stages } = await query<{ stage: string; n: number }>(`SELECT stage, count(*)::int AS n FROM deals GROUP BY stage`);
+    expect(r.body.commercial.byStage).toEqual(Object.fromEntries(stages.map((s) => [s.stage, s.n])));
+    expect(typeof r.body.commercial.pendingVerification).toBe('number');
+  });
 });

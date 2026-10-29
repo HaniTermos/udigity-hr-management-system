@@ -90,7 +90,7 @@ router.post('/check-out', authenticate, requireAction(A.checkOut), idempotent('a
 
 // ---------------------------------------------------------------- breaks (Wave 2)
 
-/** Fixed v1 scope "no break tracking": every break route is 404 while CFG attendance.breaksEnabled is false. */
+/** Every break route is 404 while CFG attendance.breaksEnabled is false (default true, Owner decision 2026-10-29). */
 const breaksOn = (_req: Request, _res: Response, next: NextFunction) => next(service.breaksEnabled() ? undefined : notFound());
 
 router.post('/breaks/start', authenticate, breaksOn, requireAction(A.breakStart), idempotent('attendance.break.start', { required: false }), h(async (req, res) => {

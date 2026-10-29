@@ -157,11 +157,13 @@ export const POLICY_FLAGS = {
   // D6: the checkout summary is pinned (required, 10 non-whitespace characters); POLICY_ATTENDANCE_SUMMARY_*
   // are removed. D5: a failed-office-check checkout closes provisionally; `block`/`hold` fail at startup.
   'attendance.failedCheckout': oneOf('DEC-026/D5', 'POLICY_ATTENDANCE_FAILED_CHECKOUT', 'FLAG', 'BE1', ['provisional'] as const, 'provisional'),
-  // Fixed v1 scope "no break tracking": break routes 404 and the timer is hidden unless this is true.
-  'attendance.breaksEnabled': bool('V1-SCOPE', 'POLICY_ATTENDANCE_BREAKS_ENABLED', 'CFG', 'BE1', false),
+  // Owner decision 2026-10-29 (supersedes DEC-033 "no break tracking"): breaks are on. false = the break
+  // routes answer 404 and the timer is hidden.
+  'attendance.breaksEnabled': bool('DEC-033/2026-10-29', 'POLICY_ATTENDANCE_BREAKS_ENABLED', 'CFG', 'BE1', true),
   // FX-BE breaks (user decision 2026-10-28): allowance per session and a cap on break count.
   'attendance.breakAllowanceMinutes': int('ATT-BREAKS', 'POLICY_ATTENDANCE_BREAK_ALLOWANCE_MINUTES', 'SET', 'BE1', 60, 0),
-  'attendance.maxBreaksPerSession': int('ATT-BREAKS', 'POLICY_ATTENDANCE_MAX_BREAKS_PER_SESSION', 'SET', 'BE1', 10, 1),
+  // Owner decision 2026-10-29: 60 minutes in total and at most 3 breaks per session (Owner-editable).
+  'attendance.maxBreaksPerSession': int('ATT-BREAKS', 'POLICY_ATTENDANCE_MAX_BREAKS_PER_SESSION', 'SET', 'BE1', 3, 1),
   'attendance.missingCheckoutFlagHours': int('D5', 'POLICY_ATTENDANCE_MISSING_CHECKOUT_FLAG_HOURS', 'SET', 'BE1', 6),
 
   // --- Work / targets (BE1) -------------------------------------------------------------------

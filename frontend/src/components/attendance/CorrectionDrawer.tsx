@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/Button';
 import { CardInset } from '@/components/ui/Card';
 import { Drawer } from '@/components/ui/Drawer';
 import { DateInput, Textarea } from '@/components/ui/Input';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { ApiError } from '@/lib/api';
 import {
   ATTENDANCE_REASONS,
@@ -15,8 +14,7 @@ import {
   submitCorrection,
   withdrawCorrection,
   type AttendanceCorrectionDto,
-  type AttendanceSessionDto,
-} from '@/lib/api/attendance';
+  type AttendanceSessionDto } from '@/lib/api/attendance';
 import { useCompanyTime, type CompanyTime } from '@/lib/hooks/useCompanyTime';
 import { dayLabel, isoToHm, verificationText, zonedToIso } from './format';
 
@@ -169,7 +167,7 @@ function CorrectionForm({
       } else if (rule) {
         setErrors({ [rule.field]: rule.text });
       } else if (apiErr?.status === 403) {
-        setAlert('Correction requests are off in this demonstration setting. The Owner corrects sessions.');
+        setAlert('You cannot request a correction for this session. Ask the Owner to correct it.');
       } else if (apiErr?.status === 409) {
         setAlert('This session changed or already has a pending request. Close this panel and check My Attendance.');
       } else {
@@ -182,13 +180,11 @@ function CorrectionForm({
 
   return (
     <form onSubmit={submit} noValidate className="space-y-4">
-      <NoticePolicy dec="DEC-011" demo body="This request exists only if Alt B (employee request) is chosen. Here it is a demonstration setting." />
       <SessionFacts session={session} time={time} />
       {open && (
-        <NoticePolicy
-          dec="F-01"
-          body="If you propose a check-out for a session that is still open, it goes to the Owner for review and you can check in again. Your proposed check-out counts only once the Owner approves it."
-        />
+        <p className="text-[13px] text-text-muted">
+          This session is still open. Your proposed check-out goes to the Owner for review, and it counts only once the Owner approves it. You can check in again meanwhile.
+        </p>
       )}
       {alert && <Alert tone="danger" title="Request not sent" body={alert} />}
       <DateInput kind="time" label="Proposed check-in" value={checkIn} error={errors.checkIn} onChange={(e) => setCheckIn(e.target.value)} />
@@ -287,11 +283,7 @@ function CorrectionDrawerInner({
             <CorrectionOutcome correction={existing} time={time} onWithdraw={() => void withdraw()} withdrawing={withdrawing} withdrawError={withdrawError} />
           ) : session.pendingCorrectionId ? (
             <Alert tone="warning" title="Waiting for the Owner" body="A correction request for this session is pending." />
-          ) : (
-            !employeeRequests && (
-              <NoticePolicy dec="DEC-011" demo body="Demonstration setting: the Owner corrects forgotten check-outs and you are notified. You cannot send a request." />
-            )
-          )}
+          ) : null}
           <div className="flex items-center justify-between border-t border-border-subtle pt-4">
             <Button variant="ghost" onClick={onClose}>
               Close

@@ -5,7 +5,6 @@ import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Checkbox, Input } from '@/components/ui/Input';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { cn } from '@/lib/utils';
 import { ENROLLMENT_TOKEN_PATTERN, type EnrollStartInput } from '@/lib/api/identity';
 import type { EnrollmentConfirm, EnrollmentStart } from '@/lib/auth';
@@ -214,7 +213,6 @@ export function EnrollmentFlow({
         <Button fullWidth size="lg" disabled={!saved || recoveryCodes.length === 0} isLoading={busy} onClick={finish}>
           Finish setup
         </Button>
-        <NoticePolicy tone="decision" dec="Impl. decision" body="Recovery material exists only if the chosen method has it (WF-AUTH-002 E1)." />
       </div>
     );
   }
@@ -279,7 +277,6 @@ export function EnrollmentFlow({
             Sign out
           </button>
         </div>
-        <NoticePolicy tone="decision" dec="Impl. decision" body="After too many failed codes the session ends (threshold is an implementation decision)." />
       </form>
     );
   }
@@ -330,10 +327,6 @@ export function EnrollmentFlow({
         </button>
       </div>
 
-      <div className="space-y-2">
-        <NoticePolicy tone="decision" dec="Impl. decision" body="2FA method and recovery channel are implementation decisions; the layout is method-neutral." />
-        <NoticePolicy dec="R-11" body="What a pending-2FA Owner may do meanwhile is undecided." />
-      </div>
     </form>
   );
 }

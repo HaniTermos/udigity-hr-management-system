@@ -8,7 +8,6 @@ import { CardInset } from '@/components/ui/Card';
 import { Drawer } from '@/components/ui/Drawer';
 import { Icon } from '@/components/ui/Icon';
 import { Textarea } from '@/components/ui/Input';
-import { NoticePolicy, PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { ProgressBar } from '@/components/ui/Progress';
 import { ApiError } from '@/lib/api';
 import {
@@ -18,8 +17,7 @@ import {
   checkOut,
   summaryCharCount,
   type AttendanceTodayDto,
-  type CheckOutResult,
-} from '@/lib/api/attendance';
+  type CheckOutResult } from '@/lib/api/attendance';
 import { offlineSaveMessage } from '@/lib/errorRouting';
 import { useCompanyTime, type CompanyTime } from '@/lib/hooks/useCompanyTime';
 import { dayLabel, formatHM, verificationText } from './format';
@@ -105,20 +103,6 @@ export function useCheckOutFlow({ today, onChanged }: { today: AttendanceTodayDt
   };
 }
 
-function SummaryPolicyNote() {
-  return <NoticePolicy dec="D6" body={`“Work completed” is required: at least ${SUMMARY_MIN_CHARS} characters, not counting spaces.`} />;
-}
-
-/** D5 (approved): what a checkout does when the office check fails. */
-function FailedCheckoutNote() {
-  return (
-    <NoticePolicy
-      dec="D5"
-      body="If the office check fails, Check out is still recorded at the time the server received it, marked provisional, and the Owner reviews it."
-    />
-  );
-}
-
 function ResultView({ result, time }: { result: CheckOutResult; time: CompanyTime }) {
   const s = result.session;
   const at = s.effectiveCheckOutAt ? time.formatTime(s.effectiveCheckOutAt) : s.checkoutAttemptedAt ? time.formatTime(s.checkoutAttemptedAt) : '';
@@ -149,7 +133,6 @@ function ResultView({ result, time }: { result: CheckOutResult; time: CompanyTim
       {result.outcome !== 'closed' && (
         <div className="space-y-2">
           <Badge tone="warning">Provisional · Owner review</Badge>
-          <NoticePolicy dec="F-02" body="Your work summary is saved with the provisional checkout." />
         </div>
       )}
     </div>
@@ -214,26 +197,16 @@ export function CheckOutBody({ flow, today, onClose }: { flow: CheckOutFlowState
         onChange={(e) => flow.setSummary(e.target.value)}
       />
 
-      <SummaryPolicyNote />
-
       {failed ? (
         <div className="space-y-3">
           <Alert tone="danger" title="Office check failed" body="Connect to the office network, then retry. Your summary is kept on this screen." icon={<Icon name="x-circle" size={18} />} />
           <Button variant="secondary" fullWidth leadingIcon={<Icon name="refresh" size={16} />} onClick={flow.submit}>
             Retry check
           </Button>
-          <div className="flex flex-wrap gap-2">
-            <PolicyPendingChip dec="DEC-009" demo />
-            <PolicyPendingChip dec="DEC-010" demo />
-          </div>
-          <FailedCheckoutNote />
         </div>
       ) : (
         <>
           <p className="text-[13px] text-text-muted">The office check runs when you press Check out.</p>
-          <div className="flex flex-wrap gap-2">
-            <PolicyPendingChip dec="DEC-009" demo />
-          </div>
         </>
       )}
 

@@ -9,7 +9,6 @@ import { Icon } from '@/components/ui/Icon';
 import { Alert } from '@/components/ui/Alert';
 import { Dialog } from '@/components/ui/Dialog';
 import { Textarea } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { useToast } from '@/components/ui/Toast';
 import { ApiError } from '@/lib/api/client';
 import {
@@ -20,8 +19,7 @@ import {
   requeueBusiness,
   type CallAttemptDto,
   type ReservationLostReason,
-  type WorkspaceDto,
-} from '@/lib/api/calling';
+  type WorkspaceDto } from '@/lib/api/calling';
 import type { BusinessDetail } from '@/lib/api/businesses';
 import { OUTCOME_LABEL, useCallingFormat } from './format';
 import { useNow, type ContactSession } from './hooks';
@@ -221,8 +219,8 @@ export function ReservationBanner({
           title={`Reservation ends in ${mins} min · ${f.time(deadline)}`}
           body={
             t.maxTotalWarning
-              ? 'Maximum contact time is close (times illustrative). Save now, or keep the reservation.'
-              : 'No recent activity, so renewal is paused (idle rule pending; times illustrative). Save now, or keep the reservation.'
+              ? 'Maximum contact time is close. Save now, or keep the reservation.'
+              : 'No recent activity, so renewal is paused. Save now, or keep the reservation.'
           }
           icon={<Icon name="clock" size={18} />}
         />
@@ -343,7 +341,6 @@ export function OverrideDialog({
       }
     >
       <div className="flex flex-col gap-3">
-        <PolicyPendingChip dec="DEC-004" demo />
         <Textarea label="Reason" required rows={3} value={reason} onChange={(e) => setReason(e.target.value)} helperText="At least 3 characters. Recorded in the audit log." />
         {error && <Alert tone="danger" title={error} />}
       </div>
@@ -411,7 +408,6 @@ export function ReopenDialog({
       }
     >
       <div className="flex flex-col gap-3">
-        {mode === 'reopen' && <PolicyPendingChip dec="DEC-016" demo />}
         <Textarea label="Reason" required rows={3} value={reason} onChange={(e) => setReason(e.target.value)} helperText="At least 3 characters. Recorded in the audit log." />
         {error && <Alert tone="danger" title={error} />}
       </div>
@@ -623,7 +619,6 @@ export function ContactPanel({
             <Button variant="secondary" onClick={onReopen} leadingIcon={<Icon name="refresh" size={16} />}>
               Reopen…
             </Button>
-            <PolicyPendingChip dec="DEC-016" demo />
           </div>
         )}
         {w.allowed.requeue && (

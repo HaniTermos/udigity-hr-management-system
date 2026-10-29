@@ -10,7 +10,6 @@ import { Dialog } from '@/components/ui/Dialog';
 import { Drawer } from '@/components/ui/Drawer';
 import { DateInput, Input, Select, Textarea } from '@/components/ui/Input';
 import { Icon } from '@/components/ui/Icon';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { Tabs } from '@/components/ui/Tabs';
 import { useToast } from '@/components/ui/Toast';
 import { ApiError } from '@/lib/api/client';
@@ -22,8 +21,7 @@ import {
   D2_REPLACEMENT_REQUIRED,
   updateFollowUp,
   type FollowUpDto,
-  type FollowUpReplacement,
-} from '@/lib/api/calling';
+  type FollowUpReplacement } from '@/lib/api/calling';
 import { useAuth } from '@/lib/auth';
 import { useApi } from '@/lib/hooks/useApi';
 import { addDaysKey, useCallingFormat } from './format';
@@ -136,14 +134,14 @@ export function FollowUpGroups({
   const dueToday = items.filter((i) => !i.overdue && fmt.dayKey(i.scheduledFor) <= today);
   const upcoming = items.filter((i) => !i.overdue && fmt.dayKey(i.scheduledFor) > today);
   const groups = [
-    { id: 'overdue', title: 'Overdue', sub: 'Scheduled and past due (derived) · threshold pending', rows: overdue },
+    { id: 'overdue', title: 'Overdue', sub: 'Scheduled and past due', rows: overdue },
     { id: 'today', title: 'Due today', sub: 'Scheduled for today (derived, company timezone)', rows: dueToday },
     { id: 'upcoming', title: 'Upcoming', sub: 'Scheduled for later', rows: upcoming },
   ];
   return (
     <div className="flex flex-col gap-4">
       {callbackBusinesses.length > 0 && (
-        <CardSection title={`Callback to be scheduled · ${callbackBusinesses.length}`} subtitle="Needs another call, no time set yet (D2 marker)">
+        <CardSection title={`Callback to be scheduled · ${callbackBusinesses.length}`} subtitle="Needs another call, no time set yet">
           <ul>
             {callbackBusinesses.map((b) => (
               <li key={b.id} className="py-3 border-t border-border-subtle first:border-t-0 flex items-center justify-between gap-3">
@@ -168,7 +166,6 @@ export function FollowUpGroups({
       {!flat && groups.map((g) =>
         g.rows.length === 0 ? null : (
           <CardSection key={g.id} title={`${g.title} · ${g.rows.length}`} subtitle={g.sub}>
-            {g.id === 'overdue' && <NoticePolicy size="chip" dec="DEC-002" demo />}
             <ul>
               {g.rows.map((f) => (
                 <FollowUpRow key={f.id} f={f} onReschedule={onReschedule} onComplete={onComplete} onCancel={onCancel} />
@@ -409,7 +406,7 @@ function DrawerBody({
       isOpen
       onClose={onClose}
       title={resched ? 'Reschedule follow-up' : 'Schedule follow-up'}
-      subtitle={resched && target ? `${target.businessName} · was ${fmt.weekdayTime(target.scheduledFor)}` : 'Reminder timing has no DEC ID'}
+      subtitle={resched && target ? `${target.businessName} · was ${fmt.weekdayTime(target.scheduledFor)}` : 'Pick the business and the time of the next call'}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
@@ -422,7 +419,6 @@ function DrawerBody({
       }
     >
       <div className="flex flex-col gap-4">
-        <NoticePolicy size="chip" dec="Reminder timing" demo />
         {error && <Alert tone={error.conflict ? 'warning' : 'danger'} title={error.conflict ? 'Save conflict' : 'Not saved'} body={error.message} />}
         {!resched && (
           <Select
@@ -547,7 +543,7 @@ function CommandBody({ command, target, onClose, onChanged }: { command: 'comple
           <Alert
             tone="warning"
             title="This business still needs another call"
-            body="A Needs-another-call business never goes without a follow-up (D2). Set a new time, or mark the callback as to be scheduled."
+            body="A Needs-another-call business never goes without a follow-up. Set a new time, or mark the callback as to be scheduled."
           />
         )}
         <Textarea

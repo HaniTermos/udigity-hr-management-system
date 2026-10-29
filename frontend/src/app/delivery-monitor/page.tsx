@@ -8,12 +8,57 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Tabs } from '@/components/ui/Tabs';
 import { Icon } from '@/components/ui/Icon';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import {
   listDeliveryMonitor,
   retryReminder,
-  type DeliveryMonitorItem,
-} from '@/lib/api/deliveryMonitor';
+  type DeliveryMonitorItem } from '@/lib/api/deliveryMonitor';
+
+/** Plain names for email templates and reminder sources (the API sends internal keys). */
+const SOURCE_LABEL: Record<string, string> = {
+  'security.credential_setup': 'Invitation email',
+  'security.password_reset': 'Password reset email',
+  'security.password_reset_completed': 'Password changed email',
+  'security.recovery_code_used': 'Recovery code used email',
+  'business.assignment': 'Calling assignment',
+  'business.attendance_alert': 'Attendance alert',
+  'business.attendance_review': 'Attendance review',
+  'business.correction_request': 'Correction request',
+  'business.deal_closure': 'Deal closure request',
+  'business.deal_closure_rejected': 'Deal closure rejected',
+  'business.delivery_failure': 'Failure alert',
+  'business.developer_handoff': 'Developer handoff',
+  'business.duplicate_review': 'Duplicate review',
+  'business.duplicate_review_requested': 'Duplicate review request',
+  'business.follow_up_digest': 'Daily digest',
+  'business.owner_digest': 'Daily digest',
+  'business.follow_up_overdue': 'Overdue follow-up',
+  'business.follow_up_reminder': 'Follow-up reminder',
+  'business.meeting_reminder': 'Meeting reminder',
+  'business.provisioning_failed': 'Project setup failed',
+  'business.reservation_overridden': 'Contact taken over by Owner',
+  'attendance.missing_checkin_detected': 'Missing check-in',
+  'attendance.missing_checkout_detected': 'Missing check-out',
+  'attendance.missing_checkout_reminder': 'Missing check-out reminder',
+  'attendance.checkout_pending_review': 'Check-out held for review',
+  'attendance.checkout_provisional': 'Provisional check-out',
+  'ops.alert': 'Failure alert',
+  'follow_up reminder': 'Follow-up reminder',
+  'meeting reminder': 'Meeting reminder',
+  'attendance_correction reminder': 'Attendance correction reminder',
+  'business reminder': 'Business reminder',
+  'employee reminder': 'Employee reminder',
+  'security_token reminder': 'Security reminder',
+};
+
+const KIND_LABEL: Record<string, string> = { reminder: 'Reminder', notification: 'Email', provisioning: 'Project setup' };
+
+/** Unknown keys: last part after the dots, underscores as spaces, first letter capitalised. */
+function sourceLabel(key: string): string {
+  const known = SOURCE_LABEL[key];
+  if (known) return known;
+  const text = (key.split('.').pop() ?? key).replace(/[_.]+/g, ' ').trim();
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : 'Message';
+}
 
 export default function DeliveryMonitorPage() {
   const [kindFilter, setKindFilter] = useState<'all' | 'reminder' | 'notification'>('all');
@@ -59,7 +104,7 @@ export default function DeliveryMonitorPage() {
       case 'skipped':
         return <Badge tone="neutral">Skipped</Badge>;
       default:
-        return <Badge tone="neutral">{state}</Badge>;
+        return <Badge tone="neutral">{sourceLabel(state)}</Badge>;
     }
   };
 
@@ -77,7 +122,7 @@ export default function DeliveryMonitorPage() {
                 Delivery & Exception Monitor
               </h1>
               <p className="text-xs text-text-muted mt-0.5">
-                Central tracking of outbox dispatches, email deliverability, reminders, and retry queues
+                Track sent emails, reminders and messages waiting to be resent
               </p>
             </div>
           </div>
@@ -139,7 +184,7 @@ export default function DeliveryMonitorPage() {
           ) : items.length === 0 ? (
             <div className="p-12 text-center text-text-muted space-y-2">
               <Icon name="check-circle" size={28} className="mx-auto text-status-success-fg" />
-              <h3 className="text-sm font-semibold text-text-primary">All Dispatches Clean</h3>
+              <h3 className="text-sm font-semibold text-text-primary">Nothing needs attention</h3>
               <p className="text-xs text-text-secondary">
                 No delivery failures or pending items in this view.
               </p>
@@ -168,10 +213,10 @@ export default function DeliveryMonitorPage() {
                       <td className="px-4 py-3.5">
                         <div className="flex items-center gap-2">
                           <Badge tone={item.kind === 'reminder' ? 'brand' : 'neutral'}>
-                            {item.kind}
+                            {KIND_LABEL[item.kind] ?? sourceLabel(item.kind)}
                           </Badge>
                           <span className="font-medium text-xs">
-                            {item.templateOrSource.replace(/_/g, ' ')}
+                            {sourceLabel(item.templateOrSource)}
                           </span>
                         </div>
                       </td>
@@ -179,8 +224,8 @@ export default function DeliveryMonitorPage() {
                         <div className="font-medium text-text-primary">{item.recipientName}</div>
                         <div className="text-[11px] text-text-muted">{item.recipientEmail}</div>
                       </td>
-                      <td className="px-4 py-3.5 capitalize text-text-secondary font-mono text-[11px]">
-                        {item.channel}
+                      <td className="px-4 py-3.5 text-text-secondary text-[11px]">
+                        {sourceLabel(item.channel)}
                       </td>
                       <td className="px-4 py-3.5">{getStatusBadge(item.state)}</td>
                       <td className="px-4 py-3.5 tabular-nums font-semibold">
@@ -219,12 +264,6 @@ export default function DeliveryMonitorPage() {
         </Card>
 
         {/* Policy note */}
-        <NoticePolicy
-          tone="policy"
-          size="block"
-          dec="AR-13 Delivery & Reminder Monitor"
-          body="All background worker dispatches, security notifications and follow-up reminders are tracked with audit-ready exception states and exponential retry backoff."
-        />
       </div>
     </AppShell>
   );

@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/Badge';
 
 const LABEL: Record<BusinessFlag, string> = {
   correction_requested: 'Correction requested',
-  no_phone: 'No phone (B2)',
+  no_phone: 'No phone',
   hidden_from_others: 'Hidden from other roles',
   archived: 'Archived',
 };

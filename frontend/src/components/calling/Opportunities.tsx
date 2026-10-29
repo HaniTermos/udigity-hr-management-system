@@ -6,13 +6,12 @@ import { Button } from '@/components/ui/Button';
 import { CardSection } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { Select } from '@/components/ui/Input';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { Table, TableContainer, TBody, TD, TH, THead, TR } from '@/components/ui/Table';
 import type { OpportunityItemDto } from '@/lib/api/calling';
 import { useToast } from '@/components/ui/Toast';
 import { useApi } from '@/lib/hooks/useApi';
 import { newIdempotencyKey } from '@/lib/api/client';
-import { dealsPaths, runDealCommand, type DealResponse } from '@/lib/api/deals';
+import { dealsPaths, runDealCommand, type AssignableDeveloper, type DealResponse } from '@/lib/api/deals';
 import { ScheduleMeetingDrawer } from '@/components/delivery/ScheduleMeetingDrawer';
 import { DEAL_STAGE_LABEL } from '@/components/delivery/shared';
 import { useCallingFormat } from './format';
@@ -74,7 +73,7 @@ export function HandoffPanel({ o, onChanged }: { o: OpportunityItemDto; onChange
   const toast = useToast();
   const developer = o.deal?.developerName ?? null;
   const dealId = o.deal?.dealId ?? null;
-  const devs = useApi<{ items: { id: string; fullName: string }[] }>(dealId ? dealsPaths.list + '/developers' : null);
+  const devs = useApi<{ items: AssignableDeveloper[] }>(dealId ? dealsPaths.developers : null);
   const deal = useApi<DealResponse>(dealId ? dealsPaths.detail(dealId) : null);
   const canAssign = deal.data ? deal.data.deal.allowed.assignDeveloper : false;
   const canSchedule = deal.data ? deal.data.deal.allowed.scheduleMeeting : false;
@@ -83,7 +82,7 @@ export function HandoffPanel({ o, onChanged }: { o: OpportunityItemDto; onChange
   const [error, setError] = useState<string | null>(null);
   const [meetingOpen, setMeetingOpen] = useState(false);
   const keyRef = useRef<{ key: string; sig: string } | null>(null);
-  const options = useMemo(() => (devs.data?.items ?? []).map((d) => ({ value: d.id, label: d.fullName })), [devs.data]);
+  const options = useMemo(() => (devs.data?.items ?? []).map((d) => ({ value: d.id, label: d.name })), [devs.data]);
 
   async function assign() {
     if (!deal.data || !developerId) return;
@@ -118,7 +117,7 @@ export function HandoffPanel({ o, onChanged }: { o: OpportunityItemDto; onChange
   return (
     <CardSection
       title={`Handoff · ${o.businessName}`}
-      subtitle={developer ? `Developer assigned: ${developer}` : 'Developer not yet assigned (E3) · meeting not yet arranged (derived)'}
+      subtitle={developer ? `Developer assigned: ${developer}` : 'Developer not yet assigned · meeting not yet arranged'}
     >
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-6">
         <dl className="flex flex-col gap-3 text-sm">
@@ -158,8 +157,7 @@ export function HandoffPanel({ o, onChanged }: { o: OpportunityItemDto; onChange
               Schedule first meeting
             </Button>
           </div>
-          {o.accessLevel === 'context_limited' && <Badge tone="info">Limited view (DEC-005)</Badge>}
-          <NoticePolicy size="block" dec="DEC-005" demo body="Whether the developer can open this opportunity before closure is undecided." />
+          {o.accessLevel === 'context_limited' && <Badge tone="info">Limited view</Badge>}
         </div>
       </div>
       {meetingOpen && dealId && (

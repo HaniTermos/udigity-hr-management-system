@@ -163,6 +163,10 @@
     --chart-grid: #DFE4EA;
     --chart-axis: #586476;
     --chart-target: #AD6F00;
+    /* Dashboard pair (validated 2026-10-29: CVD + normal-vision separation, band, 3:1 on the card surface). */
+    --chart-pair-1: #0E9CA0;
+    --chart-pair-2: #DB6E2C;
+    --chart-hover: rgba(23, 48, 90, 0.06);
 
     /* Elevation (ds/Elevation/1–3, navy-tinted #0B1A35) */
     --elevation-1: 0 1px 2px 0 rgba(11, 26, 53, 0.06), 0 1px 3px 0 rgba(11, 26, 53, 0.08);
@@ -290,6 +294,9 @@
     --chart-grid: #2A4778;
     --chart-axis: #9FB0CC;
     --chart-target: #F5BF55;
+    --chart-pair-1: #1FA8AB;
+    --chart-pair-2: #D9702E;
+    --chart-hover: rgba(255, 255, 255, 0.06);
 
     --elevation-1: 0 1px 2px 0 rgba(3, 9, 22, 0.40), 0 1px 3px 0 rgba(3, 9, 22, 0.30);
     --elevation-2: 0 4px 8px -2px rgba(3, 9, 22, 0.50), 0 2px 4px -2px rgba(3, 9, 22, 0.30);

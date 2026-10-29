@@ -2,10 +2,8 @@
 
 import React, { useMemo, useState } from 'react';
 import { CardSection } from '@/components/ui/Card';
-import { DerivedChip } from '@/components/ui/Badge';
 import { Icon } from '@/components/ui/Icon';
 import { SearchInput } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import type { QueueDto } from '@/lib/api/calling';
 import { BucketGroup, groupQueue } from './QueueBoard';
 
@@ -17,7 +15,6 @@ export function QueueRail({ queue, activeId, dncCount }: { queue: QueueDto; acti
     <CardSection title="My calling queue" subtitle={`${queue.total} businesses`} className="p-0 gap-0 [&>div:first-child]:p-4 overflow-hidden">
       <div className="px-4 pb-3 flex flex-col gap-2">
         <SearchInput label="Filter queue" size="sm" placeholder="Filter queue" value={text} onChange={(e) => setText(e.target.value)} />
-        <DerivedChip>Derived · buckets are not stored</DerivedChip>
       </div>
       {groups.map((g) => (
         <BucketGroup key={g.bucket} group={g} activeId={activeId} compact defaultOpen={g.column === 'due-now' || g.items.some((i) => i.businessId === activeId)} />
@@ -26,7 +23,6 @@ export function QueueRail({ queue, activeId, dncCount }: { queue: QueueDto; acti
         <span className="inline-flex items-center gap-1.5 font-medium">
           Rejected: do not call{dncCount !== null ? ` (${dncCount})` : ''} — view only <Icon name="ban" size={14} />
         </span>
-        <PolicyPendingChip dec="DEC-016" demo />
       </div>
     </CardSection>
   );

@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { DateInput, Select } from '@/components/ui/Input';
-import { NoticePolicy, PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { SkeletonCard, SkeletonTableRow, StateView } from '@/components/ui/State';
 import { Table, TableContainer, TBody, TD, TH, THead, TR } from '@/components/ui/Table';
 import { Avatar } from '@/components/ui/Avatar';
@@ -20,8 +19,7 @@ import {
   type MonitorRow,
   type MonitorStatus,
   type OverviewQuery,
-  type VerificationState,
-} from '@/lib/api/attendanceOwner';
+  type VerificationState } from '@/lib/api/attendanceOwner';
 import type { Punctuality } from '@/lib/api/attendance';
 import { ApiError } from '@/lib/api/client';
 import { employeesListKey, listEmployees } from '@/lib/api/employees';
@@ -37,7 +35,7 @@ const STATUS: Record<MonitorStatus, { label: string; tone: BadgeTone }> = {
 
 const VERIFICATION: Record<VerificationState, { primary: string; secondary: string }> = {
   recorded: { primary: 'Recorded', secondary: 'mode unknown' },
-  remote: { primary: 'Remote', secondary: 'if adopted' },
+  remote: { primary: 'Remote', secondary: 'remote exception' },
   blocked: { primary: 'Check-in blocked', secondary: 'until corrected' },
   none: { primary: '—', secondary: '' },
 };
@@ -159,7 +157,7 @@ function Loaded({
         <Metric
           value={!configured || s.notCheckedIn === null ? '—' : String(s.notCheckedIn)}
           label="Not checked in yet"
-          note={configured ? 'Scheduled today, no check-in' : 'Not configured · policy pending (DEC-008)'}
+          note={configured ? 'Scheduled today, no check-in' : 'Not configured · set shift hours in Settings'}
         />
         <Metric
           value={String(s.missingCheckout)}
@@ -170,7 +168,7 @@ function Loaded({
         <Metric
           value={!configured || s.lateArrivals === null ? '—' : String(s.lateArrivals)}
           label="Late arrivals"
-          note={configured ? 'After grace period' : 'Not configured · policy pending (DEC-008)'}
+          note={configured ? 'After grace period' : 'Not configured · set shift hours in Settings'}
         />
       </section>
 
@@ -214,13 +212,12 @@ function Loaded({
   );
 }
 
-function Metric({ value, label, note, tone, chip }: { value: string; label: string; note: string; tone?: 'warning'; chip?: string }) {
+function Metric({ value, label, note, tone }: { value: string; label: string; note: string; tone?: 'warning' }) {
   return (
     <Card className="p-4 space-y-1 min-h-[112px]">
       <div className={tone === 'warning' ? 'text-3xl font-semibold tabular-nums text-status-warning-fg' : 'text-3xl font-semibold tabular-nums text-text-primary'}>{value}</div>
       <div className="text-[13px] font-medium text-text-primary">{label}</div>
       <div className="text-xs text-text-muted">{note}</div>
-      {chip && <PolicyPendingChip dec={chip} demo />}
     </Card>
   );
 }
@@ -312,12 +309,6 @@ function ExceptionsPanel({ exceptions }: { exceptions: AttendanceException[] }) 
           })}
         </ul>
       )}
-      <div className="flex flex-wrap gap-2">
-        <PolicyPendingChip dec="DEC-007" demo />
-        <PolicyPendingChip dec="DEC-008" demo />
-        <PolicyPendingChip dec="DEC-022" demo />
-      </div>
-      <NoticePolicy size="block" dec="No DEC ID" body="Alert recipients, timing and escalation are not decided." />
     </Card>
   );
 }

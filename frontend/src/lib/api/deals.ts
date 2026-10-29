@@ -12,7 +12,15 @@ export const dealsPaths = {
   detail: (id: string) => `/api/deals/${id}`,
   history: (id: string) => `/api/deals/${id}/history`,
   command: (id: string, verb: DealVerb) => `/api/deals/${id}/${verb}`,
+  /** Active Developers for the "Assign developer" picker (Owner, Call Center). */
+  developers: '/api/deals/developers',
 } as const;
+
+/** Row of `GET /api/deals/developers`: the backend sends exactly `{ id, name }`. */
+export interface AssignableDeveloper {
+  id: string;
+  name: string;
+}
 
 /**
  * Stored stages (D16 approved: accepted → meeting scheduled → proposal sent → signed → payment pending

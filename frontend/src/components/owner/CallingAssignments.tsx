@@ -10,7 +10,6 @@ import { Badge, DerivedChip, OutcomeBadge, type OutcomeType } from '@/components
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Checkbox, Select } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { SkeletonTableRow, StateView } from '@/components/ui/State';
 import { Pagination, Table, TableContainer, TBody, TD, TH, THead, TR } from '@/components/ui/Table';
 import { useToast } from '@/components/ui/Toast';
@@ -23,8 +22,7 @@ import {
   type AssignmentListQuery,
   type AssignmentStatusFilter,
   type AutofillResultDto,
-  type SkippedItem,
-} from '@/lib/api/assignments';
+  type SkippedItem } from '@/lib/api/assignments';
 import { ApiError } from '@/lib/api/client';
 import { employeesListKey, listEmployees } from '@/lib/api/employees';
 import { classifyError } from '@/lib/errorRouting';
@@ -275,7 +273,6 @@ export function CallingAssignments() {
         </div>
         <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
           <span className="text-xs text-text-muted">Fills each agent up to the queue cap (default 40 current businesses)</span>
-          <PolicyPendingChip dec="DEC-017" label="B6 open deal blocks" demo />
         </div>
       </div>
 
@@ -447,7 +444,7 @@ function Row({
   const outcome = OUTCOME_LABEL[item.outcome] ?? 'Pending';
   const flags: React.ReactNode[] = [];
   if (reserved) flags.push(<DerivedChip key="reserved" tone="amber">Reserved</DerivedChip>);
-  if (a?.assignedButInaccessible) flags.push(<DerivedChip key="b7" tone="amber">Assigned but inaccessible (B7)</DerivedChip>);
+  if (a?.assignedButInaccessible) flags.push(<DerivedChip key="b7" tone="amber">Assigned but inaccessible</DerivedChip>);
   if (a?.assigneeInactive) flags.push(<DerivedChip key="inactive" tone="amber">Assignee inactive</DerivedChip>);
   if (item.outcome === 'rejected') flags.push(<DerivedChip key="dnc">Do not call</DerivedChip>);
 

@@ -20,7 +20,6 @@ import {
 } from '@/components/calling/ContactWorkspace';
 import { LogAttemptPanel } from '@/components/calling/LogAttemptPanel';
 import { QueueRail } from '@/components/calling/QueueRail';
-import { ReservationPolicyNotice } from '@/components/calling/PolicyNotes';
 import { useContactSession, useDoNotCallCount, useQueue, useWorkspace } from '@/components/calling/hooks';
 import { useBusiness, useBusinessAccess } from '@/components/businesses/hooks';
 import { SubmitCorrectionDrawer } from '@/components/businesses/SubmitCorrectionDrawer';
@@ -101,7 +100,6 @@ function Workspace({ businessId }: { businessId: string }) {
             <div className="order-2 lg:order-1">{queue && <QueueRail queue={queue} activeId={businessId} dncCount={dncCount} />}</div>
             <div className="order-1 lg:order-2 flex flex-col gap-4">
               <ReservationBanner w={w} session={session} isOwner={isOwner} onOverride={() => setOverrideOpen(true)} onReopen={() => void startAgain()} />
-              <ReservationPolicyNotice />
               <BusinessCard
                 w={w}
                 business={business}

@@ -5,7 +5,6 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Drawer } from '@/components/ui/Drawer';
 import { DateInput, Select, Textarea } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { Tabs } from '@/components/ui/Tabs';
 import { useToast } from '@/components/ui/Toast';
 import { useVersionedSave } from '@/lib/hooks/useVersionedSave';
@@ -194,7 +193,7 @@ function MeetingDrawerBody({
                   onChange={(e) => setOutcome(e.target.value as 'held' | 'missed')}
                   options={[
                     { value: 'held', label: 'Held' },
-                    { value: 'missed', label: 'Missed (proposed state, R-13)' },
+                    { value: 'missed', label: 'Missed' },
                   ]}
                 />
                 <Textarea
@@ -204,7 +203,6 @@ function MeetingDrawerBody({
                   onChange={(e) => setNote(e.target.value)}
                   error={err('discoveryNotes', 'note')}
                 />
-                <PolicyPendingChip dec="R-13" label="Missed is a proposed state" demo />
               </div>
             )}
             {mode === 'reschedule' && (

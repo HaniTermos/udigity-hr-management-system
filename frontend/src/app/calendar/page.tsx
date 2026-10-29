@@ -3,7 +3,6 @@
 import React, { useMemo, useState } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
 import { Button } from '@/components/ui/Button';
-import { DerivedChip } from '@/components/ui/Badge';
 import { Icon } from '@/components/ui/Icon';
 import { StateView } from '@/components/ui/State';
 import { Tabs } from '@/components/ui/Tabs';
@@ -11,7 +10,6 @@ import { ApiErrorView } from '@/components/states';
 import type { FollowUpDto } from '@/lib/api/calling';
 import { CallingPageHeader, LoadingBlock } from '@/components/calling/CallingPageHeader';
 import { FollowUpCommandDialog, FollowUpDrawer, FollowUpGroups, DayAgenda, WeekGrid } from '@/components/calling/FollowUps';
-import { OverdueThresholdChip } from '@/components/calling/PolicyNotes';
 import { useFollowUps, useQueue } from '@/components/calling/hooks';
 import { addDaysKey, useCallingFormat, weekStartKey } from '@/components/calling/format';
 
@@ -109,10 +107,6 @@ export default function FollowUpsPage() {
                   </Button>
                 </div>
               )}
-              <span className={view === 'week' ? '' : 'ml-auto'}>
-                <DerivedChip>Due today and Overdue are derived</DerivedChip>
-              </span>
-              <OverdueThresholdChip />
             </div>
 
             {view === 'list' && (
@@ -167,7 +161,7 @@ export default function FollowUpsPage() {
                   />
                   <div className="flex flex-col gap-2">
                     <DayAgenda items={items} />
-                    <p className="text-[13px] text-text-muted">Reminders never change a follow-up (D5).</p>
+                    <p className="text-[13px] text-text-muted">Reminders never change a follow-up.</p>
                   </div>
                 </div>
               )

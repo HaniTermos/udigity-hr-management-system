@@ -62,7 +62,7 @@ export function idempotent(operation: string, options: { required?: boolean } = 
         const existing = await repo.findIdempotency(pool, key, now);
         if (!existing) throw new HttpError(409, 'STATE_CONFLICT', 'Request is being processed; retry shortly');
         if (existing.request_hash !== hash) {
-          throw new HttpError(409, 'IDEMPOTENCY_KEY_REUSED', 'This Idempotency-Key was used for a different request');
+          throw new HttpError(409, 'IDEMPOTENCY_KEY_REUSED', 'This save was already sent with different details. Reload the page and try again.');
         }
         if (existing.status === 0) throw new HttpError(409, 'STATE_CONFLICT', 'Request is being processed; retry shortly');
         res.setHeader('Idempotent-Replayed', 'true');

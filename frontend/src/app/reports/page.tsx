@@ -10,7 +10,6 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { Select } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { Skeleton, StateView } from '@/components/ui/State';
 import { PermissionDenied } from '@/components/states/PermissionDenied';
 import { ACTIONS } from '@/lib/actions';
@@ -175,8 +174,7 @@ export default function ReportsPage() {
         )}
 
         <p className="text-xs text-text-muted flex flex-wrap items-center gap-2">
-          <PolicyPendingChip dec="OQ-18" label="export scope open" />
-          <span>Which fields each export may contain is not decided yet. Exports are recorded in the audit log.</span>
+          <span>Exports are recorded in the audit log.</span>
         </p>
       </div>
 

@@ -8,7 +8,6 @@ import { CardInset } from '@/components/ui/Card';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
 import { Textarea } from '@/components/ui/Input';
-import { NoticePolicy, PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { Skeleton } from '@/components/ui/State';
 import { ApiError } from '@/lib/api';
 import {
@@ -17,8 +16,7 @@ import {
   checkIn,
   requestRemoteException,
   type AttendanceTodayDto,
-  type CheckInResult,
-} from '@/lib/api/attendance';
+  type CheckInResult } from '@/lib/api/attendance';
 import { offlineSaveMessage } from '@/lib/errorRouting';
 import { useCompanyTime, type CompanyTime } from '@/lib/hooks/useCompanyTime';
 import { CorrectionDrawer } from './CorrectionDrawer';
@@ -155,7 +153,6 @@ function RemoteRequestForm({ flow, today, onClose }: { flow: CheckInFlowState; t
       <p className="text-sm text-text-secondary">The Owner decides the request. You can check in after it is granted.</p>
       {flow.remoteError && <Alert tone="danger" title="Request not sent" body={flow.remoteError} />}
       <Textarea label="Reason" required rows={3} maxLength={500} value={reason} error={error} onChange={(e) => setReason(e.target.value)} />
-      <PolicyPendingChip dec="DEC-010" demo />
       <div className="flex justify-end gap-2">
         <Button type="button" variant="secondary" onClick={onClose}>
           Cancel
@@ -200,7 +197,6 @@ export function CheckInBody({
               : 'Attendance is not set up yet. Check-in opens once the Owner saves the attendance settings.'}
           </p>
         </CardInset>
-        <PolicyPendingChip dec="DEC-009" demo />
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Back to My Day
@@ -244,9 +240,6 @@ export function CheckInBody({
           title={earlier ? `Open session from ${dayLabel(earlier.workDate, 'short')}` : 'Open session from an earlier day'}
           body={`${earlier ? `Checked in ${time.formatTime(earlier.effectiveCheckInAt)} with no checkout. ` : ''}Send a correction request with your checkout time; you can check in again once it is sent.`}
         />
-        {!today?.employeeRequestsEnabled && (
-          <NoticePolicy dec="DEC-011" demo body="Demonstration setting: the Owner corrects the session and you are notified." />
-        )}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Close
@@ -281,12 +274,8 @@ export function CheckInBody({
             <Button variant="link" onClick={flow.openRemoteRequest}>
               Request remote exception
             </Button>
-            <PolicyPendingChip dec="DEC-010" demo />
           </div>
-        ) : (
-          <NoticePolicy dec="DEC-010" demo body="Demonstration setting: employees cannot request a remote exception. The Owner records remote work." />
-        )}
-        <NoticePolicy dec="D2" body="Attendance needs the office network (its public IP). Location is not used." />
+        ) : null}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Cancel
@@ -338,22 +327,6 @@ export function CheckInBody({
         icon={remote ? <Icon name="shield" size={18} /> : undefined}
       />
       <DerivedCard result={result} time={time} />
-      <NoticePolicy
-        dec={remote ? 'DEC-010' : 'DEC-007/008'}
-        demo
-        body={
-          remote
-            ? 'Remote work and its fallback are undecided; this result exists only if remote exceptions are adopted.'
-            : 'Schedule start and grace are demonstration values; the 9 h workday is confirmed.'
-        }
-      />
-      {!remote && (
-        <div className="flex flex-wrap gap-2">
-          <PolicyPendingChip dec="DEC-009" demo />
-          <PolicyPendingChip dec="DEC-022" demo />
-          <PolicyPendingChip dec="R-11" demo />
-        </div>
-      )}
       <div className="flex justify-end gap-2">
         <Button variant="secondary" onClick={onClose}>
           Close

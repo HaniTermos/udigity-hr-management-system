@@ -406,18 +406,23 @@ export async function listDeliveryMonitorRows(
   const limit = options.limit ?? 50;
   const offset = options.offset ?? 0;
 
-  let filter = '';
+  const conds: string[] = [];
   const filterParams: unknown[] = [];
   if (options.kind) {
-    filter = 'WHERE kind = $1';
     filterParams.push(options.kind);
+    conds.push(`kind = $${filterParams.length}`);
   }
+  if (options.state) {
+    filterParams.push(options.state);
+    conds.push(`state = $${filterParams.length}`);
+  }
+  const filter = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 
   const countQuery = `
     WITH combined AS (
-      SELECT d.id, 'notification'::text AS kind FROM notification_deliveries d
+      SELECT d.id, 'notification'::text AS kind, d.state::text AS state FROM notification_deliveries d
       UNION ALL
-      SELECT r.id, 'reminder'::text AS kind FROM reminders r
+      SELECT r.id, 'reminder'::text AS kind, r.state::text AS state FROM reminders r
     )
     SELECT count(*)::text AS count FROM combined
     ${filter}

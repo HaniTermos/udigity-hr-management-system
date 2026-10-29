@@ -1,7 +1,6 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
 import { Icon, IconName } from './Icon';
-import { PolicyPendingChip } from './NoticePolicy';
 
 /*
  * Figma `Notice/Access`: Type Permission denied | Hidden by policy | Context-limited × Size Page | Inline.
@@ -24,7 +23,7 @@ const COPY: Record<AccessType, { icon: IconName; title: string; body: string }> 
   'context-limited': {
     icon: 'shield',
     title: 'Limited business context',
-    body: 'You see only the business details needed for this deal or project (DEC-005 pending).',
+    body: 'You see only the business details needed for this deal or project.',
   },
 };
 
@@ -40,7 +39,6 @@ export interface NoticeAccessProps {
 
 export function NoticeAccess({ type, size = 'page', title, body, action, className }: NoticeAccessProps) {
   const c = COPY[type];
-  const policy = type === 'context-limited' ? <PolicyPendingChip dec="DEC-005" demo /> : null;
 
   if (size === 'inline') {
     return (
@@ -52,7 +50,6 @@ export function NoticeAccess({ type, size = 'page', title, body, action, classNa
         <div className="flex-1 min-w-0 flex flex-col gap-1 items-start">
           <p className="text-sm font-medium leading-5 text-text-primary">{title ?? c.title}</p>
           <p className="text-[13px] leading-[18px] text-text-secondary">{body ?? c.body}</p>
-          {policy}
         </div>
       </div>
     );
@@ -68,7 +65,6 @@ export function NoticeAccess({ type, size = 'page', title, body, action, classNa
         <p className="text-[13px] leading-[18px] text-text-secondary">{body ?? c.body}</p>
       </div>
       {action}
-      {policy}
     </div>
   );
 }

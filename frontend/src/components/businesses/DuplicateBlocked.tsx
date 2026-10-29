@@ -9,7 +9,6 @@ import { CardInset } from '@/components/ui/Card';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
 import { NoticeAccess } from '@/components/ui/NoticeAccess';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 
 /**
  * SCR-DE-003 Duplicate blocked. One dialog, four entry points (create, edit with the record excluded, applying a
@@ -249,7 +248,6 @@ export function SimilarNameDialog({
             </li>
           ))}
         </ul>
-        <NoticePolicy size="inline" dec="DEC-013" demo body="Similar names warn; identical name and branch, or the same phone, block." />
       </div>
     </Dialog>
   );

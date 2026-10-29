@@ -182,6 +182,41 @@ export async function queryDashboardStats(
   };
 }
 
+/** Calls and distinct businesses contacted per company-timezone day in [since, until). Days with no calls are absent. */
+export async function queryDailyCalling(
+  db: Queryable,
+  since: Date,
+  until: Date,
+  timeZone: string
+): Promise<Array<{ day: string; attempts: number; contacted: number }>> {
+  const { rows } = await db.query<{ day: string; attempts: string; contacted: string }>(
+    `SELECT to_char((attempted_at AT TIME ZONE $3)::date, 'YYYY-MM-DD') AS day,
+            count(*)::text AS attempts,
+            count(DISTINCT business_id)::text AS contacted
+       FROM call_attempts
+      WHERE attempted_at >= $1 AND attempted_at < $2
+      GROUP BY 1
+      ORDER BY 1`,
+    [since, until, timeZone || 'UTC']
+  );
+  return rows.map((r) => ({ day: r.day, attempts: Number(r.attempts), contacted: Number(r.contacted) }));
+}
+
+/** Current deal count per stage, plus open deals waiting for Owner payment verification (open closure request). */
+export async function queryDealsByStage(db: Queryable): Promise<{ byStage: Record<string, number>; pendingVerification: number }> {
+  // Sequential: `db` may be a single client, where overlapping queries are not allowed.
+  const stages = await db.query<{ stage: string; n: string }>(`SELECT stage, count(*)::text AS n FROM deals GROUP BY stage`);
+  const pending = await db.query<{ n: string }>(
+    `SELECT count(DISTINCT r.deal_id)::text AS n
+       FROM closure_reviews r JOIN deals d ON d.id = r.deal_id
+      WHERE r.status = 'requested' AND d.stage NOT IN ('closed', 'not_proceeding')`
+  );
+  return {
+    byStage: Object.fromEntries(stages.rows.map((r) => [r.stage, Number(r.n)])),
+    pendingVerification: Number(pending.rows[0]?.n ?? 0),
+  };
+}
+
 export async function queryDeveloperWorkload(
   db: Queryable
 ): Promise<Array<{

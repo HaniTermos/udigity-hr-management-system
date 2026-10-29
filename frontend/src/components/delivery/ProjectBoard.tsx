@@ -9,7 +9,6 @@ import { Card, CardInset } from '@/components/ui/Card';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
 import { Checkbox, DateInput, Input, Textarea } from '@/components/ui/Input';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { Skeleton } from '@/components/ui/State';
 import { useToast } from '@/components/ui/Toast';
 import { useApi } from '@/lib/hooks/useApi';
@@ -30,8 +29,7 @@ import {
   type ProjectHistoryItem,
   type ProjectStatus,
   type Task,
-  type TaskStatus,
-} from '@/lib/api/projects';
+  type TaskStatus } from '@/lib/api/projects';
 import { RecordDeliveredDialog } from './RecordDeliveredDialog';
 import { TaskDrawer } from './TaskDrawer';
 import {
@@ -50,8 +48,7 @@ import {
   PROJECT_STATUS_OPTION_LABEL,
   TASK_STATUS_LABEL,
   TaskStatusBadge,
-  todayInput,
-} from './shared';
+  todayInput } from './shared';
 
 const COLUMNS: TaskStatus[] = ['todo', 'in_progress', 'done', 'cancelled'];
 
@@ -292,16 +289,11 @@ export function ProjectBoard({ id }: { id: string }) {
 
       {readOnly && (
         <div className="space-y-2">
-          <NoticePolicy
-            tone="decision"
-            size="inline"
-            dec="Read-only"
-            body={
-              p.status === 'cancelled'
-                ? `This project was cancelled${p.cancelledAt ? ` on ${fmtDate(p.cancelledAt)}` : ''}: ${p.cancelReason ?? 'no reason recorded'}. Its history and tasks are kept; nothing can be changed.`
-                : 'This project is Completed. Status, schedule and tasks can no longer be changed.'
-            }
-          />
+          <p className="text-[13px] text-text-muted">
+            {p.status === 'cancelled'
+              ? `This project was cancelled${p.cancelledAt ? ` on ${fmtDate(p.cancelledAt)}` : ''}: ${p.cancelReason ?? 'no reason recorded'}. Its history and tasks are kept; nothing can be changed.`
+              : 'This project is Completed. Status, schedule and tasks can no longer be changed.'}
+          </p>
           {p.allowed.reopen && (
             <Button
               variant="secondary"
@@ -394,7 +386,7 @@ export function ProjectBoard({ id }: { id: string }) {
           <div className="space-y-2">
             <p className="text-sm text-text-secondary">
               <span className="font-semibold text-text-primary mr-2">Tasks</span>
-              {p.tasks.length} · Columns are task statuses (proposed, no DEC ID). Moving a task never changes the project status.
+              {p.tasks.length} · Columns are task statuses. Moving a task never changes the project status.
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
               {COLUMNS.map((col) => {
@@ -408,7 +400,7 @@ export function ProjectBoard({ id }: { id: string }) {
                     {tasks.length === 0 && (
                       <div className="text-[13px] text-text-muted">
                         <p className="font-medium text-text-secondary">No tasks</p>
-                        {col === 'cancelled' && <p>Cancelling needs a reason (Proposed).</p>}
+                        {col === 'cancelled' && <p>Cancelling needs a reason.</p>}
                       </div>
                     )}
                     {tasks.map((t) => (
@@ -446,7 +438,6 @@ export function ProjectBoard({ id }: { id: string }) {
                 <dd>{deal.data.deal.closure ? fmtDate(deal.data.deal.closure.closedAt) : 'Not closed'}</dd>
               </dl>
             )}
-            <NoticePolicy tone="policy" size="block" dec="DEC-006 / R-12" demo body="Closure authority pending: Developer vs Owner verification not decided." />
             <dl className="grid grid-cols-[80px_1fr] gap-y-2 text-sm">
               <dt className="text-text-secondary">Project</dt>
               <dd>{p.provisionedBy === 'auto' ? 'Provisioned automatically at closure' : 'Created manually'}</dd>

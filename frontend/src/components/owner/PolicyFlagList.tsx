@@ -2,7 +2,6 @@ import React from 'react';
 import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { Input, Select } from '@/components/ui/Input';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import type { PolicyFlagRow } from '@/lib/api/admin';
 
 /** Text shown in an input for a value; `null` draft = untouched. */
@@ -73,14 +72,13 @@ function PolicyFlagItem({ flag, draft, onDraft }: { flag: PolicyFlagRow; draft: 
       <div className="min-w-0 space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <code className="text-[13px] font-semibold text-text-primary">{flag.key}</code>
-          <PolicyPendingChip dec={flag.policy} demo />
           {!flag.configured && <Badge tone="warning">Not configured</Badge>}
         </div>
         <p className="text-xs text-text-muted">
           {KIND_HELP[flag.kind]}
           {flag.kind === 'SET' && !flag.editable ? ' · edited with the attendance settings (not here)' : ''}
           {' '}· {flag.source === 'stored' ? 'saved value' : 'using default'} · default{' '}
-          <span className="font-mono">{toInputText(flag.default) === '' ? 'none (policy pending)' : toInputText(flag.default)}</span>
+          <span className="font-mono">{toInputText(flag.default) === '' ? 'none' : toInputText(flag.default)}</span>
         </p>
       </div>
       <div>

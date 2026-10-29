@@ -3,9 +3,7 @@
 import React, { useState } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
 import { Alert } from '@/components/ui/Alert';
-import { DerivedChip } from '@/components/ui/Badge';
 import { Tabs } from '@/components/ui/Tabs';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { StateView } from '@/components/ui/State';
 import { ApiErrorView } from '@/components/states';
 import { CallingPageHeader, HeaderLink, LoadingBlock } from '@/components/calling/CallingPageHeader';
@@ -75,11 +73,6 @@ function OpportunitiesView() {
                   { id: 'unassigned', label: 'Not yet assigned' },
                 ]}
               />
-              <NoticePolicy size="chip" dec="DEC-005" demo />
-              <NoticePolicy size="chip" dec="DEC-017" demo />
-              <span className="ml-auto">
-                <DerivedChip>Both conditions are derived</DerivedChip>
-              </span>
             </div>
             {!data.dealInfoAvailable && (
               <Alert tone="info" title="Deal details are unavailable right now" body="Stage, developer and first meeting come from the delivery service. The call notes below are complete." />

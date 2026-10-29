@@ -16,7 +16,6 @@ import { useToast } from '@/components/ui/Toast';
 import { CardSection } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { NoticeAccess } from '@/components/ui/NoticeAccess';
-import { NoticePolicy, PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { StateView } from '@/components/ui/State';
 import { Tabs } from '@/components/ui/Tabs';
 import { PageHeader, type Crumb } from './PageHeader';
@@ -284,7 +283,6 @@ function ArchivePanel({ business, onChanged }: { business: BusinessDetail; onCha
               options={activeCategories.map((c) => ({ value: c.id, label: c.name }))}
             />
           )}
-          <NoticePolicy size="inline" dec="C-01" demo body="Archive only, never delete. The retention rule is not decided." />
           {error && (
             <p role="alert" className="text-[13px] leading-[18px] font-medium text-status-danger-fg">
               {error}
@@ -400,7 +398,7 @@ export function BusinessDetailView({
           title="Limited business context"
           body={
             role === 'developer'
-              ? 'You see only the details needed for this closed deal. Other fields are not shown in this context (DEC-005, demonstration alternative — not approved).'
+              ? 'You see only the details needed for this closed deal. Other fields are not shown in this context.'
               : 'You see only the details needed to review a correction request. Other fields are not shown in this context.'
           }
         />
@@ -438,7 +436,6 @@ export function BusinessDetailView({
                   }))}
                 />
               )}
-              <PolicyPendingChip dec="DEC-014/023" demo className="self-start" />
             </CardSection>
 
             <CardSection title="Notes">
@@ -457,10 +454,6 @@ export function BusinessDetailView({
                 ]}
               />
             </CardSection>
-            <NoticePolicy demo
-              dec="DEC-001/002"
-              body="When other roles stop seeing this business (15-day rule) and which active work keeps it visible are not decided."
-            />
           </div>
         </div>
       )}
@@ -490,7 +483,6 @@ export function BusinessDetailView({
                 />
               </CardSection>
             )}
-            <NoticePolicy demo dec="DEC-005" body="Which business fields a Developer sees before closure, and with which context, is not decided." />
           </div>
         </div>
       )}
@@ -502,10 +494,6 @@ export function BusinessDetailView({
           </CardSection>
           <div className="flex flex-col gap-4">
             <CorrectionsCard business={b} canOpenQueue={role === 'data_entry' || role === 'owner'} onChanged={onChanged} />
-            <NoticePolicy demo
-              dec="DEC-001/002"
-              body="When other roles stop seeing this business (15-day rule) and which active work keeps it visible are not decided."
-            />
           </div>
         </div>
       )}

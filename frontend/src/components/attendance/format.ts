@@ -53,9 +53,9 @@ export function verificationText(v: VerificationDto | null | undefined): string 
   const mode = v.mode ? (MODE_LABEL[v.mode] ?? v.mode) : null;
   switch (v.result) {
     case 'passed':
-      return `Recorded · mode ${mode ?? 'unknown'}`;
+      return mode ? `Checked from the ${mode}` : 'Recorded';
     case 'failed':
-      return `Office check failed · mode ${mode ?? 'unknown'}`;
+      return mode ? `Not on the ${mode}` : 'Office check failed';
     case 'remote':
       return 'Remote exception recorded';
     case 'retroactive':

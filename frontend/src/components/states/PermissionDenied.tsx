@@ -4,7 +4,6 @@ import React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { NoticeAccess } from '@/components/ui/NoticeAccess';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Badge } from '@/components/ui/Badge';
@@ -55,12 +54,6 @@ export function PermissionDenied({ variant = 'role', area, className }: Permissi
         <Button variant="ghost" fullWidth leadingIcon={<Icon name="log-out" size={16} />} onClick={() => void logout()}>
           Sign out
         </Button>
-        <NoticePolicy
-          size="block"
-          dec="R-11"
-          demo
-          body="Not selected. R11-a: nothing is available until 2FA. R11-b: non-admin work (for example check-in) is allowed; admin pages still wait."
-        />
       </div>
     );
   }

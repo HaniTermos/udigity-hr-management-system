@@ -6,7 +6,6 @@ import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon, type IconName } from '@/components/ui/Icon';
-import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { BrandLogo } from '@/components/ui/BrandLogo';
 import { cn } from '@/lib/utils';
 import type { SessionEndReason } from '@/lib/errorRouting';
@@ -19,7 +18,7 @@ import type { SessionEndReason } from '@/lib/errorRouting';
 
 const COPY: Record<
   SessionEndReason,
-  { icon: IconName; tone: 'warning' | 'danger'; title: string; body: string; action: string; note: string; unsaved: boolean }
+  { icon: IconName; tone: 'warning' | 'danger'; title: string; body: string; action: string; unsaved: boolean }
 > = {
   expired: {
     icon: 'lock',
@@ -27,7 +26,6 @@ const COPY: Record<
     title: 'Your session has expired',
     body: 'For your security you were signed out. Sign in again to continue.',
     action: 'Sign in again',
-    note: 'Idle and absolute session lifetimes are implementation decisions (no DEC ID).',
     unsaved: true,
   },
   revoked: {
@@ -36,7 +34,6 @@ const COPY: Record<
     title: 'You were signed out',
     body: 'Your sessions were ended by the Owner/Admin or after a password or 2FA change. Sign in again to continue.',
     action: 'Sign in again',
-    note: 'Revocation ends every session of the account; the account itself stays active (WF-AUTH-001 L4).',
     unsaved: false,
   },
   deactivated: {
@@ -45,7 +42,6 @@ const COPY: Record<
     title: 'Your account is no longer active',
     body: 'You can’t sign in. Contact the Owner/Admin if you think this is a mistake.',
     action: 'Back to sign in',
-    note: 'Deactivation revokes all sessions (Confirmed). Wording is Proposed and never names the reason.',
     unsaved: false,
   },
 };
@@ -87,7 +83,6 @@ export function SessionEndedCard({ reason, redirect, className }: SessionEndedCa
           {c.action}
         </Button>
       </Link>
-      <NoticePolicy tone="decision" size="block" dec="Impl. decision" body={c.note} />
     </div>
   );
 }
@@ -145,7 +140,6 @@ export function SessionEndedDialog({
     >
       <div className="flex flex-col gap-3">
         <Alert tone="warning" title={unsavedLabel} body="Copy it somewhere before signing in if you still need it." />
-        <NoticePolicy tone="decision" size="block" dec="Impl. decision" body="How unsaved input is handled on expiry is a UX/implementation choice (WF-AUTH-001 L3)." />
       </div>
     </Dialog>
   );

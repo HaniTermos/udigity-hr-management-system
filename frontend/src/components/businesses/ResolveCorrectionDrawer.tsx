@@ -9,14 +9,12 @@ import {
   rejectCorrection,
   releaseCorrection,
   startCorrectionReview,
-  type CorrectionDetail,
-} from '@/lib/api/corrections';
+  type CorrectionDetail } from '@/lib/api/corrections';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { CardInset } from '@/components/ui/Card';
 import { Drawer } from '@/components/ui/Drawer';
 import { Textarea } from '@/components/ui/Input';
-import { NoticePolicy, PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { StateView } from '@/components/ui/State';
 import { useToast } from '@/components/ui/Toast';
 import { useCorrection } from './hooks';
@@ -204,7 +202,6 @@ function OpenDrawer({ id, onClose, onChanged }: { id: string; onClose: () => voi
               <span id="outcome-label" className="text-sm font-medium leading-5 text-text-primary">
                 Outcome
               </span>
-              <PolicyPendingChip dec="No DEC ID" demo />
             </div>
             {data.businessId && (
               <Link href={`/businesses/${data.businessId}`} className="text-[13px] leading-[18px] font-medium text-text-link hover:underline underline-offset-2">
@@ -241,7 +238,6 @@ function OpenDrawer({ id, onClose, onChanged }: { id: string; onClose: () => voi
           error={noteError}
         />
 
-        <NoticePolicy demo size="inline" dec="No DEC ID" body="Who may resolve a request, and who is notified, are not decided." />
       </div>
     </Drawer>
   );

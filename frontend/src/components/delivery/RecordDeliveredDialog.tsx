@@ -4,7 +4,6 @@ import React from 'react';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
-import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import type { Project, OpenTasksWarning } from '@/lib/api/projects';
 import type { ApiError } from '@/lib/api';
 import type { ErrorRoute } from '@/lib/errorRouting';
@@ -82,13 +81,12 @@ export function RecordDeliveredDialog({
         </dl>
 
         <p className="text-[13px] leading-[18px] text-text-muted">
-          Warning only: you can still record {PROJECT_STATUS_LABEL[warning.to]} (OQ-10, Proposed). {warning.to === 'delivered' ? 'Completed is recorded later, from Delivered.' : ''}
+          Warning only: you can still record {PROJECT_STATUS_LABEL[warning.to]}. {warning.to === 'delivered' ? 'Completed is recorded later, from Delivered.' : ''}
         </p>
         <div className="flex flex-wrap items-center gap-3">
           <button type="button" onClick={onReview} className="text-[13px] font-medium text-text-link hover:underline cursor-pointer">
             Review open tasks
           </button>
-          <PolicyPendingChip dec="DEC-019" label="statuses proposed" demo />
         </div>
         <ActionError route={route} error={error} />
       </div>

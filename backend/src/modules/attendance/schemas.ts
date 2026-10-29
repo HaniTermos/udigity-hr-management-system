@@ -246,6 +246,9 @@ export const PutSettingsSchema = z
     holidays: z.array(localDate).max(400).optional(),
     /** D1: the Owner confirms the holiday list (possibly empty). Must end up true on every save. */
     holidaysConfirmed: z.boolean().optional(),
+    /** Owner decision 2026-10-29: break limits per session (Owner setting; defaults 60 min, 3 breaks). */
+    breakAllowanceMinutes: z.number().int().min(0).max(480).optional(),
+    maxBreaksPerSession: z.number().int().min(1).max(20).optional(),
     missingCheckoutFlagHours: z.number().int().min(0).max(72).optional(),
     reason: z.string().trim().max(500).optional(),
   })
