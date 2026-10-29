@@ -1,6 +1,6 @@
 # Artifact Register — Udigity Management System
 
-Last reconciled: 2026-10-20. Scope: internal HR/CRM system only.
+Last reconciled: 2026-10-29 (ART-15 policy baseline and ART-16 Figma approval added; C-01, C-03, C-04 resolved). Previous: 2026-10-20. Scope: internal HR/CRM system only.
 
 **Source authority (highest first):**
 1. Explicit user requirements and approved decisions
@@ -27,10 +27,12 @@ Last reconciled: 2026-10-20. Scope: internal HR/CRM system only.
 | ART-08 | Phase 2 workflows | 2 | Unknown | None referenced in any accessible artifact | **Not found here** | Unknown | Unknown | None |
 | ART-09 | Phase 2 state machines | 2 | Unknown | DEC-019 "Service Delivery State Machine [Proposed]" hints at one | **Not found here** | Unknown | Unknown | None |
 | ART-10 | "Design Brief" | Unknown | Unknown | Named in the Board 01 legend (`1:26`: "CONFIRMED: Specified in Design Brief or Confirmed by User") | Possibly = ART-01; **unconfirmed** | Unknown | Unknown | None |
-| ART-11 | AI policy proposals D1–D20 | AI proposal | 2026-10-20 | [decisions.md](decisions.md) | Accessible | **Unapproved AI proposal** (tier 4) | Current draft | None. Mapped to DEC IDs in decisions.md §"Mapping to the DEC register" |
-| ART-12 | This register | — | 2026-10-20 | `docs/artifact-register.md` | Accessible | Draft | Current | — |
+| ART-11 | AI policy proposals D1–D20 | AI proposal | 2026-10-20 | [decisions.md](decisions.md) (D-sections) | Accessible | **Unapproved AI proposal** (tier 4) | **Superseded where ART-15 conflicts; retained as history** (2026-10-29) | None. Mapped to DEC IDs in decisions.md §"Mapping to the DEC register"; supersessions in decisions.md §"Supersession log" |
+| ART-12 | This register | — | 2026-10-29 | `docs/artifact-register.md` | Accessible | Draft | Current | — |
 | ART-13 | FigJam Board 02 — Workflows & State Machines | 2 | Batch 1 (2026-10-20) | [Board 02](https://www.figma.com/board/lwmKQNJI42na8B3SSNLQJP), fileKey `lwmKQNJI42na8B3SSNLQJP`, aap047's team (destination chosen by the user) | Accessible | **Approved** (Phase 2 baseline) | Current | User approval message 2026-10-20: "I approve Phase 2 as the workflow and state-model baseline"; policy alternatives remain pending |
 | ART-14 | Phase 2 companion doc + Batch 1 Mermaid source | 2 | Batch 1 | [phase_2_workflows_and_state_machines.md](phase_2_workflows_and_state_machines.md), [phase_2_batch1_mermaid.md](phase_2_batch1_mermaid.md) | Accessible | Approved (Phase 2 baseline) | Current | As ART-13 |
+| ART-15 | Approved policy baseline (v1 policies, D1–D20 section labels, fixed v1 scope, pending company inputs) | Policy (post-Phase 6) | 2026-10-29 | [policy-baseline-2026-10-29.md](policy-baseline-2026-10-29.md) (verbatim; do not edit) | Accessible | **Approved** — tier 1 (explicit user-approved). Explicitly pending company inputs stay pending (schedule, holidays, office IPs, phone country code, numeric targets, DEC-004) | Current. Supersedes ART-11 where they conflict | Owner message 2026-10-29 (saved verbatim). Canonical entries: decisions.md §"Approved decisions (2026-10-29 baseline)" |
+| ART-16 | Figma design file — Phase 6 design system + screens | 5–6 | Snapshot 2026-10-29 (no Figma version id captured) | Figma design file key `GNrhb3DWa6mIhEX6F4Nmvw`; repo snapshot = exported previews `docs/phase6/previews/` (380 files, folders `21-ds`, `30-sample`, `40`–`45`), latest commit touching them `7c49d1f` (2026-10-28 17:59 +0200, "docs: Figma previews and QA screenshots (docs/phase6/previews/44)") | Accessible | **Approved** — tier 1 (explicit user-approved) | Current | Owner message 2026-10-29: "I approve all current Figma design work". Earlier: Phase 6 screen set approved 2026-10-23 (policy-defaults U-02). **No Figma version id was captured** in any doc; the approved revision is the file state as of 2026-10-29 and the `7c49d1f` previews snapshot is the reference. Untracked exports (`frontend/public/0x …`, `qa/figma-diff/shots/`) are not part of the reference |
 
 ### Board 01 internal notes (ART-04)
 - **Two versions of the lifecycle flow.** Sections `10:331`–`10:375` (six simple stages) and `30:543`–`30:612` (detailed, with UC/DEC references). The second looks like a replacement, but neither is marked superseded.
@@ -38,7 +40,9 @@ Last reconciled: 2026-10-20. Scope: internal HR/CRM system only.
 - **Leftover nodes:** "Test" (`23:406`), "Shared.UC" (`31:794`), "Owner.UC" (`31:797`).
 - **Possibly a later addition:** section `20:412` "Phase 1 Corrective Coverage Additions" (UC-AUTH-008, UC-BIZ-008, UC-CALL-008/009/010, UC-DEAL-004).
 
-## Terminology and policy conflicts (recorded, not resolved)
+## Terminology and policy conflicts
+
+Recorded 2026-10-20. Resolutions added 2026-10-29 from ART-15 where the baseline clearly settles a conflict; the original rows stay as history.
 
 ### C-01 Permanent deletion vs archiving
 | Source | Statement |
@@ -47,8 +51,11 @@ Last reconciled: 2026-10-20. Scope: internal HR/CRM system only.
 | ART-01 §2.2 | Data Entry cannot delete business records (confirmed) |
 | ART-04 `27:443` (tier 3) | "Business Deletion: Owner Only [Confirmed]" |
 | ART-11 D20 (tier 4) | Archive-only; no hard deletes in the application |
+| ART-15 §D20 (tier 1, 2026-10-29) | "No hard-delete actions through the normal application." Archive/deactivate businesses, employees, deals, categories. "This explicitly supersedes the earlier 'Owner-only business deletion' requirement for ordinary application use." |
 
-**Status: unresolved.** The board's `[Confirmed]` tag is broader than the tier-1 source, which leaves the Owner's deletion behavior open. "Data Entry cannot delete" is confirmed. No DEC ID covers this question.
+~~Status: unresolved.~~ (2026-10-20: the board's `[Confirmed]` tag was broader than the tier-1 source; "Data Entry cannot delete" confirmed; no DEC ID.)
+
+**Status: resolved 2026-10-29 → DEC-031.** ART-15 §D20 explicitly supersedes Board 01 `27:443` "Business Deletion: Owner Only [Confirmed]" for ordinary application use: archive-only, no hard deletes, Owner may restore. Privacy/legal erasure needs a separate controlled procedure (not defined). Supersession recorded in decisions.md §"Supersession log" S-01.
 
 ### C-02 `Pending` vs `NEW_LEAD`
 | Source | Meaning |
@@ -82,8 +89,9 @@ Last reconciled: 2026-10-20. Scope: internal HR/CRM system only.
 | ART-04 `5:120`, `31:674`, `31:677`, `9:309` | "Office IP/Location", "Office IP/GPS", "Configure Office IP & Geofence". Implies both are configurable; mode unspecified |
 | ART-05 DEC-009 | Unresolved |
 | ART-11 D2 | Proposes IP only |
+| ART-15 §D2 (tier 1) | Configured public IP/CIDR allowlist; forwarding headers trusted only from explicitly trusted proxies; geolocation fallback disabled and not a launch requirement; no stable IP → explicit alternative decision, never silent geofencing or allow-all |
 
-**Status: unresolved (DEC-009).** Architecture should support both inputs. The mode stays pending.
+**Status: resolved 2026-10-29 (DEC-009 = IP/CIDR allowlist only).** Company input pending: static-IP availability and the approved IP/CIDR values. (Earlier status: unresolved; architecture to support both inputs.)
 
 ### C-04 Fifteen-day timer and exceptions
 | Source | Statement |
@@ -94,7 +102,12 @@ Last reconciled: 2026-10-20. Scope: internal HR/CRM system only.
 | ART-04 `30:596` | Closed deals "Visible Company-Wide subject to 15-day policy" |
 | ART-11 D9 | Proposes a third option: count from creation (Data Entry) or assignment (Call Center), with no reset, plus active-work exceptions |
 
-**Status: unresolved (DEC-001, DEC-002).** D9 is a new alternative, not a selection of A or B.
+| ART-15 §D9 (tier 1) | Data Entry: 15 elapsed days from creation, editing does not restart; Call Center: 15 days from assignment; interactions never reset. Exceptions: callback time + 48 h, assigned Developer on accepted opportunity, correction requester while open, closed deal with active project (Developers) until 15 days after completion |
+
+**Status: resolved 2026-10-29 (DEC-001, DEC-002).** DEC-001 = the D9-style third option (not Board Alt A or Alt B). DEC-002 is close to Board Alt B with differences (see decisions.md). (Earlier status: unresolved; D9 a new alternative.)
+
+### Conflicts not settled by ART-15
+- **C-02** (`Pending` vs `NEW_LEAD`): ART-15 does not address it. Unchanged (implementation follows the approved Phase 2 baseline SB-2 §5 per policy-defaults C-02).
 
 ## C. Confirmed gaps vs inaccessible artifacts
 
@@ -106,6 +119,8 @@ Last reconciled: 2026-10-20. Scope: internal HR/CRM system only.
 3. **No DEC entry for commercial-stage transition rules** (ART-01 §12: "exact transition and evidence rules must be finalized"). DEC-019 covers service delivery only.
 4. **No notification use cases on Board 01**, although ART-01 §16 requires them.
 5. **Board 01 has no workflow or state-machine content** beyond one end-to-end lifecycle flow (two versions of it).
+
+**Update 2026-10-29:** gaps 1–3 now have approved decisions with new IDs (decisions.md): notifications DEC-029, recovery DEC-030, deletion vs archiving DEC-031, commercial stages DEC-028. Pending/NEW_LEAD (C-02) still has no DEC ID.
 
 ### Inaccessible (may exist elsewhere)
 ART-02, ART-03, ART-07, ART-08, ART-09, ART-10, the full DEC register text (ART-05) and the full permission matrix (ART-06).
