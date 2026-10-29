@@ -45,6 +45,8 @@ export const ACTIONS = {
   callingQueueRead: 'calling.queue.read',
   callingAssign: 'calling.assign',
   followUpRead: 'follow_up.read',
+  // D15 (approved): accepted opportunities are the assigned Developer's and the Owner's; CC is refused.
+  opportunitiesList: 'call_attempt.list_opportunities',
   // delivery
   dealRead: 'deal.read',
   meetingRead: 'meeting.read',
@@ -99,6 +101,7 @@ export const ROLE_DEFAULTS: Partial<Record<ActionName, readonly Role[]>> = {
   [ACTIONS.callingQueueRead]: ['owner', 'call_center'],
   [ACTIONS.followUpRead]: ['owner', 'call_center'],
   [ACTIONS.dealRead]: ['owner', 'developer'],
+  [ACTIONS.opportunitiesList]: ['owner'],
   [ACTIONS.meetingRead]: ['owner', 'developer'],
   [ACTIONS.projectRead]: ['owner', 'developer'],
 };

@@ -25,6 +25,8 @@ export interface DeliveryRow {
   attempt_count: number;
   last_error?: string | null;
   read_at?: Date | null;
+  /** Counts-only summary of a digest / grouped failure alert (migration 985); null on other rows. */
+  summary?: Record<string, unknown> | null;
   created_at: Date;
 }
 
@@ -59,13 +61,14 @@ export async function insertDelivery(
     sourceId: string | null;
     state?: DeliveryState;
     lastError?: string | null;
+    summary?: Record<string, unknown> | null;
   },
   now: Date
 ): Promise<string | null> {
   const { rows } = await db.query<{ id: string }>(
     `INSERT INTO notification_deliveries
-       (dedupe_key, event_id, family, template, channel, recipient_id, source_type, source_id, state, last_error, next_attempt_at, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+       (dedupe_key, event_id, family, template, channel, recipient_id, source_type, source_id, state, last_error, next_attempt_at, created_at, summary)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11, $12::jsonb)
      ON CONFLICT (dedupe_key) DO NOTHING
      RETURNING id`,
     [
@@ -80,9 +83,41 @@ export async function insertDelivery(
       d.state ?? 'pending',
       d.lastError ?? null,
       now,
+      d.summary ? JSON.stringify(d.summary) : null,
     ]
   );
   return rows[0]?.id ?? null;
+}
+
+/**
+ * D18 "deduplicate repeated alerts": the Owner's open (unread, younger than `since`) delivery-failure
+ * alert of one failure group, or null. Call under `lockKey` so two failures of a group never both insert.
+ */
+export async function openFailureAlert(db: Queryable, recipientId: string, group: string, since: Date): Promise<{ id: string } | null> {
+  const { rows } = await db.query<{ id: string }>(
+    `SELECT id FROM notification_deliveries
+      WHERE recipient_id = $1 AND template = 'business.delivery_failure' AND channel = 'in_app'
+        AND read_at IS NULL AND created_at >= $3 AND summary->>'group' = $2
+      ORDER BY created_at DESC LIMIT 1`,
+    [recipientId, group, since]
+  );
+  return rows[0] ?? null;
+}
+
+/** Repeated failure of an open alert's group: bump its counter instead of adding a row. */
+export async function bumpFailureAlert(db: Queryable, id: string, latestSourceId: string): Promise<void> {
+  await db.query(
+    `UPDATE notification_deliveries
+        SET summary = jsonb_set(summary, '{count}', to_jsonb(COALESCE((summary->>'count')::int, 1) + 1)),
+            source_id = $2, version = version + 1, updated_at = now()
+      WHERE id = $1`,
+    [id, latestSourceId]
+  );
+}
+
+/** Transaction-scoped advisory lock on a text key (serialises check-then-insert dedupe). */
+export async function lockKey(db: Queryable, key: string): Promise<void> {
+  await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [key]);
 }
 
 /** Claim due email deliveries (SKIP LOCKED + lease). Increments attempt_count. */
@@ -174,10 +209,10 @@ export async function listInAppDeliveries(
 
   const { rows } = await db.query<DeliveryRow>(
     `SELECT id, dedupe_key, event_id, family, template, channel, recipient_id,
-            source_type, source_id, state, attempt_count, last_error, read_at, created_at
+            source_type, source_id, state, attempt_count, last_error, read_at, summary, created_at
        FROM notification_deliveries
       ${whereClause}
-      ORDER BY created_at DESC
+      ORDER BY created_at DESC, id DESC
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   );
@@ -253,6 +288,38 @@ export async function upsertReminder(
     ]
   );
   return rows[0].id;
+}
+
+/**
+ * D18 follow-up overdue alert. The key carries the due time (`rem:fupod:<id>:<dueMs>`), so an alert
+ * already SENT for that due time is never re-armed (a reassignment does not resend it), while a
+ * reschedule arms a new one; pending alerts of an older due time are cancelled.
+ */
+export async function upsertOverdueReminder(
+  db: Queryable,
+  r: { dedupeKey: string; sourceId: string; recipientId: string; scheduledFor: Date; leadMinutes: number }
+): Promise<string | null> {
+  await db.query(
+    `UPDATE reminders SET state = 'cancelled', updated_at = CURRENT_TIMESTAMP
+      WHERE source_type = 'follow_up' AND source_id = $1 AND lead_minutes < 0 AND state = 'pending' AND dedupe_key <> $2`,
+    [r.sourceId, r.dedupeKey]
+  );
+  const { rows } = await db.query<{ id: string }>(
+    `INSERT INTO reminders
+       (dedupe_key, source_type, source_id, recipient_id, channel, scheduled_for, lead_minutes)
+     VALUES ($1, 'follow_up', $2, $3, 'in_app', $4, $5)
+     ON CONFLICT (dedupe_key) DO UPDATE
+       SET scheduled_for = EXCLUDED.scheduled_for,
+           recipient_id = EXCLUDED.recipient_id,
+           state = 'pending',
+           attempt_count = 0,
+           last_error = NULL,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE reminders.state <> 'sent'
+     RETURNING id`,
+    [r.dedupeKey, r.sourceId, r.recipientId, r.scheduledFor, r.leadMinutes]
+  );
+  return rows[0]?.id ?? null;
 }
 
 export async function cancelRemindersForSource(
@@ -399,7 +466,9 @@ export async function listDeliveryMonitorRows(
     )
     SELECT * FROM combined
     ${filter}
-    ORDER BY created_at DESC
+    -- id breaks ties: rows written in one transaction share created_at, and without a total order
+    -- OFFSET pages could skip or repeat rows.
+    ORDER BY created_at DESC, id DESC
     LIMIT $${limitIdx} OFFSET $${offsetIdx}
   `;
 

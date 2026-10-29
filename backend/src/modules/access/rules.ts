@@ -31,6 +31,9 @@ export const ACCESS_FACT_COLUMNS = [
   'project_developer_ids',
   'project_completed_at',
   'has_open_correction',
+  // Revision 5 (migration 992, approved D9): appended at the end.
+  'assignment_started_at',
+  'open_correction_requester_ids',
 ] as const;
 
 import { config, ConfigError } from '../../config/index.js';
@@ -39,12 +42,17 @@ import { config, ConfigError } from '../../config/index.js';
 export const DEAL_STAGE_ACCEPTED = 'accepted_opportunity';
 export const DEAL_STAGE_CLOSED = 'closed';
 export const PROJECT_STATUS_COMPLETED = 'completed';
+/** Migration 988 (BE4, D17): a cancelled project is never active (no R2/R3 access after cancellation). */
+export const PROJECT_STATUS_CANCELLED = 'cancelled';
 
 /** Fail-closed zone used while `company.timezone` is not configured in development/test. Removed in production. */
 export const FAIL_CLOSED_TIMEZONE = 'Etc/GMT-14';
 
 let warnedUnsetTimezone = false;
-/** The zone the day-16 boundary uses. In production, an approved IANA company timezone is required. */
+/**
+ * The company zone with its fail-closed fallback. Since the approved D9 policy the 15-day window is ELAPSED
+ * time (no calendar-day boundary), so the rule table no longer reads it; kept for callers and tests.
+ */
 export function effectiveTimezone(configured: string | undefined | null): string {
   if (configured && configured.trim()) return configured.trim();
   if (config.isProduction) {
@@ -61,7 +69,11 @@ export function effectiveTimezone(configured: string | undefined | null): string
   return FAIL_CLOSED_TIMEZONE;
 }
 
-/** 15-day rule (Confirmed C1): hidden from 00:00 company time on created-date + 15 (OI-04). */
+/**
+ * 15-day rule, approved D9 (docs/policy-baseline-2026-10-29.md): 15 ELAPSED days (15 × 24 h). Data Entry from
+ * creation; Call Center from the start of the CURRENT assignment (a reassignment starts a new window for the
+ * new agent and ends the old one). Edits, calls, notes and other interactions never reset it.
+ */
 export const VISIBILITY_WINDOW_DAYS = 15;
 
 export const EXCEPTION_ROWS: readonly ExceptionRow[] = [
@@ -109,11 +121,18 @@ export interface RuleInput {
   /**
    * Custom (non-matrix) roles only: the `data_scope` of the validated `role_permissions` grant for this
    * action, or `null` when the role holds no grant. The four matrix roles ignore it. Absent = `null`.
+   * Fixed v1 scope (approved): custom roles are turned off, so the rule table ignores it for every role.
    */
   dataScope?: DataScope | null;
 }
 
 export interface RuleFragments {
+  /**
+   * D9/D20: archiving recomputes access everywhere. `af.archived_at IS NULL` for every non-Owner role, so the
+   * related deals, meetings, projects, follow-ups of an archived business never pass `scopeFilter`; `TRUE`
+   * for the Owner.
+   */
+  live: string;
   /** Step 5. */
   scope: string;
   /** Step 6. */
@@ -174,81 +193,87 @@ export function buildRuleFragments(input: RuleInput): RuleFragments {
   };
   const u = lazy(input.employeeId, 'uuid');
   const now = lazy(input.now.toISOString(), 'timestamptz');
-  // R4 (security review): an unset company timezone (NEEDS VALUE) must not mean "open". Fail closed with
-  // the earliest zone (UTC+14, POSIX name Etc/GMT-14): the day-16 boundary is reached first everywhere.
-  const tz = lazy(effectiveTimezone(f['company.timezone']), 'text');
   const grace = lazy(f['visibility.callbackGraceHours'], 'int');
   const completedDays = lazy(f['visibility.completedProjectDays'], 'int');
 
-  // Step 7 — timer basis (DEC-001 FLAG: both branches).
-  const basis =
-    f['visibility.timerBasis'] === 'inactivity'
-      ? `GREATEST(${af}.created_at, COALESCE(${af}.last_touchpoint_at, ${af}.created_at))`
-      : `${af}.created_at`;
-  const window = () => `((timezone(${tz()}, ${basis})::date + ${VISIBILITY_WINDOW_DAYS}) > timezone(${tz()}, ${now()})::date)`;
+  // Step 7 — approved D9: 15 ELAPSED days. The basis is the creation time for Data Entry (and for the Owner's
+  // "hidden from others" flag) and the start of the current assignment for Call Center. The retired DEC-001
+  // `inactivity` basis (touchpoints reset the window) is rejected at flag load (shared/flags.ts) and never read.
+  const elapsedWindow = (basis: string) => `(${basis} + make_interval(days => ${VISIBILITY_WINDOW_DAYS}) > ${now()})`;
+  const creationWindow = () => elapsedWindow(`${af}.created_at`);
 
-  // Step 8 — DEC-002 rows, each gated by the CFG list and by the role the matrix names.
+  // Step 8 — exception rows, each gated by the CFG list and by the role the matrix names.
   const enabled = new Set(f['visibility.dec002Rows']);
   const allowed = rowsAllowedFor(input.action, role);
   const on = (r: ExceptionRow) => enabled.has(ROW_KEY[r]) && allowed.has(r);
   const devPreClosure = f['deals.developerPreClosure'] === 'assigned';
+  const inactiveProject = `('${PROJECT_STATUS_COMPLETED}', '${PROJECT_STATUS_CANCELLED}')`;
+  const projectActive = `(${af}.project_id IS NOT NULL AND ${af}.project_status NOT IN ${inactiveProject})`;
+  const completedRecently = () =>
+    `(${af}.project_status = '${PROJECT_STATUS_COMPLETED}' AND ${af}.project_completed_at + make_interval(days => ${completedDays()}) > ${now()})`;
 
-  const r1Who = (): string =>
-    role === 'call_center'
-      ? `${af}.assignee_id = ${u()}`
-      : role === 'developer' && devPreClosure
-        ? `${u()} = ANY(${af}.deal_developer_ids)`
-        : 'FALSE';
+  const isMatrixRole = MATRIX_ROLES.includes(role);
   const rows: Record<ExceptionRow, string> = {
+    // D15: accepted opportunities are the assigned Developer's and the Owner's only. The Call Center agent who
+    // accepted the call has no opportunity/deal access through this row.
     R1_ACCEPTED_OPPORTUNITY:
-      on('R1_ACCEPTED_OPPORTUNITY') && r1Who() !== 'FALSE'
-        ? `(${af}.deal_stage = '${DEAL_STAGE_ACCEPTED}' AND ${r1Who()})`
+      on('R1_ACCEPTED_OPPORTUNITY') && role === 'developer' && devPreClosure
+        ? `(${af}.deal_stage = '${DEAL_STAGE_ACCEPTED}' AND ${u()} = ANY(${af}.deal_developer_ids))`
         : 'FALSE',
+    // D9/D15: a closed deal with an ACTIVE project (not completed, not cancelled), or a completed project within
+    // 15 elapsed days of completion. A closed deal without a project grants nothing to other Developers; the
+    // deal's ASSIGNED Developer keeps it until the project exists (manual provisioning: they create it).
+    // A cancelled project is inactive at once (no 15-day tail).
     R2_CLOSED_DEAL:
       on('R2_CLOSED_DEAL') && role === 'developer'
-        ? `(${af}.deal_stage = '${DEAL_STAGE_CLOSED}' AND (${af}.project_completed_at IS NULL OR ${af}.project_completed_at + make_interval(days => ${completedDays()}) > ${now()}))`
+        ? `(${af}.deal_stage = '${DEAL_STAGE_CLOSED}' AND (${projectActive} OR ${completedRecently()} OR (${af}.project_id IS NULL AND ${u()} = ANY(${af}.deal_developer_ids))))`
         : 'FALSE',
     R3_ACTIVE_PROJECT:
       on('R3_ACTIVE_PROJECT') && role === 'developer'
-        ? `(${af}.project_id IS NOT NULL AND ${af}.project_status IS DISTINCT FROM '${PROJECT_STATUS_COMPLETED}' AND ${u()} = ANY(${af}.project_developer_ids))`
+        ? `(${projectActive} AND ${u()} = ANY(${af}.project_developer_ids))`
         : 'FALSE',
     R4_COMPLETED_PROJECT:
       on('R4_COMPLETED_PROJECT') && role === 'developer'
-        ? `(${af}.project_status = '${PROJECT_STATUS_COMPLETED}' AND ${af}.project_completed_at + make_interval(days => ${completedDays()}) > ${now()} AND ${u()} = ANY(${af}.project_developer_ids))`
+        ? `(${completedRecently()} AND ${u()} = ANY(${af}.project_developer_ids))`
         : 'FALSE',
+    // D9: callback time + 48 h, for the CURRENTLY assigned agent only (no former-assignee leftovers).
     R5_SCHEDULED_CALLBACK:
       on('R5_SCHEDULED_CALLBACK') && role === 'call_center'
-        ? `(${af}.open_follow_up_responsible_id = ${u()} AND ${af}.open_follow_up_at + make_interval(hours => ${grace()}) > ${now()})`
+        ? `(${af}.assignee_id = ${u()} AND ${af}.open_follow_up_responsible_id = ${u()} AND ${af}.open_follow_up_at + make_interval(hours => ${grace()}) > ${now()})`
         : 'FALSE',
-    R6_OPEN_CORRECTION: on('R6_OPEN_CORRECTION') && role === 'data_entry' ? `(${af}.has_open_correction)` : 'FALSE',
+    // D9: the correction requester (any matrix role) keeps context access while the request is open. Data Entry
+    // also reaches every open request as the reviewing role (role permission, not an exception for the person).
+    R6_OPEN_CORRECTION: !on('R6_OPEN_CORRECTION') || !isMatrixRole || role === 'owner'
+      ? 'FALSE'
+      : role === 'data_entry'
+        ? `(${af}.has_open_correction OR ${u()} = ANY(${af}.open_correction_requester_ids))`
+        : `(${u()} = ANY(${af}.open_correction_requester_ids))`,
   };
 
   // Steps 5–6 per role (VT-2).
   let scope = 'FALSE';
   let relation = 'FALSE';
   let windowForRole = 'FALSE';
+  const withRequester = (base: string) => (rows.R6_OPEN_CORRECTION !== 'FALSE' ? `(${base} OR ${rows.R6_OPEN_CORRECTION})` : `(${base})`);
   switch (role) {
     case 'data_entry':
       scope = f['access.dataEntryScope'] === 'DE-2' ? `(${af}.created_by = ${u()} OR ${af}.has_open_correction)` : 'TRUE';
       relation = 'TRUE';
-      windowForRole = window();
+      windowForRole = creationWindow();
       break;
     case 'call_center':
-      // Matrix §2.3: base scope = businesses CURRENTLY assigned. Follow-up responsibility alone is row 5
-      // (context-limited), never `full` (security review R1): the window only grants to the assignee.
+      // Matrix §2.3: base scope = businesses CURRENTLY assigned. Row 5 already requires the current assignment;
+      // a former assignee keeps nothing (D9), except an open correction request of their own (row 6).
       scope = 'TRUE';
-      relation =
-        rows.R5_SCHEDULED_CALLBACK !== 'FALSE'
-          ? `(${af}.assignee_id = ${u()} OR ${rows.R5_SCHEDULED_CALLBACK})`
-          : `(${af}.assignee_id = ${u()})`;
-      windowForRole = `(${af}.assignee_id = ${u()} AND ${window()})`;
+      relation = withRequester(`${af}.assignee_id = ${u()}`);
+      windowForRole = `(${af}.assignee_id = ${u()} AND ${elapsedWindow(`${af}.assignment_started_at`)})`;
       break;
     case 'developer': {
-      // Matrix §2.3: a Developer's relation is the DEC-002 context rows only (R1 assigned pre-closure deal
-      // under DEC-005 `assigned`, R2 closed deal, R3/R4 assigned project). There is NO base-scope window:
-      // the 15-day window never grants a Developer `full` access to a business (§3.4 DV = Ctx rows 1–4).
+      // Matrix §2.3: a Developer's relation is the context rows only (R1 assigned accepted opportunity, R2 closed
+      // deal with an active project, R3/R4 assigned project, R6 own open correction request). There is NO
+      // base-scope window: the 15-day window never grants a Developer `full` access (D15: no directory browsing).
       scope = 'TRUE';
-      const devRows = (['R1_ACCEPTED_OPPORTUNITY', 'R2_CLOSED_DEAL', 'R3_ACTIVE_PROJECT', 'R4_COMPLETED_PROJECT'] as const)
+      const devRows = (['R1_ACCEPTED_OPPORTUNITY', 'R2_CLOSED_DEAL', 'R3_ACTIVE_PROJECT', 'R4_COMPLETED_PROJECT', 'R6_OPEN_CORRECTION'] as const)
         .map((r) => rows[r])
         .filter((s) => s !== 'FALSE');
       relation = devRows.length ? `(${devRows.join(' OR ')})` : 'FALSE';
@@ -260,33 +285,20 @@ export function buildRuleFragments(input: RuleInput): RuleFragments {
       // that is hidden for everyone else (OI-05 `ownerViewedHidden`, `hiddenForOthersPredicate`).
       scope = 'TRUE';
       relation = 'TRUE';
-      windowForRole = window();
+      windowForRole = creationWindow();
       break;
-    default: {
-      // Custom roles (migration 014): nothing by default. A validated `role_permissions` grant for THIS
-      // action opens the base scope per its `data_scope`; the 15-day window still applies (§2.1 "every
-      // non-Owner role") and the DEC-002 rows never do (they are role-specific to the matrix roles).
-      const ds = input.dataScope ?? null;
-      if (!ds) break;
-      scope = 'TRUE';
-      relation =
-        ds === 'global'
-          ? 'TRUE'
-          : ds === 'assigned_only'
-            ? `(${af}.assignee_id = ${u()} OR ${u()} = ANY(${af}.deal_developer_ids) OR ${u()} = ANY(${af}.project_developer_ids))`
-            : // `self` (and `department`, which has no business-level fact: narrowest reading) = own-created.
-              `(${af}.created_by = ${u()})`;
-      windowForRole = window();
+    default:
+      // Fixed v1 scope (approved): four roles, no custom roles. Any other role id gets nothing, on every
+      // surface, whatever `role_permissions` says (the data is kept, the feature is off).
       break;
-    }
   }
 
-  return { scope, relation, window: windowForRole, rows };
+  return { live: role === 'owner' ? 'TRUE' : `${af}.archived_at IS NULL`, scope, relation, window: windowForRole, rows };
 }
 
-/** `scope AND relation AND (window OR any row)` — the list predicate over `af`. */
+/** `live AND scope AND relation AND (window OR any row)` — the list predicate over `af`. */
 export function combinedPredicate(fr: RuleFragments): string {
   const grants = [fr.window, ...EXCEPTION_ROWS.map((r) => fr.rows[r])].filter((s) => s !== 'FALSE');
   const granted = grants.length ? `(${grants.join(' OR ')})` : 'FALSE';
-  return `(${fr.scope} AND ${fr.relation} AND ${granted})`;
+  return `(${fr.live} AND ${fr.scope} AND ${fr.relation} AND ${granted})`;
 }

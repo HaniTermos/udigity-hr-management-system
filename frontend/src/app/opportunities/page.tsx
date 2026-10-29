@@ -12,11 +12,31 @@ import { CallingPageHeader, HeaderLink, LoadingBlock } from '@/components/callin
 import { HandoffPanel, OpportunitiesTable } from '@/components/calling/Opportunities';
 import { useOpportunities } from '@/components/calling/hooks';
 import { useCallingFormat } from '@/components/calling/format';
+import { useCapability } from '@/lib/hooks/useCapability';
+import { ACTIONS } from '@/lib/actions';
 
 type Filter = 'all' | 'assigned' | 'unassigned';
 
 /** SCR-CC-007 Opportunities & handoffs. Data: GET /api/calling/opportunities (deal fields from the BE4 read op). */
+/**
+ * D15 (approved 2026-10-29): accepted opportunities are handled by the assigned Developer and the Owner. A
+ * Call Center user who opens this route gets a plain state (the server refuses the list as well).
+ */
 export default function OpportunitiesPage() {
+  const allowed = useCapability(ACTIONS.opportunitiesList);
+  if (!allowed) {
+    return (
+      <AppShell>
+        <div className="max-w-[1200px] mx-auto">
+          <StateView type="empty" size="page" title="Opportunities" body="Opportunities are handled by the assigned developer and the Owner." />
+        </div>
+      </AppShell>
+    );
+  }
+  return <OpportunitiesView />;
+}
+
+function OpportunitiesView() {
   const f = useCallingFormat();
   const [filter, setFilter] = useState<Filter>('all');
   const { data, error, route, isLoading, retry } = useOpportunities({

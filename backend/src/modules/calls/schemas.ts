@@ -27,7 +27,8 @@ export const ACTIONS = defineMatrixActions([
 /** ORCH-4 (c) names, not yet in authz-matrix.md (BE3-R5). Rows are scoped by access.scopeFilter. */
 export const LIST_ACTIONS = defineActions({
   'call_attempt.list_do_not_call': { roles: ['owner', 'call_center'], description: 'CC-008 do-not-call list' },
-  'call_attempt.list_opportunities': { roles: ['owner', 'call_center'], description: 'CC-007 accepted opportunities' },
+  // D15 (approved 2026-10-29): accepted opportunities are the assigned Developer's and the Owner's only; CC is refused.
+  'call_attempt.list_opportunities': { roles: ['owner'], description: 'CC-007 accepted opportunities (Owner view; D15)' },
 });
 
 const uuid = z.string().uuid();

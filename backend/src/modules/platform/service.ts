@@ -13,6 +13,7 @@ import { getJobHandlers, type IdempotencyStore, type JobHandler, type JobKind, t
 import type { CommandContext } from '../../shared/tx.js';
 import { flags } from '../../shared/flags.js';
 import { getSetting } from '../admin/service.js';
+import { raiseOpsAlert } from '../../shared/opsAlert.js';
 import { clock } from './clock.js';
 import * as repo from './repo.js';
 
@@ -150,6 +151,7 @@ export async function relayOutboxOnce(): Promise<RelayResult> {
       if (dead) {
         result.dead++;
         console.error(`[outbox] event ${event.id} (${event.name}) dead after ${row.attempts} attempts`);
+        await raiseOpsAlert('outbox.dead', `event ${event.name} ${event.id} failed ${row.attempts} times`);
       } else {
         result.retried++;
       }
@@ -221,6 +223,7 @@ export async function runDueJobs(kinds?: JobKind[], limit = 20): Promise<JobRunR
       if (dead) {
         result.dead++;
         console.error(`[jobs] ${row.kind} job ${row.id} dead after ${row.attempts} attempts`);
+        await raiseOpsAlert(`job.dead:${row.kind}`, `job ${row.kind} ${row.id} failed ${row.attempts} times`);
       } else {
         result.failed++;
       }

@@ -8,6 +8,8 @@
  *  - Auto-close active breaks on checkout.
  *  - Audit event generation.
  *  - Access control and IDOR protections.
+ *  - Fixed v1 scope "no break tracking": every break route is 404 while CFG attendance.breaksEnabled is
+ *    false (the default). The rest of this suite runs with the flag switched on.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -18,6 +20,7 @@ import { query } from '../../db/pool.js';
 import { config } from '../../config/index.js';
 import { DEV_TOTP_SECRET } from '../../db/seed.js';
 import { clock } from '../platform/clock.js';
+import { setAttendanceFlagOverridesForTests } from './service.js';
 
 const hasTestDb = Boolean(process.env.TEST_DATABASE_URL);
 const ORIGIN = 'http://localhost:3000';
@@ -56,6 +59,7 @@ describe.skipIf(!hasTestDb)('Wave 2: Attendance Break Timer Engine', () => {
   let employee: Agent;
 
   beforeAll(async () => {
+    setAttendanceFlagOverridesForTests({ 'attendance.breaksEnabled': true });
     // 1. Login owner with 2FA
     const step1 = await login(SEED_OWNER);
     const code = authenticator.generate(DEV_TOTP_SECRET);
@@ -71,12 +75,12 @@ describe.skipIf(!hasTestDb)('Wave 2: Attendance Break Timer Engine', () => {
     // 2. Configure office IP and company timezone to allow check-in
     await query(
       `INSERT INTO attendance_settings_versions (version_no, timezone, working_days, shift_start, shift_end, grace_minutes,
-         verification_mode, office_ips, holidays, summary_required, summary_min_length, missing_checkout_flag_hours, reason, created_by)
+         verification_mode, office_ips, holidays, holidays_confirmed, summary_required, summary_min_length, missing_checkout_flag_hours, reason, created_by)
        VALUES (
          COALESCE((SELECT MAX(version_no) + 1 FROM attendance_settings_versions), 1),
          'Asia/Beirut',
-         ARRAY['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
-         '09:00', '18:00', 15, 'ip', ARRAY['127.0.0.1', '::1', '::ffff:127.0.0.1'], '{}'::date[], false, 0, 12, 'Wave 2 test settings', $1
+         ARRAY['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'],
+         '09:00', '18:00', 15, 'ip', ARRAY['127.0.0.1', '::1', '::ffff:127.0.0.1'], '{}'::date[], true, true, 10, 12, 'Wave 2 test settings', $1
        )`,
       [owner.id]
     );
@@ -100,15 +104,47 @@ describe.skipIf(!hasTestDb)('Wave 2: Attendance Break Timer Engine', () => {
 
   afterAll(async () => {
     clock.set(null);
+    setAttendanceFlagOverridesForTests({});
   });
 
-  it('rejects starting a break when no attendance session is open (409 NO_OPEN_SESSION)', async () => {
+  it('v1 scope: with attendance.breaksEnabled false (the default) every break route is 404 and My Day hides the timer', async () => {
+    setAttendanceFlagOverridesForTests({});
+    try {
+      const sid = '00000000-0000-4000-8000-000000000001';
+      for (const [method, path] of [
+        ['post', '/api/attendance/breaks/start'],
+        ['post', '/api/attendance/breaks/end'],
+        ['get', '/api/attendance/breaks/active'],
+        ['get', `/api/attendance/sessions/${sid}/breaks`],
+      ] as const) {
+        const res = await call(employee, method, path, method === 'post' ? {} : undefined);
+        expect(res.status, `${method} ${path}`).toBe(404);
+      }
+      expect((await call(employee, 'get', '/api/attendance/me/today')).body.breaksEnabled).toBe(false);
+    } finally {
+      setAttendanceFlagOverridesForTests({ 'attendance.breaksEnabled': true });
+    }
+    expect((await call(employee, 'get', '/api/attendance/me/today')).body.breaksEnabled).toBe(true);
+  });
+
+  // Fixed v1 scope (no break tracking): the matrix grants attendance.break.* to nobody. The engine tests below
+  // are skipped (v1-disabled), not deleted.
+  it('fixed v1 scope: even with breaksEnabled on, every break action is granted to nobody (403 FORBIDDEN_ROLE)', async () => {
+    for (const a of [employee]) {
+      const start = await call(a, 'post', '/api/attendance/breaks/start', {});
+      expect(start.status).toBe(403);
+      expect(start.body.code).toBe('FORBIDDEN_ROLE');
+      expect((await call(a, 'post', '/api/attendance/breaks/end', {})).body.code).toBe('FORBIDDEN_ROLE');
+    }
+  });
+
+  it.skip('v1-disabled (break.* granted to nobody, fixed v1 scope): rejects starting a break when no attendance session is open (409 NO_OPEN_SESSION)', async () => {
     const res = await call(employee, 'post', '/api/attendance/breaks/start', {});
     expect(res.status).toBe(409);
     expect(res.body.details?.reason).toBe('NO_OPEN_SESSION');
   });
 
-  it('starts a break, tracks live counter, and prevents concurrent active breaks', async () => {
+  it.skip('v1-disabled (break.* granted to nobody, fixed v1 scope): starts a break, tracks live counter, and prevents concurrent active breaks', async () => {
     // 1. Check in
     clock.set(new Date('2026-10-26T08:00:00Z'));
     const checkInRes = await call(employee, 'post', '/api/attendance/check-in', {});
@@ -173,7 +209,7 @@ describe.skipIf(!hasTestDb)('Wave 2: Attendance Break Timer Engine', () => {
     expect(eventNames).toContain('attendance.break.ended');
   });
 
-  it('automatically finalizes an active break when the employee checks out', async () => {
+  it.skip('v1-disabled (break.* granted to nobody, fixed v1 scope): automatically finalizes an active break when the employee checks out', async () => {
     // 1. Employee is currently checked in with session
     const activeInfo = await call(employee, 'get', '/api/attendance/breaks/active');
     expect(activeInfo.body.activeBreak).toBeNull();
@@ -208,7 +244,7 @@ describe.skipIf(!hasTestDb)('Wave 2: Attendance Break Timer Engine', () => {
     expect(afterCheckout.body.activeBreak).toBeNull();
   });
 
-  it('detects excessive break duration when exceeding 60 minutes allowance', async () => {
+  it.skip('v1-disabled (break.* granted to nobody, fixed v1 scope): detects excessive break duration when exceeding 60 minutes allowance', async () => {
     // 1. Check in for a new work session on a new date
     clock.set(new Date('2026-10-27T08:00:00Z'));
     const inRes = await call(employee, 'post', '/api/attendance/check-in', {});
@@ -238,7 +274,7 @@ describe.skipIf(!hasTestDb)('Wave 2: Attendance Break Timer Engine', () => {
     expect(audits.length).toBeGreaterThan(0);
   });
   // --- FX-BE hardening (user decision 2026-10-28: breaks kept) ---------------------------------
-  it('validates bodies strictly: unknown keys and unknown break types are 400', async () => {
+  it.skip('v1-disabled (break.* granted to nobody, fixed v1 scope): validates bodies strictly: unknown keys and unknown break types are 400', async () => {
     const unknownKey = await call(employee, 'post', '/api/attendance/breaks/start', { startedAt: '2020-01-01T00:00:00Z' });
     expect(unknownKey.status).toBe(400);
     const badType = await call(employee, 'post', '/api/attendance/breaks/start', { breakType: 'lunch' });
@@ -247,7 +283,7 @@ describe.skipIf(!hasTestDb)('Wave 2: Attendance Break Timer Engine', () => {
     expect(longNote.status).toBe(400);
   });
 
-  it('reads are own-record only: another employee gets 404 for my session breaks', async () => {
+  it.skip('v1-disabled (break.* granted to nobody, fixed v1 scope): reads are own-record only: another employee gets 404 for my session breaks', async () => {
     const { rows } = await query<{ id: string }>(
       `SELECT id FROM attendance_sessions WHERE employee_id = $1 ORDER BY check_in_at DESC LIMIT 1`,
       [employee.id]
@@ -274,7 +310,7 @@ describe.skipIf(!hasTestDb)('Wave 2: Attendance Break Timer Engine', () => {
     expect(otherActive.body.breaks).toEqual([]);
   });
 
-  it('caps the number of breaks per session (409 BREAK_LIMIT_REACHED) and audits each start/end', async () => {
+  it.skip('v1-disabled (break.* granted to nobody, fixed v1 scope): caps the number of breaks per session (409 BREAK_LIMIT_REACHED) and audits each start/end', async () => {
     // Self-contained: its own fresh session on its own date, and the limit read from the 409 itself,
     // so the stored attendance settings of other suites cannot change the outcome.
     const { rows: open } = await query<{ id: string }>(
@@ -287,9 +323,10 @@ describe.skipIf(!hasTestDb)('Wave 2: Attendance Break Timer Engine', () => {
     }
     await query(
       `INSERT INTO attendance_settings_versions (version_no, timezone, working_days, shift_start, shift_end, grace_minutes,
-         verification_mode, office_ips, holidays, summary_required, summary_min_length, missing_checkout_flag_hours, reason, created_by)
+         verification_mode, office_ips, holidays, holidays_confirmed, summary_required, summary_min_length, missing_checkout_flag_hours, reason, created_by)
        VALUES (COALESCE((SELECT MAX(version_no) + 1 FROM attendance_settings_versions), 1), 'Asia/Beirut',
-         ARRAY['MON','TUE','WED','THU','FRI','SAT','SUN'], '09:00', '18:00', 15, 'disabled', '{}', '{}'::date[], false, 0, 12, 'breaks limit test', $1)`,
+         ARRAY['MON','TUE','WED','THU','FRI','SAT','SUN'], '09:00', '18:00', 15, 'ip', ARRAY['127.0.0.1', '::1', '::ffff:127.0.0.1'],
+         '{}'::date[], true, true, 10, 12, 'breaks limit test', $1)`,
       [owner.id]
     );
     clock.set(new Date('2026-10-29T07:00:00Z'));

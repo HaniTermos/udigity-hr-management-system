@@ -6,6 +6,8 @@
  * failed checkout (all three flag branches); DEC-011 corrections (flag both branches, F-01, N-2,
  * originals kept, audit); timezone/day boundaries and DEC-008 grace; settings versions + validation;
  * J-04; OWN-004 overview; My Attendance; employee list open work; revoke-all sessions; capabilities.
+ * v1 policy baseline 2026-10-29 (D1–D6, D18): configured gate, shift end = start + 9 h, grace strictly
+ * after, days off, earlier-day checkout refusal, self-decision guards, summary rule, J-04 timing.
  * Rows are uniquely named and never deleted (FKs RESTRICT, audit append-only).
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -15,12 +17,13 @@ import { authenticator } from 'otplib';
 import { app } from '../../app.js';
 import { pool, query } from '../../db/pool.js';
 import { config } from '../../config/index.js';
-import { DEMO_LABEL } from '../../shared/flags.js';
+import { DEMO_LABEL, loadPolicyFlags } from '../../shared/flags.js';
 import { runSystemCommand } from '../../shared/tx.js';
 import { DEV_TOTP_SECRET } from '../../db/seed.js';
 import { clock } from '../platform/clock.js';
 import { relayOutboxOnce } from '../platform/service.js';
 import { runExceptionCheck, setAttendanceFlagOverridesForTests } from './service.js';
+import { setOfficeResolverForTests } from './officeDns.js';
 
 const hasTestDb = Boolean(process.env.TEST_DATABASE_URL);
 const ORIGIN = 'http://localhost:3000';
@@ -103,23 +106,27 @@ const auditCount = (eventName: string, entityId: string) =>
   count('SELECT COUNT(*)::text AS n FROM audit_events WHERE event_name = $1 AND entity_id = $2', [eventName, entityId]);
 const outboxCount = (name: string, aggregateId: string) =>
   count('SELECT COUNT(*)::text AS n FROM outbox_events WHERE name = $1 AND aggregate_id = $2', [name, aggregateId]);
+async function relayAll() {
+  for (let i = 0; i < 500; i++) if ((await relayOutboxOnce()).claimed === 0) break;
+}
 
 /** Friday 2026-10-23 in Beirut (UTC+3): `at('09:05')` = 06:05Z. */
 const at = (hhmm: string, date = '2026-10-23') => new Date(`${date}T${hhmm}:00+03:00`);
 const pin = (d: Date) => clock.set(d);
+/** November 2026 in Beirut is winter time (UTC+2): `w('09:00', '2026-11-02')` = 07:00Z. */
+const w = (hhmm: string, date: string) => new Date(`${date}T${hhmm}:00+02:00`);
 
 const LOCAL_IPS = ['127.0.0.1', '::1'];
+// D1: every company value is stated explicitly (no shift end: start + 9 h; no summary policy: pinned).
 const BASE_SETTINGS = {
   timezone: 'Asia/Beirut',
   workingDays: ['MON', 'TUE', 'WED', 'THU', 'FRI'],
   shiftStart: '09:00',
-  shiftEnd: '18:00',
   graceMinutes: 10,
   verificationMode: 'ip',
   officeIps: LOCAL_IPS,
   holidays: ['2026-12-25'],
-  summaryRequired: true,
-  summaryMinLength: 10,
+  holidaysConfirmed: true,
   missingCheckoutFlagHours: 6,
 };
 
@@ -153,12 +160,17 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
 
   afterAll(async () => {
     // Relay the attendance events this suite emitted, so other suites' relay tests start from an
-    // empty backlog (events without a consumer are simply marked done).
-    for (let i = 0; i < 500; i++) if ((await relayOutboxOnce()).claimed === 0) break;
+    // empty backlog (events without a consumer are simply marked done). Events emitted under a pinned
+    // (future) clock are due at that instant: relay at the latest due time, or they stay pending and a
+    // later suite that pins a later clock has to drain hundreds of them inside its 5 s test timeout.
+    const { rows } = await query<{ t: Date | null }>(`SELECT max(next_attempt_at) AS t FROM outbox_events WHERE state = 'pending'`);
+    if (rows[0]?.t && rows[0].t.getTime() > Date.now()) clock.set(new Date(rows[0].t));
+    for (let i = 0; i < 5000; i++) if ((await relayOutboxOnce()).claimed === 0) break;
+    clock.set(null);
     // Other suites in this DB expect company.timezone unset (it is a NEEDS VALUE setting).
     await query(`UPDATE company_settings SET "values" = "values" - 'company.timezone' WHERE id = 1`);
     await pool.end();
-  });
+  }, 300_000);
 
   // ---------------------------------------------------------------------------------------------
   // Role matrix (authz §4.1): every route × 4 roles + Owner pending 2FA. Allowed calls use bodies that
@@ -253,10 +265,15 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
       expect(await count(`SELECT COUNT(*)::text AS n FROM attendance_sessions WHERE employee_id = $1 AND state = 'open'`, [a.id])).toBe(1);
     });
 
-    it('grace boundary: 09:10:59 on time, 09:11 late (11 min)', async () => {
+    // Approved policy change (baseline 2026-10-29 D1): late strictly after start + grace, ms precision.
+    // Before it, 09:10:59 counted as on time (minute granularity); now 09:10:00.001 is already late.
+    it('grace boundary (D1): 09:10:00.000 on time, 09:10:00.001 late, 09:11 late (11 min)', async () => {
       const a = await agentFor('data_entry');
-      pin(new Date('2026-10-23T06:10:59Z'));
+      pin(new Date('2026-10-23T06:10:00.000Z'));
       expect((await call(a, 'post', '/api/attendance/check-in', {})).body.session.punctuality).toBe('on_time');
+      const c = await agentFor('data_entry');
+      pin(new Date('2026-10-23T06:10:00.001Z'));
+      expect((await call(c, 'post', '/api/attendance/check-in', {})).body.session).toMatchObject({ punctuality: 'late', lateMinutes: 10 });
       const b = await agentFor('data_entry');
       pin(at('09:11'));
       const late = (await call(b, 'post', '/api/attendance/check-in', {})).body.session;
@@ -396,16 +413,23 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
       expect(none.body.details.reason).toBe('NO_OPEN_SESSION');
     });
 
-    it('DEC-012 optional (setting off): empty summary is accepted', async () => {
-      await putSettings({ summaryRequired: false });
+    it('D6: the summary rule is pinned (cannot be switched off); whitespace does not count', async () => {
+      const cur = await call(owner, 'get', '/api/attendance/settings');
+      const off = await call(owner, 'put', '/api/attendance/settings', { ...BASE_SETTINGS, summaryRequired: false, version: cur.body.current.versionNo });
+      expect(off.status).toBe(400);
+      expect(cur.body.current).toMatchObject({ summaryRequired: true, summaryMinLength: 10 });
       const a = await agentFor('developer');
       pin(at('09:00'));
       await call(a, 'post', '/api/attendance/check-in', {});
       pin(at('18:00'));
-      const ok = await call(a, 'post', '/api/attendance/check-out', {});
+      expect((await call(a, 'post', '/api/attendance/check-out', {})).status).toBe(400);
+      // 9 non-whitespace characters padded to 19: refused; 10 non-whitespace characters: accepted.
+      const padded = await call(a, 'post', '/api/attendance/check-out', { summary: { workCompleted: ' a b c d e f g h i ' } });
+      expect(padded.status).toBe(400);
+      expect(padded.body.details['summary.workCompleted']).toBeDefined();
+      const ok = await call(a, 'post', '/api/attendance/check-out', { summary: { workCompleted: 'a b c d e f g h i j' } });
       expect(ok.status).toBe(200);
-      expect(ok.body.session).toMatchObject({ state: 'closed', summary: null, durationStatus: 'met' });
-      await putSettings();
+      expect(ok.body.session).toMatchObject({ state: 'closed', durationStatus: 'met', summary: { workCompleted: 'a b c d e f g h i j', writtenBy: null } });
     });
 
     async function openThenFailCheckout(): Promise<{ a: Agent; sessionId: string }> {
@@ -417,7 +441,7 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
       return { a, sessionId: s.id };
     }
 
-    it('DEC-026 provisional (default): closed provisionally at the attempted time + review item; next check-in allowed', async () => {
+    it('D5 provisional (pinned): closed provisionally at the attempted time + review item; next check-in allowed', async () => {
       const { a, sessionId } = await openThenFailCheckout();
       const res = await call(a, 'post', '/api/attendance/check-out', { summary: { workCompleted: 'Called 30 businesses' } });
       expect(res.status).toBe(200);
@@ -435,37 +459,19 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
       const q = await call(owner, 'get', '/api/attendance/corrections?kind=missing_checkout&pageSize=100');
       const item = q.body.items.find((i: { sessionId: string }) => i.sessionId === sessionId);
       expect(item).toMatchObject({ kind: 'missing_checkout', sessionState: 'closed_provisional' });
+      // D4: changing the time while resolving needs a reason.
+      const noReason = await call(owner, 'post', `/api/attendance/sessions/${sessionId}/resolve-review`, { version: item.version, checkOutAt: '2026-10-23T15:00:00.000Z' });
+      expect(noReason.status).toBe(400);
+      expect(noReason.body.details.reason).toBeDefined();
       const resolved = await call(owner, 'post', `/api/attendance/sessions/${sessionId}/resolve-review`, { version: item.version });
       expect(resolved.status).toBe(200);
       expect(resolved.body.session).toMatchObject({ state: 'closed', reviewPending: false, effectiveCheckOutAt: '2026-10-23T15:10:00.000Z' });
     });
 
-    it('DEC-026 hold: pending review, no checkout time until the Owner sets one', async () => {
-      setAttendanceFlagOverridesForTests({ 'attendance.failedCheckout': 'hold' });
-      const { a, sessionId } = await openThenFailCheckout();
-      const res = await call(a, 'post', '/api/attendance/check-out', { summary: { workCompleted: 'Called 30 businesses' } });
-      expect(res.body).toMatchObject({ outcome: 'pending_review', session: { state: 'pending_review', checkOutAt: null } });
-      expect(await outboxCount('attendance.checkout_pending_review', sessionId)).toBe(1);
-      const r = await call(owner, 'post', `/api/attendance/sessions/${sessionId}/resolve-review`, {
-        version: res.body.session.version,
-        checkOutAt: '2026-10-23T15:00:00.000Z',
-        reason: 'Confirmed with the employee',
-      });
-      expect(r.body.session).toMatchObject({ state: 'closed', adjusted: true, effectiveCheckOutAt: '2026-10-23T15:00:00.000Z', checkOutAt: null });
-      await putSettings();
-    });
-
-    it('DEC-026 block: 422 OFFICE_CHECK_FAILED, summary saved, session stays open', async () => {
-      setAttendanceFlagOverridesForTests({ 'attendance.failedCheckout': 'block' });
-      const { a, sessionId } = await openThenFailCheckout();
-      const res = await call(a, 'post', '/api/attendance/check-out', { summary: { workCompleted: 'Called 30 businesses' } });
-      expect(res.status).toBe(422);
-      expect(res.body.details).toMatchObject({ reason: 'OFFICE_CHECK_FAILED', outcome: 'blocked', sessionId });
-      const s = (await call(a, 'get', `/api/attendance/sessions/${sessionId}`)).body.session;
-      expect(s).toMatchObject({ state: 'open', summary: { workCompleted: 'Called 30 businesses' } });
-      expect(s.checkoutAttemptedAt).toBe('2026-10-23T15:10:00.000Z');
-      expect(await auditCount('attendance.checkout_failed', sessionId)).toBe(1);
-      await putSettings();
+    it('D5: the block / hold alternatives are not selectable (env parsing refuses them)', () => {
+      expect(() => loadPolicyFlags({ POLICY_ATTENDANCE_FAILED_CHECKOUT: 'block' })).toThrow(/provisional/);
+      expect(() => loadPolicyFlags({ POLICY_ATTENDANCE_FAILED_CHECKOUT: 'hold' })).toThrow(/provisional/);
+      expect(loadPolicyFlags({})['attendance.failedCheckout']).toBe('provisional');
     });
   });
 
@@ -547,7 +553,7 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
       expect(ownerList.body.items.some((c: { id: string }) => c.id === mine.body.id)).toBe(true);
     });
 
-    it('F-01: a request for a still-open earlier session closes it provisionally; check-in allowed; reject → unknown', async () => {
+    it('F-01/D4: a request for a still-open earlier session moves it to review WITHOUT the proposed checkout; check-in allowed; reject → unknown', async () => {
       const a = await agentFor('developer');
       pin(at('09:00', '2026-10-21'));
       const s = (await call(a, 'post', '/api/attendance/check-in', {})).body.session;
@@ -556,6 +562,9 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
       expect(blocked.body.details.reason).toBe('OPEN_SESSION');
       const req1 = await call(a, 'post', '/api/attendance/corrections', { sessionId: s.id, proposedCheckOutAt: '2026-10-21T18:00:00+03:00', reason: 'Forgot to check out' });
       expect(req1.body.closedSessionProvisionally).toBe(true);
+      // D4: the proposed time is not effective before the Owner approves it.
+      const pending = (await call(a, 'get', `/api/attendance/sessions/${s.id}`)).body.session;
+      expect(pending).toMatchObject({ state: 'pending_review', effectiveCheckOutAt: null, checkOutAt: null, reviewPending: true, pendingCorrectionId: req1.body.id });
       expect((await call(a, 'post', '/api/attendance/check-in', {})).status).toBe(201);
       const rej = await call(owner, 'post', `/api/attendance/corrections/${req1.body.id}/reject`, { version: req1.body.version, reason: 'No evidence', effectiveCheckOutAt: null });
       expect(rej.body.status).toBe('rejected');
@@ -614,15 +623,19 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
   // Settings versions (WF-ADMIN-001)
   // ---------------------------------------------------------------------------------------------
   describe('settings versions', () => {
-    it('validation: IP mode needs IPs, no location verifier, invalid IPs; version conflict', async () => {
+    it('validation: office IPs required, no location / disabled mode (D2), no shift end (D1), invalid IPs; version conflict', async () => {
       const cur = (await call(owner, 'get', '/api/attendance/settings')).body;
       const v = cur.current.versionNo;
       const put = (o: object) => call(owner, 'put', '/api/attendance/settings', { ...BASE_SETTINGS, version: v, ...o });
       expect((await put({ officeIps: [] })).body.details.officeIps).toBeDefined();
       expect((await put({ verificationMode: 'geofence' })).body.details.verificationMode).toBeDefined();
+      expect((await put({ verificationMode: 'disabled' })).body.details.verificationMode).toBeDefined();
       expect((await put({ officeIps: ['300.1.1.1'] })).body.details['officeIps.0']).toBeDefined();
       expect((await put({ timezone: 'Mars/Base' })).body.details.timezone).toBeDefined();
-      expect((await put({ shiftEnd: '08:00' })).body.details.shiftEnd).toBeDefined();
+      expect((await put({ holidaysConfirmed: false })).body.details.holidaysConfirmed).toBeDefined();
+      // D1: shift end is derived (start + 9 h) and no longer accepted.
+      expect((await put({ shiftEnd: '18:00' })).status).toBe(400);
+      expect(cur.current).toMatchObject({ shiftStart: '09:00', shiftEnd: '18:00', holidaysConfirmed: true });
       const stale = await put({ version: v - 1 });
       expect(stale.status).toBe(409);
       expect(stale.body.details.currentVersion).toBe(v);
@@ -694,6 +707,12 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
       expect(await outboxCount('attendance.missing_checkout_detected', s.id)).toBe(1);
       expect(await outboxCount('attendance.missing_checkin_detected', noShow.id)).toBe(checkinEvents);
 
+      // Missing check-in goes to the Owner too (D18): one notice per detected work date.
+      await relayAll();
+      const detections = await count(`SELECT COUNT(*)::text AS n FROM attendance_exceptions WHERE kind = 'missing_checkin' AND employee_id = $1`, [noShow.id]);
+      expect(detections).toBeGreaterThanOrEqual(1);
+      expect(await count(`SELECT COUNT(*)::text AS n FROM notification_deliveries WHERE recipient_id = $1 AND template = 'business.attendance_review' AND source_id = $2`, [owner.id, noShow.id])).toBe(detections);
+
       // Saturday: no missing check-in detection.
       pin(at('12:00', '2026-10-24'));
       await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
@@ -748,6 +767,324 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
       expect(asOwner.total).toBe(2);
       const today = (await call(a, 'get', '/api/attendance/me/today')).body;
       expect(today).toMatchObject({ configured: true, canCheckIn: true, summaryRule: { required: true, minLength: 10 }, label: DEMO_LABEL });
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // v1 policy baseline 2026-10-29 (D1–D6, D18)
+  // ---------------------------------------------------------------------------------------------
+  describe('v1 policy (baseline 2026-10-29)', () => {
+    afterAll(async () => {
+      await putSettings();
+    });
+
+    it('D1 configured gate: a version without the holiday confirmation (or with a retired mode) enforces nothing', async () => {
+      const cur = (await call(owner, 'get', '/api/attendance/settings')).body.current;
+      // A version saved before migration 980 (holidays not confirmed): attendance is Not configured.
+      await query(
+        `INSERT INTO attendance_settings_versions (version_no, timezone, working_days, shift_start, shift_end, grace_minutes,
+           verification_mode, office_ips, holidays, summary_required, summary_min_length, missing_checkout_flag_hours, reason, created_by)
+         VALUES ($1, 'Asia/Beirut', ARRAY['MON','TUE','WED','THU','FRI'], '09:00', '18:00', 10, 'ip', $2, '{}'::date[], true, 10, 6, 'legacy', $3)`,
+        [cur.versionNo + 1, LOCAL_IPS, owner.id]
+      );
+      const a = await agentFor('call_center');
+      pin(w('09:30', '2026-11-02'));
+      const today = (await call(a, 'get', '/api/attendance/me/today')).body;
+      expect(today).toMatchObject({ configured: false, canCheckIn: false, canCheckOut: false, workingDay: null });
+      expect(today.missing).toContain('attendance.holidays');
+      const res = await call(a, 'post', '/api/attendance/check-in', {});
+      expect(res.status).toBe(409);
+      expect(res.body.details).toMatchObject({ reason: 'POLICY_NOT_CONFIGURED' });
+      // Not even under a remote exception.
+      await call(owner, 'post', '/api/attendance/remote-exceptions', { employeeId: a.id, startDate: '2026-11-02', reason: 'Client site' });
+      expect((await call(a, 'post', '/api/attendance/check-in', {})).body.details.reason).toBe('POLICY_NOT_CONFIGURED');
+      // J-04 runs no alert on assumed values.
+      const r = await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect(r).toMatchObject({ notConfigured: true, missingCheckin: 0, missingCheckout: 0, checkoutReminders: 0 });
+      const ov = (await call(owner, 'get', '/api/attendance/overview?date=2026-11-02')).body;
+      expect(ov).toMatchObject({ configured: false, scheduleConfigured: false, summary: { expected: null, lateArrivals: null, notCheckedIn: null } });
+      // The next save must confirm the holidays explicitly (the stored "false" is kept, never assumed).
+      const { holidaysConfirmed: _omit, ...withoutConfirmation } = BASE_SETTINGS;
+      void _omit;
+      const v = (await call(owner, 'get', '/api/attendance/settings')).body.current.versionNo;
+      const refused = await call(owner, 'put', '/api/attendance/settings', { ...withoutConfirmation, version: v });
+      expect(refused.status).toBe(400);
+      expect(refused.body.details.holidaysConfirmed).toBeDefined();
+      // A stored legacy "disabled" (allow all) mode is Not configured too, never a pass.
+      await query(`UPDATE attendance_settings_versions SET verification_mode = 'disabled', holidays_confirmed = true WHERE version_no = $1`, [v]);
+      expect((await call(a, 'get', '/api/attendance/me/today')).body).toMatchObject({ configured: false, missing: ['attendance.verificationMode'] });
+      expect((await call(a, 'post', '/api/attendance/check-in', {})).body.details.reason).toBe('POLICY_NOT_CONFIGURED');
+      await putSettings();
+      expect((await call(a, 'get', '/api/attendance/me/today')).body).toMatchObject({ configured: true, canCheckIn: true });
+    });
+
+    it('D2: env parsing refuses the disabled and location modes', () => {
+      expect(() => loadPolicyFlags({ POLICY_ATTENDANCE_VERIFICATION_MODE: 'disabled' })).toThrow();
+      expect(() => loadPolicyFlags({ POLICY_ATTENDANCE_VERIFICATION_MODE: 'geofence' })).toThrow();
+      expect(loadPolicyFlags({ POLICY_ATTENDANCE_VERIFICATION_MODE: 'ip' })['attendance.verificationMode']).toBe('ip');
+    });
+
+    // Root cause of the earlier full-suite failures: relayAll() below drains the whole outbox backlog the
+    // other suites left (slow on a full run) and hit the 5 s default timeout; the 10:00 start was then never
+    // restored, so the next tests' 09:40 missing check-in was not due yet. Longer timeout + finally restore,
+    // and the schedule-dependent tests below set the company schedule themselves.
+    it('D1 shift end = start + 9 h: with a 10:00 start the reminder is 20:00 and the flag 01:00', async () => {
+      await putSettings({ shiftStart: '10:00' });
+      try {
+      const a = await agentFor('developer');
+      pin(w('10:00', '2026-11-03'));
+      expect((await call(a, 'get', '/api/attendance/me/today')).body.schedule).toMatchObject({ shiftStart: '10:00', shiftEnd: '19:00' });
+      const s = (await call(a, 'post', '/api/attendance/check-in', {})).body.session;
+      const reminders = () => count(`SELECT COUNT(*)::text AS n FROM attendance_exceptions WHERE kind = 'missing_checkout_reminder' AND employee_id = $1`, [a.id]);
+      pin(w('19:59', '2026-11-03'));
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect(await reminders()).toBe(0);
+      // D18: the employee reminder at shift end + 1 h, once.
+      pin(w('20:00', '2026-11-03'));
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect(await reminders()).toBe(1);
+      expect(await outboxCount('attendance.missing_checkout_reminder', s.id)).toBe(1);
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect(await outboxCount('attendance.missing_checkout_reminder', s.id)).toBe(1);
+      await relayAll();
+      expect(await count(`SELECT COUNT(*)::text AS n FROM notification_deliveries WHERE recipient_id = $1 AND template = 'business.attendance_alert' AND source_id = $2`, [a.id, s.id])).toBe(1);
+      // D5: the "missing checkout" flag stays at shift end + 6 h (19:00 + 6 h = 01:00 next day).
+      pin(w('00:59', '2026-11-04'));
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect((await call(a, 'get', `/api/attendance/sessions/${s.id}`)).body.session.missingCheckout).toBe(false);
+      pin(w('01:00', '2026-11-04'));
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect((await call(a, 'get', `/api/attendance/sessions/${s.id}`)).body.session).toMatchObject({ state: 'open', missingCheckout: true });
+      } finally {
+        await putSettings();
+      }
+    }, 120_000);
+
+    it('D18 missing check-in: at start + grace + 30 min on working days only', async () => {
+      await putSettings();
+      const noShow = await makeEmployee('data_entry');
+      const flagged = () => count(`SELECT COUNT(*)::text AS n FROM attendance_exceptions WHERE kind = 'missing_checkin' AND employee_id = $1`, [noShow.id]);
+      pin(new Date('2026-11-05T09:39:59.999+02:00')); // Thursday, winter time: 09:00 + 10 + 30 min is 09:40
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect(await flagged()).toBe(0);
+      pin(new Date('2026-11-05T09:40:00+02:00'));
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect(await flagged()).toBe(1);
+    });
+
+    it('D1 days off: Owner create / list / cancel (audited); suppress the missing check-in; non-working for the employee', async () => {
+      await putSettings();
+      const off = await agentFor('call_center');
+      const body = { employeeId: off.id, startDate: '2026-11-09', endDate: '2026-11-10', reason: 'Approved annual leave' };
+      expect((await call(off, 'post', '/api/attendance/days-off', body)).status).toBe(403);
+      expect((await call(off, 'get', '/api/attendance/days-off')).status).toBe(403);
+      expect((await call(await pendingOwner(), 'post', '/api/attendance/days-off', body)).status).toBe(403);
+      expect((await call(owner, 'post', '/api/attendance/days-off', { ...body, reason: ' ' })).status).toBe(400);
+      expect((await call(owner, 'post', '/api/attendance/days-off', { ...body, endDate: '2026-11-08' })).status).toBe(400);
+      const created = await call(owner, 'post', '/api/attendance/days-off', body);
+      expect(created.status).toBe(201);
+      expect(created.body).toMatchObject({ employeeId: off.id, startDate: '2026-11-09', endDate: '2026-11-10', cancelledAt: null });
+      expect(await auditCount('attendance.day_off_created', created.body.id)).toBe(1);
+      const overlap = await call(owner, 'post', '/api/attendance/days-off', { ...body, startDate: '2026-11-10', endDate: '2026-11-12' });
+      expect(overlap.status).toBe(422);
+      expect(overlap.body.details.reason).toBe('OVERLAP');
+      const list = (await call(owner, 'get', `/api/attendance/days-off?employeeId=${off.id}`)).body;
+      expect(list.items.map((d: { id: string }) => d.id)).toEqual([created.body.id]);
+
+      // Monday 2026-11-09, past 09:40: no missing check-in for the employee on leave.
+      pin(new Date('2026-11-09T10:00:00+02:00'));
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect(await count(`SELECT COUNT(*)::text AS n FROM attendance_exceptions WHERE kind = 'missing_checkin' AND employee_id = $1`, [off.id])).toBe(0);
+      const ov = (await call(owner, 'get', `/api/attendance/overview?employeeId=${off.id}`)).body;
+      expect(ov.rows[0]).toMatchObject({ dayOff: true, missingCheckin: false, status: 'not_checked_in' });
+      expect(ov.summary).toMatchObject({ expected: 0, notCheckedIn: 0 });
+      expect((await call(off, 'get', '/api/attendance/me/today')).body).toMatchObject({ dayOff: true, workingDay: false, nonWorkingReason: 'day_off' });
+
+      // Cancel: reason required, additive (the row stays), audited, repeat is a no-op.
+      expect((await call(owner, 'post', `/api/attendance/days-off/${created.body.id}/cancel`, { version: created.body.version })).status).toBe(400);
+      const cancelled = await call(owner, 'post', `/api/attendance/days-off/${created.body.id}/cancel`, { version: created.body.version, reason: 'Leave withdrawn' });
+      expect(cancelled.status).toBe(200);
+      expect(cancelled.body).toMatchObject({ cancelledBy: owner.id, cancelReason: 'Leave withdrawn' });
+      expect(await auditCount('attendance.day_off_cancelled', created.body.id)).toBe(1);
+      expect((await call(owner, 'post', `/api/attendance/days-off/${created.body.id}/cancel`, { version: created.body.version, reason: 'again' })).status).toBe(200);
+      expect((await call(owner, 'get', `/api/attendance/days-off?employeeId=${off.id}`)).body.items).toHaveLength(0);
+      expect((await call(owner, 'get', `/api/attendance/days-off?employeeId=${off.id}&includeCancelled=true`)).body.items).toHaveLength(1);
+      expect((await call(off, 'get', '/api/attendance/me/today')).body).toMatchObject({ dayOff: false, workingDay: true });
+      // Tuesday, no longer on leave: the missing check-in is raised again.
+      pin(new Date('2026-11-10T10:00:00+02:00'));
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect(await count(`SELECT COUNT(*)::text AS n FROM attendance_exceptions WHERE kind = 'missing_checkin' AND employee_id = $1`, [off.id])).toBe(1);
+    });
+
+    it('D5: an earlier-day or missing-checkout session is not self-closed; a correction request resolves it and unblocks check-in', async () => {
+      const a = await agentFor('data_entry');
+      pin(w('09:00', '2026-11-11'));
+      const s = (await call(a, 'post', '/api/attendance/check-in', {})).body.session;
+      pin(new Date('2026-11-12T09:30:00+02:00'));
+      const today = (await call(a, 'get', '/api/attendance/me/today')).body;
+      expect(today).toMatchObject({ canCheckIn: false, canCheckOut: false, openSessionFromEarlierDay: { id: s.id } });
+      const out = await call(a, 'post', '/api/attendance/check-out', { summary: { workCompleted: 'Entered forty businesses' } });
+      expect(out.status).toBe(409);
+      expect(out.body.details).toMatchObject({ reason: 'CORRECTION_REQUIRED', sessionId: s.id });
+      expect((await call(a, 'post', '/api/attendance/check-in', {})).body.details.reason).toBe('OPEN_SESSION');
+      const req1 = await call(a, 'post', '/api/attendance/corrections', { sessionId: s.id, proposedCheckOutAt: '2026-11-11T18:05:00+02:00', reason: 'Forgot to check out' });
+      expect(req1.status).toBe(201);
+      expect((await call(a, 'get', `/api/attendance/sessions/${s.id}`)).body.session).toMatchObject({ state: 'pending_review', effectiveCheckOutAt: null });
+      // The review state is closed for check-in purposes (no trap).
+      expect((await call(a, 'post', '/api/attendance/check-in', {})).status).toBe(201);
+      // The proposed time becomes effective only on approval.
+      const ap = await call(owner, 'post', `/api/attendance/corrections/${req1.body.id}/approve`, { version: req1.body.version });
+      expect(ap.status).toBe(200);
+      expect((await call(a, 'get', `/api/attendance/sessions/${s.id}`)).body.session).toMatchObject({
+        state: 'closed',
+        adjusted: true,
+        checkOutAt: null,
+        effectiveCheckOutAt: '2026-11-11T16:05:00.000Z',
+      });
+    });
+
+    it('D3/D4: no self-approval of a correction, no self-granted or self-approved remote exception', async () => {
+      await query(`UPDATE attendance_sessions SET state = 'closed', check_out_at = check_in_at, effective_check_out_at = effective_check_in_at WHERE employee_id = $1 AND state = 'open'`, [owner.id]);
+      // The seed Owner is shared by every run on this DB: a fresh day per run keeps the intervals apart.
+      const day = new Date(Date.UTC(2027, 0, 4 + Math.floor(Math.random() * 3000))).toISOString().slice(0, 10);
+      pin(new Date(`${day}T07:00:00Z`));
+      const s = (await call(owner, 'post', '/api/attendance/check-in', {})).body.session;
+      pin(new Date(`${day}T16:00:00Z`));
+      await call(owner, 'post', '/api/attendance/check-out', { summary: { workCompleted: 'Owner reviews and calls' } });
+      pin(new Date(`${day}T20:00:00Z`));
+      const own = await call(owner, 'post', '/api/attendance/corrections', { sessionId: s.id, proposedCheckInAt: `${day}T06:30:00Z`, reason: 'Arrived earlier' });
+      expect(own.status, JSON.stringify(own.body)).toBe(201);
+      const self = await call(owner, 'post', `/api/attendance/corrections/${own.body.id}/approve`, { version: own.body.version });
+      expect(self.status).toBe(403);
+      expect(self.body.details.reason).toBe('SELF_DECISION');
+      expect((await call(owner, 'get', `/api/attendance/corrections/${own.body.id}`)).body.status).toBe('submitted');
+      await call(owner, 'post', `/api/attendance/corrections/${own.body.id}/withdraw`, { version: own.body.version });
+      const grant = await call(owner, 'post', '/api/attendance/remote-exceptions', { employeeId: owner.id, startDate: day, reason: 'Working from home' });
+      expect(grant.status).toBe(403);
+      setAttendanceFlagOverridesForTests({ 'attendance.remoteSelfRequest': true });
+      const asked = await call(owner, 'post', '/api/attendance/remote-exceptions/requests', { startDate: day, reason: 'Working from home' });
+      expect(asked.status).toBe(201);
+      expect((await call(owner, 'post', `/api/attendance/remote-exceptions/${asked.body.id}/approve`, { version: asked.body.version })).status).toBe(403);
+    });
+
+    it('D6: the Owner completes a missing summary with a reason (additive, writer recorded); never replaces one', async () => {
+      const e = await makeEmployee('developer');
+      pin(w('12:00', '2026-11-16'));
+      const r = await call(owner, 'post', '/api/attendance/sessions', { employeeId: e.id, checkInAt: '2026-11-13T09:00:00+02:00', checkOutAt: '2026-11-13T18:00:00+02:00', reason: 'Missed check-in' });
+      const sid = r.body.session.id as string;
+      expect(r.body.session.summary).toBeNull();
+      const v = r.body.session.version;
+      expect((await call(owner, 'post', `/api/attendance/sessions/${sid}/adjust`, { version: v, workCompleted: 'Built the landing page' })).status).toBe(400);
+      expect((await call(owner, 'post', `/api/attendance/sessions/${sid}/adjust`, { version: v, workCompleted: 'too short', reason: 'Employee on leave' })).status).toBe(400);
+      const ok = await call(owner, 'post', `/api/attendance/sessions/${sid}/adjust`, { version: v, workCompleted: 'Built the landing page', reason: 'Employee on leave' });
+      expect(ok.status).toBe(200);
+      expect(ok.body.session).toMatchObject({ adjusted: false, summary: { workCompleted: 'Built the landing page', writtenBy: owner.id } });
+      expect(await auditCount('attendance.summary_completed', sid)).toBe(1);
+      const again = await call(owner, 'post', `/api/attendance/sessions/${sid}/adjust`, { version: ok.body.session.version, workCompleted: 'Something else entirely', reason: 'x' });
+      expect(again.status).toBe(422);
+      expect(again.body.details.reason).toBe('SUMMARY_EXISTS');
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // Owner decisions 2026-10-29: per-employee schedule, office dynamic-DNS hostnames
+  // ---------------------------------------------------------------------------------------------
+  describe('round 2 (Owner decisions 2026-10-29)', () => {
+    afterAll(async () => {
+      setOfficeResolverForTests(null);
+      await putSettings();
+    });
+
+    it('per-employee start 08:00 and own working days drive punctuality, J-04, today and overview; history is kept', async () => {
+      await putSettings();
+      const early = await agentFor('call_center');
+      const peer = await makeEmployee('call_center');
+      const sched = (b: object) => call(owner, 'put', `/api/attendance/employees/${early.id}/schedule`, b);
+      // Owner only; non-Owners 403.
+      expect((await call(early, 'put', `/api/attendance/employees/${early.id}/schedule`, { shiftStart: '08:00' })).status).toBe(403);
+      expect((await call(early, 'get', `/api/attendance/employees/${early.id}/schedule`)).status).toBe(403);
+      expect((await sched({})).status).toBe(400);
+      pin(w('07:00', '2026-11-16'));
+      const set = await sched({ effectiveFrom: '2026-11-16', shiftStart: '08:00', workingDays: ['MON', 'TUE', 'WED', 'THU', 'SAT'], reason: 'Early shift' });
+      expect(set.status).toBe(200);
+      expect(set.body).toMatchObject({ effective: { shiftStart: '08:00', shiftEnd: '17:00', workingDays: ['MON', 'TUE', 'WED', 'THU', 'SAT'] }, company: { shiftStart: '09:00' } });
+      expect(await count(`SELECT COUNT(*)::text AS n FROM audit_events WHERE event_name = 'attendance.employee_schedule_set' AND entity_id = $1`, [early.id])).toBe(1);
+
+      // Monday 08:15: late for the 08:00 employee (grace 10); the company default would be on time.
+      pin(w('08:15', '2026-11-16'));
+      expect((await call(early, 'get', '/api/attendance/me/today')).body.schedule).toMatchObject({ shiftStart: '08:00', shiftEnd: '17:00' });
+      const s = (await call(early, 'post', '/api/attendance/check-in', {})).body.session;
+      expect(s).toMatchObject({ punctuality: 'late', lateMinutes: 15 });
+      // Reminder at 17:00 + 1 h = 18:00 (company employees would be 19:00).
+      const reminders = () => count(`SELECT COUNT(*)::text AS n FROM attendance_exceptions WHERE kind = 'missing_checkout_reminder' AND employee_id = $1`, [early.id]);
+      pin(w('17:59', '2026-11-16'));
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect(await reminders()).toBe(0);
+      pin(w('18:00', '2026-11-16'));
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect(await reminders()).toBe(1);
+      pin(w('18:05', '2026-11-16'));
+      await call(early, 'post', '/api/attendance/check-out', { summary: { workCompleted: 'Early shift calls done' } });
+
+      // Missing check-in at 08:40 for the early employee only (company 09:40). Tuesday 2026-11-17.
+      const missed = (id: string) => count(`SELECT COUNT(*)::text AS n FROM attendance_exceptions WHERE kind = 'missing_checkin' AND employee_id = $1 AND work_date = '2026-11-17'`, [id]);
+      pin(w('08:40', '2026-11-17'));
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect(await missed(early.id)).toBe(1);
+      expect(await missed(peer.id)).toBe(0);
+      const ov = (await call(owner, 'get', `/api/attendance/overview?employeeId=${early.id}`)).body;
+      expect(ov.rows[0]).toMatchObject({ missingCheckin: true, workingDay: true, shiftStart: '08:00' });
+
+      // Own working days: Friday is off for them (no alert), Saturday is a working day.
+      pin(w('12:00', '2026-11-20'));
+      await runSystemCommand('attendance.exception_check', (ctx) => runExceptionCheck(ctx));
+      expect(await count(`SELECT COUNT(*)::text AS n FROM attendance_exceptions WHERE kind = 'missing_checkin' AND employee_id = $1 AND work_date = '2026-11-20'`, [early.id])).toBe(0);
+      expect((await call(early, 'get', '/api/attendance/me/today')).body).toMatchObject({ workingDay: false, nonWorkingReason: 'weekend' });
+      pin(w('07:55', '2026-11-21'));
+      expect((await call(early, 'post', '/api/attendance/check-in', {})).body.session.punctuality).toBe('on_time');
+
+      // Back to the company default from 2026-11-23; the 2026-11-16 session keeps its 08:00 start (history).
+      pin(w('20:00', '2026-11-21'));
+      await call(early, 'post', '/api/attendance/check-out', { summary: { workCompleted: 'Saturday cover shift' } });
+      const back = await sched({ effectiveFrom: '2026-11-23', useCompanyDefault: true, reason: 'Back to normal' });
+      expect(back.body.history).toHaveLength(2);
+      expect((await call(owner, 'get', `/api/attendance/sessions/${s.id}`)).body.session).toMatchObject({ punctuality: 'late', lateMinutes: 15 });
+      pin(w('08:15', '2026-11-23'));
+      expect((await call(early, 'get', '/api/attendance/me/today')).body.schedule).toMatchObject({ shiftStart: '09:00', shiftEnd: '18:00' });
+      expect((await call(early, 'post', '/api/attendance/check-in', {})).body.session.punctuality).toBe('on_time');
+    }, 60_000);
+
+    it('office by dynamic-DNS hostname: configured without IPs; resolved address passes; fail closed after 60 min', async () => {
+      const cur = (await call(owner, 'get', '/api/attendance/settings')).body.current.versionNo;
+      const put = (o: object) => call(owner, 'put', '/api/attendance/settings', { ...BASE_SETTINGS, version: cur, ...o });
+      expect((await put({ officeIps: [], officeHostnames: ['not a host'] })).body.details['officeHostnames.0']).toBeDefined();
+      expect((await put({ officeIps: [], officeHostnames: ['a.ddns.net', 'b.ddns.net', 'c.ddns.net', 'd.ddns.net', 'e.ddns.net', 'f.ddns.net'] })).status).toBe(400);
+      let ok = true;
+      setOfficeResolverForTests(async () => {
+        if (!ok) throw new Error('SERVFAIL');
+        return ['127.0.0.1', '::1'];
+      });
+      const saved = await put({ officeIps: [], officeHostnames: ['Office.DDNS.net'] });
+      expect(saved.status).toBe(200);
+      expect(saved.body).toMatchObject({ configured: true, current: { officeIps: [], officeHostnames: ['office.ddns.net'] } });
+      const a = await agentFor('developer');
+      const b = await agentFor('developer');
+      pin(w('09:00', '2026-11-24'));
+      expect((await call(a, 'post', '/api/attendance/check-in', {})).body.session.verification.checkIn.result).toBe('passed');
+      // The DNS provider fails: the last good address is kept for up to 60 minutes...
+      ok = false;
+      pin(w('09:50', '2026-11-24'));
+      expect((await call(b, 'post', '/api/attendance/check-in', {})).status).toBe(201);
+      // ...then the check fails closed with a clear reason (checkout goes the provisional path).
+      pin(w('10:01', '2026-11-24'));
+      const c = await agentFor('developer');
+      const refused = await call(c, 'post', '/api/attendance/check-in', {});
+      expect(refused.status).toBe(422);
+      expect(refused.body.details).toMatchObject({ reason: 'OFFICE_CHECK_FAILED', hostnamesUnresolved: true });
+      pin(w('18:00', '2026-11-24'));
+      expect((await call(a, 'post', '/api/attendance/check-out', { summary: { workCompleted: 'Built the landing page' } })).body.outcome).toBe('closed_provisional');
+      setOfficeResolverForTests(null);
+      await putSettings();
     });
   });
 

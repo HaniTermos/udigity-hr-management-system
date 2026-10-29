@@ -38,10 +38,20 @@ const Note = z.string().trim().min(3).max(1000);
 // ---------------------------------------------------------------------------
 // Statuses and transition tables (single source for guards and `allowedNextStatuses`)
 // ---------------------------------------------------------------------------
-export const PROJECT_STATUSES = ['scheduled', 'in_progress', 'waiting_for_client', 'blocked', 'delivered', 'completed'] as const;
+/**
+ * D17 (approved) labels: scheduled = "Not started", waiting_for_client / blocked = "On hold" (reason kept),
+ * delivered = a sub-step of "In progress", completed = "Completed", cancelled = "Cancelled".
+ */
+export const PROJECT_STATUSES = ['scheduled', 'in_progress', 'waiting_for_client', 'blocked', 'delivered', 'completed', 'cancelled'] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
-/** SM-PROJECT-001 (DEC-019, demonstration). Completed is read-only; Owner reopen is a separate command. */
+/** Read-only end states: Completed (Owner may reopen) and Cancelled (final, D17). */
+export const FINAL_PROJECT_STATUSES: readonly ProjectStatus[] = ['completed', 'cancelled'];
+
+/**
+ * SM-PROJECT-001. Completed is read-only; Owner reopen is a separate command. Cancelled is reached only
+ * through the Owner `cancel` command (reason required) and is final.
+ */
 export const PROJECT_TRANSITIONS: Readonly<Record<ProjectStatus, readonly ProjectStatus[]>> = Object.freeze({
   scheduled: ['in_progress', 'waiting_for_client', 'blocked'],
   in_progress: ['scheduled', 'waiting_for_client', 'blocked', 'delivered'],
@@ -49,6 +59,7 @@ export const PROJECT_TRANSITIONS: Readonly<Record<ProjectStatus, readonly Projec
   blocked: ['in_progress', 'scheduled', 'waiting_for_client'],
   delivered: ['in_progress', 'completed'],
   completed: [],
+  cancelled: [],
 });
 
 /** Statuses that need a note (stored in `projects.status_note`, DB check). */
@@ -97,10 +108,10 @@ export const UpdateProjectBody = z.object({
   targetDate: IsoDate.nullable().optional(),
 }).strict();
 
-/** POST /api/projects/:id/status - `note` required for waiting_for_client / blocked. */
+/** POST /api/projects/:id/status - `note` required for waiting_for_client / blocked. Cancel is its own command. */
 export const ProjectStatusBody = z.object({
   version: Version,
-  to: z.enum(PROJECT_STATUSES),
+  to: z.enum(PROJECT_STATUSES).refine((s) => s !== 'cancelled', 'Use the cancel command'),
   note: Note.optional(),
   /** P7: true after the user confirmed "Record delivered/completed with open tasks?". */
   acknowledgeOpenTasks: z.boolean().optional(),
@@ -111,6 +122,9 @@ export const ProjectStatusBody = z.object({
 
 /** POST /api/projects/:id/reopen - Owner, Completed -> In progress, reason required (OQ-15). */
 export const ReopenProjectBody = z.object({ version: Version, reason: Note }).strict();
+
+/** POST /api/projects/:id/cancel - Owner, any non-final status -> Cancelled, reason required (D17). */
+export const CancelProjectBody = z.object({ version: Version, reason: Note }).strict();
 
 /** POST /api/projects/:id/developers - Owner sets the current Developer set (OQ-07/OQ-08). */
 export const AssignProjectDevelopersBody = z.object({
@@ -222,16 +236,19 @@ export interface ProjectDto {
   targetDate: string | null;
   deliveredAt: string | null;
   completedAt: string | null;
+  /** D17: set while Cancelled (Owner reason). */
+  cancelReason: string | null;
+  cancelledAt: string | null;
   provisionedBy: 'auto' | 'manual';
   developers: { id: string; fullName: string }[];
   assignedToMe: boolean;
   /** Derived: target date passed and not delivered/completed. */
   deliveryOverdue: boolean;
-  /** Completed projects are read-only. */
+  /** Completed and Cancelled projects are read-only. */
   readOnly: boolean;
   taskCounts: TaskCounts;
   allowedNextStatuses: ProjectStatus[];
-  allowed: { changeStatus: boolean; editSchedule: boolean; assignDevelopers: boolean; reopen: boolean; createTask: boolean };
+  allowed: { changeStatus: boolean; editSchedule: boolean; assignDevelopers: boolean; reopen: boolean; cancel: boolean; createTask: boolean };
   createdAt: string;
   updatedAt: string;
 }

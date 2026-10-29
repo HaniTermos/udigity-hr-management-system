@@ -47,12 +47,14 @@ export const OUTBOX_EVENTS = [
   'attendance.checkout_pending_review',
   'attendance.missing_checkin_detected', // E-12 (placeholder names, need approval)
   'attendance.missing_checkout_detected',
+  'attendance.missing_checkout_reminder', // D18: employee at shift end + 1 h (placeholder name, G2)
   'deal.closure_requested', // E-13
   'deal.closed', // E-14
   'deal.closure_rejected', // ORCH-2 (3): accepted for BE4 (placeholder name, G2)
   'deal.not_proceeding', // ORCH-2 (3): accepted for BE4 (placeholder name, G2)
   'project.provisioning_failed', // E-15
   'call_outcome.changed', // E-16
+  'business.duplicate_review_requested', // D10 (approved 2026-10-29): Owner in-app notice; placeholder name (G2)
   'reminder.failed', // E-17
   'reminder.suppressed',
   'notification.failed',
@@ -132,7 +134,8 @@ export type EmailTemplateId =
   | 'business.developer_handoff'
   | 'business.correction_request'
   | 'business.attendance_alert'
-  | 'business.delivery_failure';
+  | 'business.delivery_failure'
+  | 'ops.alert';
 
 export interface EmailMessage {
   to: string;

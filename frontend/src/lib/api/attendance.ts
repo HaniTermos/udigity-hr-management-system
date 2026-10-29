@@ -26,6 +26,9 @@ export const attendancePaths = {
   endBreak: '/api/attendance/breaks/end',
   activeBreak: '/api/attendance/breaks/active',
   sessionBreaks: (id: string) => `/api/attendance/sessions/${id}/breaks`,
+  daysOff: '/api/attendance/days-off',
+  employeeSchedule: (id: string) => `/api/attendance/employees/${id}/schedule`,
+  cancelDayOff: (id: string) => `/api/attendance/days-off/${id}/cancel`,
 } as const;
 
 /* ------------------------------------------------------------------ DTOs (BE1-C2) */
@@ -66,7 +69,14 @@ export interface AttendanceSessionDto {
   durationStatus: 'met' | 'short' | 'open' | 'unknown';
   verification: { checkIn: VerificationDto; checkOut: VerificationDto | null };
   checkoutFailureReason: string | null;
-  summary: { workCompleted: string | null; outstandingTasks: string | null; blockers: string | null; notes: string | null } | null;
+  summary: {
+    workCompleted: string | null;
+    outstandingTasks: string | null;
+    blockers: string | null;
+    notes: string | null;
+    /** D6: the Owner who completed a missing summary; null = written by the employee. */
+    writtenBy?: Id | null;
+  } | null;
   /** J-04: still open past the flag hours. It is never closed automatically. */
   missingCheckout: boolean;
   reviewPending: boolean;
@@ -100,14 +110,19 @@ export interface AttendanceCorrectionDto {
   version: number;
 }
 
-/** `GET /me/today`. `schedule` and `officeCheck` are inactive until the Owner configures them (`configured:false`). */
+/**
+ * `GET /me/today`. Nothing is enforced until the Owner saves the complete attendance settings (D1,
+ * `configured:false`): no lateness, no alerts, check-in/out refused. `schedule.shiftEnd` is derived (start + 9 h).
+ */
 export interface AttendanceTodayDto {
   now: IsoDateTime;
   date: IsoDate;
   configured: boolean;
   missing: string[];
-  workingDay: boolean;
-  nonWorkingReason: 'weekend' | 'holiday' | null;
+  workingDay: boolean | null;
+  nonWorkingReason: 'weekend' | 'holiday' | 'day_off' | null;
+  /** D1: an approved day off covers today. */
+  dayOff?: boolean;
   schedule: { timezone: string | null; workingDays: string[]; shiftStart: string | null; shiftEnd: string | null; graceMinutes: number | null };
   requiredMinutes: number;
   officeCheck: { mode: VerificationMode | null; active: boolean };
@@ -120,6 +135,8 @@ export interface AttendanceTodayDto {
   employeeRequestsEnabled: boolean;
   remoteSelfRequestEnabled: boolean;
   failedCheckout: string;
+  /** Fixed v1 scope "no break tracking": false hides the break timer (the break routes answer 404). */
+  breaksEnabled?: boolean;
   pendingCorrections: number;
   label?: string;
 }
@@ -185,6 +202,75 @@ export interface RemoteRequestInput {
   reason: string;
 }
 
+/* ------------------------------------------------------------------ approved days off (D1, Owner) */
+
+export interface DayOffDto {
+  id: Id;
+  employeeId: Id;
+  employeeName: string;
+  startDate: IsoDate;
+  endDate: IsoDate;
+  reason: string;
+  createdBy: Id;
+  createdByName: string | null;
+  createdAt: IsoDateTime;
+  cancelledAt: IsoDateTime | null;
+  cancelledBy: Id | null;
+  cancelReason: string | null;
+  version: number;
+}
+
+export interface DaysOffQuery {
+  employeeId?: Id;
+  from?: IsoDate;
+  to?: IsoDate;
+  page?: number;
+  pageSize?: number;
+}
+
+export const daysOffKey = (q: DaysOffQuery) => ['attendance.daysOff', q.employeeId ?? '', q.from ?? '', q.to ?? ''] as const;
+
+export async function listDaysOff(q: DaysOffQuery = {}): Promise<Page<DayOffDto>> {
+  return api.get<Page<DayOffDto>>(attendancePaths.daysOff, { query: { ...q } });
+}
+
+export async function createDayOff(
+  input: { employeeId: Id; startDate: IsoDate; endDate?: IsoDate; reason: string },
+  idempotencyKey: string = newIdempotencyKey()
+): Promise<DayOffDto> {
+  return api.post<DayOffDto>(attendancePaths.daysOff, input, { idempotencyKey });
+}
+
+export async function cancelDayOff(d: Pick<DayOffDto, 'id' | 'version'>, reason: string): Promise<DayOffDto> {
+  return api.post<DayOffDto>(attendancePaths.cancelDayOff(d.id), { version: d.version, reason });
+}
+
+/* ------------------------------------------------------------------ per-employee schedule (Owner, 2026-10-29) */
+
+export interface EmployeeScheduleDto {
+  employeeId: Id;
+  date: IsoDate;
+  company: { shiftStart: string; shiftEnd: string; workingDays: string[] };
+  /** null = the company default applies. */
+  override: { shiftStart: string | null; workingDays: string[] | null } | null;
+  effective: { shiftStart: string; shiftEnd: string; workingDays: string[] };
+  history: { id: Id; effectiveFrom: IsoDate; shiftStart: string | null; workingDays: string[] | null; useCompanyDefault: boolean; createdAt: IsoDateTime }[];
+}
+
+export const employeeScheduleKey = (id: Id) => attendancePaths.employeeSchedule(id);
+
+export async function getEmployeeSchedule(id: Id): Promise<EmployeeScheduleDto> {
+  return api.get<EmployeeScheduleDto>(attendancePaths.employeeSchedule(id));
+}
+
+/** A new schedule row from today (or `effectiveFrom`); earlier sessions keep the schedule that applied. */
+export async function putEmployeeSchedule(
+  id: Id,
+  input: { shiftStart?: string | null; workingDays?: string[] | null; useCompanyDefault?: boolean; effectiveFrom?: IsoDate; reason?: string }
+): Promise<EmployeeScheduleDto> {
+  return api.put<EmployeeScheduleDto>(attendancePaths.employeeSchedule(id), input);
+}
+
 /** The three settings flags the employee screens show (`GET /settings`, any role). Values are demonstration defaults. */
 export interface AttendanceFlagsDto {
   flags: { employeeRequests: boolean; remoteSelfRequest: boolean; failedCheckout: string };
@@ -202,7 +288,14 @@ export const ATTENDANCE_REASONS = {
   inFuture: 'IN_FUTURE',
   overlap: 'OVERLAP',
   policyNotConfigured: 'POLICY_NOT_CONFIGURED',
+  /** D5: an earlier-day or missing-checkout session is closed through a correction request, not a checkout. */
+  correctionRequired: 'CORRECTION_REQUIRED',
 } as const;
+
+/** D6: "Work completed" needs at least this many non-whitespace characters (pinned, same rule as the server). */
+export const SUMMARY_MIN_CHARS = 10;
+/** Characters that count toward the summary minimum: all whitespace removed. */
+export const summaryCharCount = (text: string) => text.replace(/\s+/g, '').length;
 
 /** Read `details.reason` (or the code itself, which BE1 may also use) from an API error. */
 export function attendanceReason(err: { code: string; details?: unknown }): string | null {

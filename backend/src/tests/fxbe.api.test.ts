@@ -280,13 +280,12 @@ describe.skipIf(!hasTestDb)('FX-BE production-fix wave (DB)', () => {
         timezone: cur.timezone || 'Asia/Beirut',
         workingDays: cur.workingDays?.length ? cur.workingDays : ['MON', 'TUE', 'WED', 'THU', 'FRI'],
         shiftStart: cur.shiftStart || '09:00',
-        shiftEnd: cur.shiftEnd || '18:00',
         graceMinutes: cur.graceMinutes ?? 10,
-        verificationMode: cur.verificationMode === 'ip' && !(cur.officeIps ?? []).length ? 'disabled' : cur.verificationMode || 'disabled',
-        officeIps: cur.officeIps ?? [],
+        // D2 (baseline 2026-10-29): office IPs are required; D1: holidays confirmed explicitly.
+        verificationMode: 'ip',
+        officeIps: cur.officeIps?.length ? cur.officeIps : ['127.0.0.1', '::1'],
         holidays: ['2026-12-25'],
-        summaryRequired: true,
-        summaryMinLength: 7,
+        holidaysConfirmed: true,
         missingCheckoutFlagHours: 9,
       };
       const seeded = await call(owner, 'put', '/api/attendance/settings', { version, ...full, reason: 'fxbe seed' });
@@ -298,8 +297,9 @@ describe.skipIf(!hasTestDb)('FX-BE production-fix wave (DB)', () => {
       const after = await call(owner, 'get', '/api/attendance/settings');
       expect(after.body.current.workingDays).toEqual(['MON', 'TUE', 'WED']);
       expect(after.body.current.holidays).toEqual(['2026-12-25']);
+      // D6: the summary rule is pinned (required, 10 characters).
       expect(after.body.current.summaryRequired).toBe(true);
-      expect(after.body.current.summaryMinLength).toBe(7);
+      expect(after.body.current.summaryMinLength).toBe(10);
       expect(after.body.current.missingCheckoutFlagHours).toBe(9);
       // Restore the original values for the other suites.
       const version3: number = after.body.versionNo ?? after.body.current?.versionNo ?? after.body.version;
@@ -308,8 +308,6 @@ describe.skipIf(!hasTestDb)('FX-BE production-fix wave (DB)', () => {
         ...full,
         workingDays: full.workingDays,
         holidays: cur.holidays ?? [],
-        summaryRequired: cur.summaryRequired ?? true,
-        summaryMinLength: cur.summaryMinLength ?? 10,
         missingCheckoutFlagHours: cur.missingCheckoutFlagHours ?? 6,
         reason: 'fxbe restore',
       });
@@ -371,12 +369,12 @@ describe.skipIf(!hasTestDb)('FX-BE production-fix wave (DB)', () => {
   });
 
   it('task startDate is stored, returned and must not follow the due date (FX-BE-C6)', async () => {
-    setDeliveryPolicyForTests({ closureMode: 'direct' });
     const { dealId } = await newDeal(dv);
     const v = async () => (await query<{ version: number }>('SELECT version FROM deals WHERE id = $1', [dealId])).rows[0].version;
     expect((await call(dv, 'post', `/api/deals/${dealId}/payment`, { version: await v(), date: '2026-10-20', reference: 'PAY-1' })).status).toBe(200);
     expect((await call(dv, 'post', `/api/deals/${dealId}/signature`, { version: await v(), date: '2026-10-21', reference: 'AGR-1' })).status).toBe(200);
-    expect((await call(dv, 'post', `/api/deals/${dealId}/finalize`, { version: await v() })).status).toBe(200);
+    // D16: only the Owner closes (was the Developer under the retired closureMode=direct).
+    expect((await call(owner, 'post', `/api/deals/${dealId}/finalize`, { version: await v() })).status).toBe(200);
     await relayAll();
     const { rows } = await query<{ id: string }>('SELECT id FROM projects WHERE deal_id = $1', [dealId]);
     expect(rows).toHaveLength(1);

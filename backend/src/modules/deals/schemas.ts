@@ -14,7 +14,9 @@ import { defineMatrixActions } from '../access/schemas.js';
 // Commands with no matrix row use the nearest matrix action as the route gate and the service narrows
 // the actor (Security REQUEST [BE4-R2]):
 //   POST /:id/remove-fact            gate deal.update_stage  -> service: Owner only
-//   POST /:id/finalize (Developer)   gate deal.update_stage  -> service: assigned DV and closureMode = direct
+//   POST /:id/advance-stage          gate deal.update_stage  -> service: Owner or assigned DV, forward only (D16)
+//   POST /:id/contract               gate deal.update_stage  -> service: Owner or assigned DV, open deals (D16)
+//   POST /:id/financial-correction   gate deal.finalize      -> service: Owner, closed deals, reason (D16)
 //   POST /api/meetings/:id/cancel    gate meeting.reschedule
 //   POST /api/projects (manual F2)   gate deal.update_stage  -> service: Owner or the deal's assigned DV
 // ---------------------------------------------------------------------------
@@ -45,9 +47,40 @@ const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 /** Query-string boolean: only "true" / "false" (z.coerce.boolean would read "false" as true). */
 export const BoolQuery = z.enum(['true', 'false']).transform((v) => v === 'true');
 
-export const DEAL_STAGES = ['accepted_opportunity', 'signed', 'paid', 'signed_and_paid', 'closed', 'not_proceeding'] as const;
+/**
+ * D16 (approved): accepted → meeting scheduled → proposal sent → signed → payment pending verification →
+ * verified closed. "Payment pending verification" is `paid`/`signed_and_paid` with an open closure review
+ * (derived, not a stored stage); "Verified closed" = `closed`; "Lost" = `not_proceeding`.
+ */
+export const DEAL_STAGES = [
+  'accepted_opportunity',
+  'meeting_scheduled',
+  'proposal_sent',
+  'signed',
+  'paid',
+  'signed_and_paid',
+  'closed',
+  'not_proceeding',
+] as const;
 export type DealStage = (typeof DEAL_STAGES)[number];
-export const OPEN_DEAL_STAGES = ['accepted_opportunity', 'signed', 'paid', 'signed_and_paid'] as const;
+export const OPEN_DEAL_STAGES = ['accepted_opportunity', 'meeting_scheduled', 'proposal_sent', 'signed', 'paid', 'signed_and_paid'] as const;
+/** Pipeline stages without a recorded fact; `advance-stage` moves between them, forward only. */
+export const PIPELINE_STAGES = ['accepted_opportunity', 'meeting_scheduled', 'proposal_sent'] as const;
+export const ADVANCE_TARGETS = ['meeting_scheduled', 'proposal_sent'] as const;
+export type AdvanceTarget = (typeof ADVANCE_TARGETS)[number];
+/** Forward order (skips allowed). Signed and paid facts are order-independent, so both rank 3. */
+export const STAGE_RANK: Readonly<Record<DealStage, number>> = Object.freeze({
+  accepted_opportunity: 0,
+  meeting_scheduled: 1,
+  proposal_sent: 2,
+  signed: 3,
+  paid: 3,
+  signed_and_paid: 4,
+  closed: 5,
+  not_proceeding: -1,
+});
+/** D16 closure evidence names (stable API values). */
+export type ClosureEvidence = 'agreementReference' | 'paymentDate';
 
 // ---------------------------------------------------------------------------
 // Requests
@@ -68,30 +101,68 @@ export const ListDealsQuery = PageQuerySchema.extend({
   /** FX-BE-C5: deal code or business name contains (case-insensitive), 2..80 chars. */
   q: z.string().trim().min(2).max(80).optional(),
   /** FX-BE-C5: project status of the deal's project, or `none` (no project yet). */
-  projectStatus: z.enum(['scheduled', 'in_progress', 'waiting_for_client', 'blocked', 'delivered', 'completed', 'none']).optional(),
+  projectStatus: z.enum(['scheduled', 'in_progress', 'waiting_for_client', 'blocked', 'delivered', 'completed', 'cancelled', 'none']).optional(),
 }).strict();
 
 /** POST /:id/developer - assign or reassign (E2). Active Developer only. */
 export const AssignDeveloperBody = z.object({ version: Version, developerId: z.string().uuid() }).strict();
 
-/** POST /:id/signature */
+/** POST /:id/advance-stage - forward-only pipeline move (D16); a backward move is 409. */
+export const AdvanceStageBody = z.object({ version: Version, to: z.enum(ADVANCE_TARGETS) }).strict();
+
+/** POST /:id/signature. `reference` = the agreement reference (D16 evidence); the date is optional. */
 export const RecordSignatureBody = z.object({
   version: Version,
-  date: IsoDate,
+  date: IsoDate.optional(),
   reference: Reference,
 }).strict();
 
-/** POST /:id/payment. A deposit counts as payment (DEC-018). amount+currency optional, together. */
+const Amount = z.number().nonnegative().max(999_999_999_999.99).multipleOf(0.01);
+const Currency = z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/);
+
+/**
+ * POST /:id/payment. A first payment or deposit counts (D16). The payment date is evidence; the payment
+ * reference is optional. amount+currency optional, together (currency required when an amount exists).
+ */
 export const RecordPaymentBody = z.object({
   version: Version,
   date: IsoDate,
-  reference: Reference,
-  amount: z.number().nonnegative().max(999_999_999_999.99).multipleOf(0.01).optional(),
-  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
+  reference: Reference.optional(),
+  amount: Amount.optional(),
+  currency: Currency.optional(),
 }).strict().refine((b) => (b.amount === undefined) === (b.currency === undefined), {
   message: 'amount and currency are given together',
   path: ['currency'],
 });
+
+/** POST /:id/contract - contract amount on an open deal (D16). `null` clears it (missing, never zero). */
+export const ContractBody = z.object({
+  version: Version,
+  amount: Amount.nullable(),
+  currency: Currency.nullable(),
+}).strict().refine((b) => (b.amount === null) === (b.currency === null), {
+  message: 'amount and currency are given together',
+  path: ['currency'],
+});
+
+/**
+ * POST /:id/financial-correction - Owner, verified closed deal, reason required (D16 "Owner controls
+ * verified financial changes"). Only the fields given change; prior values are kept in deal_changes.
+ * The evidence (agreement reference, payment date) can be corrected but never removed.
+ */
+export const FinancialCorrectionBody = z.object({
+  version: Version,
+  reason: Reason,
+  agreementReference: Reference.optional(),
+  signatureDate: IsoDate.nullable().optional(),
+  paymentDate: IsoDate.optional(),
+  paymentReference: Reference.nullable().optional(),
+  paymentAmount: Amount.nullable().optional(),
+  paymentCurrency: Currency.nullable().optional(),
+  contractAmount: Amount.nullable().optional(),
+  contractCurrency: Currency.nullable().optional(),
+}).strict();
+export type FinancialCorrectionInput = z.infer<typeof FinancialCorrectionBody>;
 
 /** POST /:id/closure-request (ownerVerify mode only). */
 export const ClosureRequestBody = z.object({ version: Version, note: z.string().trim().max(1000).optional() }).strict();
@@ -99,7 +170,7 @@ export const ClosureRequestBody = z.object({ version: Version, note: z.string().
 export const ClosureVerifyBody = z.object({ version: Version }).strict();
 /** POST /:id/closure-reject */
 export const ClosureRejectBody = z.object({ version: Version, reason: Reason }).strict();
-/** POST /:id/finalize (direct mode: Developer or Owner; ownerVerify mode: Owner directly, "Owner may finalize directly"). */
+/** POST /:id/finalize - Owner only: "The Owner may record and verify closure directly" (D16). */
 export const FinalizeBody = z.object({ version: Version }).strict();
 
 /** POST /:id/not-proceeding */
@@ -125,9 +196,10 @@ export interface CreateAcceptedOpportunityInput {
 // Response DTOs (camelCase)
 // ---------------------------------------------------------------------------
 export interface DealFactsDto {
-  signature: { date: string; reference: string; recordedById: string; recordedAt: string } | null;
+  /** `reference` is the agreement reference (D16 evidence); the date is optional. */
+  signature: { date: string | null; reference: string | null; recordedById: string; recordedAt: string } | null;
   payment: {
-    date: string; reference: string; amount: string | null; currency: string | null;
+    date: string; reference: string | null; amount: string | null; currency: string | null;
     recordedById: string; recordedAt: string;
   } | null;
 }
@@ -146,6 +218,13 @@ export interface ClosureReviewDto {
 /** What the UI may do right now; the server recomputes and re-checks each on the command. */
 export interface DealAllowedActions {
   assignDeveloper: boolean;
+  /** D16 forward-only pipeline move (accepted → meeting scheduled → proposal sent). */
+  advanceStage: boolean;
+  /** Pipeline stages this caller may move to now (empty when none). */
+  advanceTargets: AdvanceTarget[];
+  updateContract: boolean;
+  /** Owner, verified closed deal. */
+  correctFinancials: boolean;
   recordSignature: boolean;
   recordPayment: boolean;
   removeFact: boolean;
@@ -173,6 +252,11 @@ export interface DealDto {
   /** Derived (E3). */
   developerNotAssigned: boolean;
   facts: DealFactsDto;
+  /** D16: contract amount, distinct from the payment received. A null amount is missing, never zero. */
+  contract: { amount: string | null; currency: string | null };
+  /** D16 closure evidence still missing (empty = ready for Owner verification). */
+  closureMissing: ClosureEvidence[];
+  /** `direct` only on rows closed before the approved policy retired that mode. */
   closure: { closedAt: string; closedById: string; mode: 'ownerVerify' | 'direct' } | null;
   openClosureReview: ClosureReviewDto | null;
   /** Latest rejected review while the stage is still signed_and_paid ("rejected banner"). */
@@ -182,7 +266,7 @@ export interface DealDto {
   projectProvisioning: 'not_applicable' | 'provisioned' | 'pending' | 'failed';
   projectId: string | null;
   /** Policy values in force (each "Demonstration alternative — not approved"). */
-  policy: { closureMode: 'ownerVerify' | 'direct'; developerPreClosure: 'assigned' | 'closedOnly'; autoProvision: boolean; label: string };
+  policy: { closureMode: 'ownerVerify'; developerPreClosure: 'assigned' | 'closedOnly'; autoProvision: boolean; label: string };
   allowed: DealAllowedActions;
   createdAt: string;
   updatedAt: string;

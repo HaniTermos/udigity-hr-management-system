@@ -16,7 +16,7 @@ import { storeEnrolledSecret } from '../identity/twoFactor.js';
 import type { EmailMessage, EmailSendResult, EmailTransport } from '../../shared/outbox.js';
 import { clock } from '../platform/clock.js';
 import { relayOutboxOnce } from '../platform/service.js';
-import { dispatchDueDeliveries, queuePasswordResetEmail, RESET_EMAILS_PER_HOUR } from './service.js';
+import { dispatchDueDeliveries, queuePasswordResetEmail, RESET_EMAILS_PER_HOUR, type DispatchResult } from './service.js';
 import { EMAIL_NOT_CONFIGURED } from './emailConfig.js';
 import { getEmailTransport, mailSink, setEmailTransport, UnconfiguredEmailTransport } from './transport.js';
 
@@ -93,6 +93,20 @@ async function relayAll(): Promise<void> {
   for (let i = 0; i < 100; i++) if ((await relayOutboxOnce()).claimed === 0) return;
 }
 
+/**
+ * Dispatch until no due email delivery is left. One pass claims the 25 oldest due rows, so a backlog from
+ * earlier files in the shared test DB could leave this test's own delivery unclaimed (same reason as relayAll).
+ */
+async function dispatchAll(): Promise<DispatchResult> {
+  const total: DispatchResult = { claimed: 0, accepted: 0, captured: 0, retry: 0, failed: 0, suppressed: 0, skipped: 0 };
+  for (let i = 0; i < 100; i++) {
+    const out = await dispatchDueDeliveries();
+    for (const k of Object.keys(total) as (keyof DispatchResult)[]) total[k] += out[k];
+    if (out.claimed === 0) break;
+  }
+  return total;
+}
+
 async function delivery(tokenId: string) {
   const { rows } = await query(`SELECT * FROM notification_deliveries WHERE dedupe_key = $1`, [`e03:${tokenId}`]);
   return rows[0];
@@ -130,7 +144,7 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
     await relayAll();
     expect((await query('SELECT count(*)::int AS n FROM notification_deliveries WHERE dedupe_key = $1', [`e03:${tokenId}`])).rows[0].n).toBe(1);
 
-    await dispatchDueDeliveries();
+    await dispatchAll();
     const sent = mailSink.messages().filter((m) => m.to === emp.email);
     expect(sent).toHaveLength(1);
     expect(sent[0].template).toBe('security.password_reset');
@@ -149,7 +163,7 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
     expect(consumed.rows[0].consumed_at).not.toBeNull();
 
     // Already sent: dispatch again does not resend.
-    await dispatchDueDeliveries();
+    await dispatchAll();
     expect(mailSink.messages().filter((m) => m.to === emp.email)).toHaveLength(1);
   });
 
@@ -158,7 +172,7 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
     const { tokenId } = await requestReset(emp.id);
     await relayAll();
     setEmailTransport(new AcceptingSmtpStub());
-    const out = await dispatchDueDeliveries();
+    const out = await dispatchAll();
     expect(out.accepted).toBeGreaterThanOrEqual(1);
     const d = await delivery(tokenId);
     expect(d).toMatchObject({ state: 'accepted', provider_message_id: `<${d.id}@provider.test>`, last_error: null });
@@ -170,7 +184,7 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
     const { tokenId } = await requestReset(emp.id);
     await relayAll();
     setEmailTransport(new UnconfiguredEmailTransport());
-    const out = await dispatchDueDeliveries();
+    const out = await dispatchAll();
     expect(out.accepted + out.captured).toBe(0);
     const d = await delivery(tokenId);
     expect(d).toMatchObject({ state: 'failed', last_error: EMAIL_NOT_CONFIGURED, sent_at: null, provider_message_id: null });
@@ -181,15 +195,21 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
     const secret = await query('SELECT ciphertext FROM notification_secrets WHERE ref_id = $1', [tokenId]);
     expect(secret.rows[0].ciphertext).not.toBeNull();
 
-    const monitor = await request(app).get('/api/delivery-monitor').query({ kind: 'notification', pageSize: 100 }).set('Cookie', await ownerCookie());
-    expect(monitor.status).toBe(200);
-    const item = (monitor.body.items as { id: string }[]).find((i) => i.id === d.id);
+    // Page through the monitor: rows written under a pinned future clock by other files sort ahead of this one.
+    const cookie = await ownerCookie();
+    let item: { id: string } | undefined;
+    for (let page = 1; !item && page <= 50; page++) {
+      const monitor = await request(app).get('/api/delivery-monitor').query({ kind: 'notification', pageSize: 100, page }).set('Cookie', cookie);
+      expect(monitor.status).toBe(200);
+      item = (monitor.body.items as { id: string }[]).find((i) => i.id === d.id);
+      if ((monitor.body.items as unknown[]).length < 100) break;
+    }
     expect(item).toMatchObject({ state: 'failed', lastError: EMAIL_NOT_CONFIGURED, sentAt: null, templateOrSource: 'security.password_reset' });
 
     // Once SMTP is configured, the re-queued row is accepted with the original (still valid) link.
     await query(`UPDATE notification_deliveries SET state = 'pending', next_attempt_at = now(), attempt_count = 0, last_error = NULL WHERE id = $1`, [d.id]);
     setEmailTransport(new AcceptingSmtpStub());
-    await dispatchDueDeliveries();
+    await dispatchAll();
     expect((await delivery(tokenId)).state).toBe('accepted');
   });
 
@@ -199,7 +219,7 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
     await relayAll();
     const d = await delivery(tokenId);
     expect(d.state).toBe('suppressed');
-    await dispatchDueDeliveries();
+    await dispatchAll();
     expect(mailSink.messages().filter((m) => m.to === emp.email)).toHaveLength(0);
     const ev = await query(`SELECT name FROM outbox_events WHERE aggregate_id = $1`, [d.id]);
     expect(ev.rows.map((r) => r.name)).toEqual(['notification.suppressed']);
@@ -210,7 +230,7 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
     const { tokenId } = await requestReset(emp.id);
     await relayAll();
     await query('UPDATE employees SET is_active = false WHERE id = $1', [emp.id]);
-    await dispatchDueDeliveries();
+    await dispatchAll();
     expect((await delivery(tokenId)).state).toBe('suppressed');
     expect(mailSink.messages().filter((m) => m.to === emp.email)).toHaveLength(0);
   });
@@ -237,19 +257,19 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
 
     let at = t0.getTime();
     for (const delay of [60, 600, 3600]) {
-      await dispatchDueDeliveries();
+      await dispatchAll();
       const d = await delivery(tokenId);
       expect(d.state).toBe('retry_pending');
       expect(new Date(d.next_attempt_at).getTime()).toBe(at + delay * 1000);
       // Not due one second earlier.
       const n = t.sent.filter((m) => m.idempotencyKey === d.id).length;
       clock.set(new Date(at + delay * 1000 - 1000));
-      await dispatchDueDeliveries();
+      await dispatchAll();
       expect(t.sent.filter((m) => m.idempotencyKey === d.id).length).toBe(n);
       at += delay * 1000;
       clock.set(new Date(at));
     }
-    await dispatchDueDeliveries();
+    await dispatchAll();
     const d = await delivery(tokenId);
     expect(d.state).toBe('failed');
     expect(d.attempt_count).toBe(4);
@@ -266,7 +286,7 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
     const { tokenId } = await requestReset(emp.id);
     await relayAll();
     setEmailTransport(new ScriptedTransport([{ ok: false, permanent: true, error: 'send failed (SMTP 550)' }], emp.email));
-    await dispatchDueDeliveries();
+    await dispatchAll();
     const d = await delivery(tokenId);
     expect(d.state).toBe('failed');
     expect(d.attempt_count).toBe(1);
@@ -279,7 +299,7 @@ describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)
     const { tokenId } = await requestReset(emp.id);
     await relayAll();
     clock.set(new Date(t0.getTime() + 61 * 60_000));
-    await dispatchDueDeliveries();
+    await dispatchAll();
     expect((await delivery(tokenId)).state).toBe('skipped');
     expect(mailSink.messages().filter((m) => m.to === emp.email)).toHaveLength(0);
   });

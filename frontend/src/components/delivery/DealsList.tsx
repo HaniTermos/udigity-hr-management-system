@@ -20,7 +20,7 @@ import {
   PageTitle,
   PersonCell,
   ProjectStatusBadge,
-  PROJECT_STATUS_LABEL,
+  PROJECT_STATUS_OPTION_LABEL,
 } from './shared';
 
 const PAGE_SIZE = 50;
@@ -35,7 +35,7 @@ const CLOSED_OPTIONS = [
 ];
 const STATUS_OPTIONS = [
   { value: 'any', label: 'Project status: Any' },
-  ...(Object.keys(PROJECT_STATUS_LABEL) as ProjectStatus[]).map((s) => ({ value: s, label: PROJECT_STATUS_LABEL[s] })),
+  ...(Object.keys(PROJECT_STATUS_OPTION_LABEL) as ProjectStatus[]).map((s) => ({ value: s, label: PROJECT_STATUS_OPTION_LABEL[s] })),
 ];
 
 export function DealsList() {
@@ -227,7 +227,7 @@ function DealTableRow({ deal, mine }: { deal: DealListItem; mine: boolean }) {
       </TD>
       <TD>
         <Badge tone="info" hasDot>
-          Closed deal
+          Verified closed
         </Badge>
       </TD>
       <TD>

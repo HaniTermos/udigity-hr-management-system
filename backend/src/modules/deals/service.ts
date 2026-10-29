@@ -24,15 +24,22 @@ import { audit, type CommandContext } from '../../shared/tx.js';
 import { dealCurrencies, deliveryPolicy, DEMO_LABEL, type DeliveryPolicy } from './policy.js';
 import * as repo from './repo.js';
 import type { DealRow } from './repo.js';
-import type {
-  ClosureReviewDto,
-  CreateAcceptedOpportunityInput,
-  DealAllowedActions,
-  DealDto,
-  DealListItemDto,
-  DealStage,
-  NotProceedingDealDto,
-  OpportunityDto,
+import {
+  ADVANCE_TARGETS,
+  OPEN_DEAL_STAGES,
+  PIPELINE_STAGES,
+  STAGE_RANK,
+  type AdvanceTarget,
+  type ClosureEvidence,
+  type ClosureReviewDto,
+  type CreateAcceptedOpportunityInput,
+  type DealAllowedActions,
+  type DealDto,
+  type DealListItemDto,
+  type DealStage,
+  type FinancialCorrectionInput,
+  type NotProceedingDealDto,
+  type OpportunityDto,
 } from './schemas.js';
 import {
   actorIdOf,
@@ -51,8 +58,28 @@ export * from './support.js';
 export { deliveryPolicy, setDeliveryPolicyForTests, DEMO_LABEL } from './policy.js';
 export type { DeliveryPolicy } from './policy.js';
 
-const OPEN_STAGES: readonly DealStage[] = ['accepted_opportunity', 'signed', 'paid', 'signed_and_paid'];
+const OPEN_STAGES: readonly DealStage[] = OPEN_DEAL_STAGES;
 const isOpen = (s: DealStage) => OPEN_STAGES.includes(s);
+const isPipeline = (s: DealStage) => (PIPELINE_STAGES as readonly DealStage[]).includes(s);
+/** SQL literal list of the open stages (constants only, never input). */
+const OPEN_STAGES_SQL = OPEN_STAGES.map((s) => `'${s}'`).join(',');
+
+/** D16: a signature fact is the agreement reference (legacy rows may carry only a date). */
+const hasSignature = (d: Pick<DealRow, 'signature_reference' | 'signature_date'>) => d.signature_reference !== null || d.signature_date !== null;
+
+/** D16 closure evidence: agreement reference + payment date. Empty = ready for Owner verification. */
+export function closureMissing(d: Pick<DealRow, 'signature_reference' | 'payment_date'>): ClosureEvidence[] {
+  const out: ClosureEvidence[] = [];
+  if (!d.signature_reference) out.push('agreementReference');
+  if (!d.payment_date) out.push('paymentDate');
+  return out;
+}
+
+/** Forward pipeline targets from the current stage (D16: skips allowed, never backward). */
+function advanceTargetsFrom(stage: DealStage): AdvanceTarget[] {
+  if (!isPipeline(stage)) return [];
+  return ADVANCE_TARGETS.filter((t) => STAGE_RANK[t] > STAGE_RANK[stage]);
+}
 
 // ---------------------------------------------------------------------------
 // Project info provider (registered by MOD-projects init; deals never imports projects)
@@ -152,17 +179,22 @@ export function allowedActions(
   const owner = p.role === 'owner' && p.sessionState === 'active';
   const dv = developerMayActOnDeal(p, { assignedDeveloperId: d.assigned_developer_id }, policy);
   const open = isOpen(d.stage);
-  const sp = d.stage === 'signed_and_paid';
-  const verify = policy.closureMode === 'ownerVerify';
+  const ready = open && closureMissing(d).length === 0;
+  const advanceTargets = owner || dv ? advanceTargetsFrom(d.stage) : [];
   return {
     assignDeveloper: open && (owner || p.role === 'call_center'),
-    recordSignature: (owner || dv) && (d.stage === 'accepted_opportunity' || d.stage === 'paid'),
-    recordPayment: (owner || dv) && (d.stage === 'accepted_opportunity' || d.stage === 'signed'),
-    removeFact: owner && (d.stage === 'signed' || d.stage === 'paid' || sp),
-    requestClosureVerification: dv && verify && sp && !hasOpenReview,
-    verifyClosure: owner && verify && sp && hasOpenReview,
-    rejectClosure: owner && verify && sp && hasOpenReview,
-    finalize: sp && (owner || (dv && policy.closureMode === 'direct')),
+    advanceStage: advanceTargets.length > 0,
+    advanceTargets,
+    updateContract: open && (owner || dv),
+    correctFinancials: owner && d.stage === 'closed',
+    recordSignature: (owner || dv) && (isPipeline(d.stage) || d.stage === 'paid'),
+    recordPayment: (owner || dv) && (isPipeline(d.stage) || d.stage === 'signed'),
+    removeFact: owner && (d.stage === 'signed' || d.stage === 'paid' || d.stage === 'signed_and_paid'),
+    // D16: the Developer submits "payment received" for Owner verification; only the Owner closes.
+    requestClosureVerification: dv && ready && !hasOpenReview,
+    verifyClosure: owner && ready && hasOpenReview,
+    rejectClosure: owner && open && hasOpenReview,
+    finalize: owner && ready,
     markNotProceeding: open && (owner || dv),
     reopen: owner && d.stage === 'not_proceeding',
     scheduleMeeting: open && (owner || p.role === 'call_center' || dv),
@@ -193,10 +225,10 @@ export async function toDealDto(db: Queryable, p: Principal, d: DealRow): Promis
     assignedDeveloperName: d.assigned_developer_id ? names.get(d.assigned_developer_id) ?? null : null,
     developerNotAssigned: d.assigned_developer_id === null,
     facts: {
-      signature: d.signature_date
+      signature: hasSignature(d)
         ? {
             date: d.signature_date,
-            reference: d.signature_reference ?? '',
+            reference: d.signature_reference,
             recordedById: d.signature_recorded_by_id ?? '',
             recordedAt: iso(d.signature_recorded_at) ?? '',
           }
@@ -204,7 +236,7 @@ export async function toDealDto(db: Queryable, p: Principal, d: DealRow): Promis
       payment: d.payment_date
         ? {
             date: d.payment_date,
-            reference: d.payment_reference ?? '',
+            reference: d.payment_reference,
             amount: d.payment_amount,
             currency: d.payment_currency,
             recordedById: d.payment_recorded_by_id ?? '',
@@ -212,6 +244,8 @@ export async function toDealDto(db: Queryable, p: Principal, d: DealRow): Promis
           }
         : null,
     },
+    contract: { amount: d.contract_amount, currency: d.contract_currency },
+    closureMissing: d.stage === 'closed' || d.stage === 'not_proceeding' ? [] : closureMissing(d),
     closure:
       d.stage === 'closed' && d.closed_at && d.closed_by_id
         ? { closedAt: iso(d.closed_at)!, closedById: d.closed_by_id, mode: d.closure_mode ?? policy.closureMode }
@@ -254,7 +288,7 @@ export interface DealListQuery {
   scope?: 'assigned_to_me' | 'all';
   closedWithinDays?: number;
   q?: string;
-  projectStatus?: 'scheduled' | 'in_progress' | 'waiting_for_client' | 'blocked' | 'delivered' | 'completed' | 'none';
+  projectStatus?: 'scheduled' | 'in_progress' | 'waiting_for_client' | 'blocked' | 'delivered' | 'completed' | 'cancelled' | 'none';
 }
 
 const DEAL_SORT: Record<string, string> = {
@@ -278,12 +312,12 @@ export async function listDeals(db: Queryable, p: Principal, q: DealListQuery): 
   const where: string[] = [];
   if (q.stage) where.push(`d.stage = ${params.add(q.stage)}`);
   if (q.tab === 'closed') where.push(`d.stage = 'closed'`);
-  if (q.tab === 'accepted') where.push(`d.stage IN ('accepted_opportunity','signed','paid','signed_and_paid')`);
+  if (q.tab === 'accepted') where.push(`d.stage IN (${OPEN_STAGES_SQL})`);
   if (q.developerId) where.push(`d.assigned_developer_id = ${params.add(q.developerId)}::uuid`);
   if (q.assignedToMe || q.scope === 'assigned_to_me') where.push(`d.assigned_developer_id = ${params.add(p.employeeId)}::uuid`);
   if (q.closedWithinDays) where.push(`d.stage = 'closed' AND d.closed_at >= now() - make_interval(days => ${params.add(q.closedWithinDays)}::int)`);
   if (q.needsAttention === 'developer_not_assigned') {
-    where.push(`d.assigned_developer_id IS NULL AND d.stage IN ('accepted_opportunity','signed','paid','signed_and_paid')`);
+    where.push(`d.assigned_developer_id IS NULL AND d.stage IN (${OPEN_STAGES_SQL})`);
   }
   if (q.needsAttention === 'closure_verification_requested') {
     where.push(`EXISTS (SELECT 1 FROM closure_reviews cr WHERE cr.deal_id = d.id AND cr.status = 'requested')`);
@@ -396,7 +430,48 @@ const factsOf = (d: DealRow) => ({
   paymentReference: d.payment_reference,
   paymentAmount: d.payment_amount,
   paymentCurrency: d.payment_currency,
+  contractAmount: d.contract_amount,
+  contractCurrency: d.contract_currency,
 });
+
+/** D16 financial facts (before/after of a verified financial correction). */
+const financialsOf = (d: DealRow) => ({
+  agreementReference: d.signature_reference,
+  signatureDate: d.signature_date,
+  paymentDate: d.payment_date,
+  paymentReference: d.payment_reference,
+  paymentAmount: d.payment_amount,
+  paymentCurrency: d.payment_currency,
+  contractAmount: d.contract_amount,
+  contractCurrency: d.contract_currency,
+});
+
+/** DEC-018 `deals.currencies`: a currency must be in the configured list (empty list = policy pending). */
+async function assertCurrency(ctx: CommandContext, currency: string | null | undefined, field: string): Promise<void> {
+  if (currency === undefined || currency === null) return;
+  const currencies = await dealCurrencies(ctx.tx);
+  if (currencies.length === 0) throw policyNotConfigured('deals.currencies');
+  if (!currencies.includes(currency)) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Validation failed', { [field]: ['Currency is not in the configured list'] });
+  }
+}
+
+/** D16 "currency required when an amount exists" on the resulting row (missing is never zero). */
+function assertAmountCurrency(amount: string | null, currency: string | null, field: string): void {
+  if (amount !== null && currency === null) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Validation failed', { [field]: ['A currency is required when an amount exists'] });
+  }
+}
+
+const money = (n: number | null | undefined): string | null | undefined => (n === undefined ? undefined : n === null ? null : n.toFixed(2));
+const sameMoney = (a: string | null, b: string | null) => (a === null || b === null ? a === b : Number(a).toFixed(2) === Number(b).toFixed(2));
+
+/** Stage after a signature/payment fact is removed: the other fact's stage, else the last pipeline stage. */
+async function stageWithout(ctx: CommandContext, d: DealRow, fact: 'signature' | 'payment'): Promise<DealStage> {
+  if (d.stage === 'signed_and_paid') return fact === 'signature' ? 'paid' : 'signed';
+  const last = await repo.latestPipelineStage(ctx.tx, d.id);
+  return last && isPipeline(last as DealStage) ? (last as DealStage) : 'accepted_opportunity';
+}
 
 async function result(ctx: CommandContext, d: DealRow): Promise<DealDto> {
   return toDealDto(ctx.tx, principalOf(ctx), d);
@@ -578,19 +653,60 @@ export async function assignDeveloper(ctx: CommandContext, id: string, body: { v
   return result(ctx, next);
 }
 
-export async function recordSignature(ctx: CommandContext, id: string, body: { version: number; date: string; reference: string }): Promise<DealDto> {
+/**
+ * D16 forward-only pipeline move (accepted → meeting scheduled → proposal sent; skips allowed). Owner or
+ * the assigned Developer. Repeating the current stage is a no-op; any backward move is 409.
+ * Signed / payment stages are reached by recording the facts, never by this command.
+ */
+export async function advanceStage(ctx: CommandContext, id: string, body: { version: number; to: AdvanceTarget }): Promise<DealDto> {
+  const d = await lockAndAuthorize(ctx, id, 'deal.update_stage');
+  assertOwnerOrAssignedDeveloper(ctx, d);
+  if (d.stage === body.to) return result(ctx, d);
+  if (!isOpen(d.stage)) throw stateConflict('Only an open deal can move forward');
+  if (STAGE_RANK[body.to] <= STAGE_RANK[d.stage]) {
+    throw stateConflict('A deal stage moves forward only', { from: d.stage, to: body.to });
+  }
+  await assertVersion(ctx, d, body.version);
+  const next = await save(ctx, d, { stage: body.to });
+  await repo.insertChange(ctx.tx, { dealId: d.id, type: 'stage_advanced', before: { stage: d.stage }, after: { stage: next.stage }, actorId: actorIdOf(ctx), now: ctx.now });
+  await audit(ctx, { eventName: 'deal.stage_advanced', entityType: 'deal', entityId: d.id, before: { stage: d.stage }, after: { stage: next.stage } });
+  return result(ctx, next);
+}
+
+/**
+ * D16 contract amount on an open deal (Owner or the assigned Developer). Distinct from the payment
+ * received; `null` clears it (missing). After verified closure only the Owner's financial correction changes it.
+ */
+export async function setContract(ctx: CommandContext, id: string, body: { version: number; amount: number | null; currency: string | null }): Promise<DealDto> {
+  const d = await lockAndAuthorize(ctx, id, 'deal.update_stage');
+  assertOwnerOrAssignedDeveloper(ctx, d);
+  if (!isOpen(d.stage)) throw stateConflict('The contract amount of a closed deal changes only through an Owner financial correction');
+  const amount = money(body.amount) ?? null;
+  if (sameMoney(d.contract_amount, amount) && d.contract_currency === body.currency) return result(ctx, d);
+  await assertVersion(ctx, d, body.version);
+  await assertCurrency(ctx, body.currency, 'currency');
+  const next = await save(ctx, d, { contract_amount: amount, contract_currency: body.currency });
+  const before = { contractAmount: d.contract_amount, contractCurrency: d.contract_currency };
+  const after = { contractAmount: next.contract_amount, contractCurrency: next.contract_currency };
+  await repo.insertChange(ctx.tx, { dealId: d.id, type: 'contract_updated', before, after, actorId: actorIdOf(ctx), now: ctx.now });
+  await audit(ctx, { eventName: 'deal.contract_updated', entityType: 'deal', entityId: d.id, before, after });
+  return result(ctx, next);
+}
+
+/** Records the agreement (D16 evidence = agreement reference; the signature date is optional). */
+export async function recordSignature(ctx: CommandContext, id: string, body: { version: number; date?: string; reference: string }): Promise<DealDto> {
   const d = await lockAndAuthorize(ctx, id, 'deal.record_signature');
   assertOwnerOrAssignedDeveloper(ctx, d);
-  if (d.signature_date) {
-    if (d.signature_date === body.date && d.signature_reference === body.reference) return result(ctx, d);
+  if (hasSignature(d)) {
+    if ((d.signature_date ?? null) === (body.date ?? null) && d.signature_reference === body.reference) return result(ctx, d);
     throw stateConflict('A signature is already recorded; the Owner can remove it first');
   }
-  if (d.stage !== 'accepted_opportunity' && d.stage !== 'paid') throw stateConflict();
+  if (!isPipeline(d.stage) && d.stage !== 'paid') throw stateConflict();
   await assertVersion(ctx, d, body.version);
   const stage: DealStage = d.stage === 'paid' ? 'signed_and_paid' : 'signed';
   const next = await save(ctx, d, {
     stage,
-    signature_date: body.date,
+    signature_date: body.date ?? null,
     signature_reference: body.reference,
     signature_recorded_by_id: actorIdOf(ctx),
     signature_recorded_at: ctx.now,
@@ -603,7 +719,7 @@ export async function recordSignature(ctx: CommandContext, id: string, body: { v
 export async function recordPayment(
   ctx: CommandContext,
   id: string,
-  body: { version: number; date: string; reference: string; amount?: number; currency?: string }
+  body: { version: number; date: string; reference?: string; amount?: number; currency?: string }
 ): Promise<DealDto> {
   const d = await lockAndAuthorize(ctx, id, 'deal.record_payment');
   assertOwnerOrAssignedDeveloper(ctx, d);
@@ -611,27 +727,21 @@ export async function recordPayment(
   if (d.payment_date) {
     const same =
       d.payment_date === body.date &&
-      d.payment_reference === body.reference &&
-      (d.payment_amount === null ? amount === null : Number(d.payment_amount).toFixed(2) === amount) &&
+      (d.payment_reference ?? null) === (body.reference ?? null) &&
+      sameMoney(d.payment_amount, amount) &&
       (d.payment_currency ?? null) === (body.currency ?? null);
     if (same) return result(ctx, d);
     throw stateConflict('A payment is already recorded; the Owner can remove it first');
   }
-  if (d.stage !== 'accepted_opportunity' && d.stage !== 'signed') throw stateConflict();
+  if (!isPipeline(d.stage) && d.stage !== 'signed') throw stateConflict();
   await assertVersion(ctx, d, body.version);
-  if (body.currency !== undefined) {
-    // DEC-018 (SET, NEEDS VALUE): an amount needs a configured currency list.
-    const currencies = await dealCurrencies(ctx.tx);
-    if (currencies.length === 0) throw policyNotConfigured('deals.currencies');
-    if (!currencies.includes(body.currency)) {
-      throw new HttpError(400, 'VALIDATION_ERROR', 'Validation failed', { currency: ['Currency is not in the configured list'] });
-    }
-  }
+  // DEC-018 (SET, NEEDS VALUE): an amount needs a configured currency list.
+  await assertCurrency(ctx, body.currency, 'currency');
   const stage: DealStage = d.stage === 'signed' ? 'signed_and_paid' : 'paid';
   const next = await save(ctx, d, {
     stage,
     payment_date: body.date,
-    payment_reference: body.reference,
+    payment_reference: body.reference ?? null,
     payment_amount: amount,
     payment_currency: body.currency ?? null,
     payment_recorded_by_id: actorIdOf(ctx),
@@ -647,12 +757,10 @@ export async function removeFact(ctx: CommandContext, id: string, body: { versio
   const d = await lockAndAuthorize(ctx, id, 'deal.update_stage');
   requireOwner(ctx);
   if (!isOpen(d.stage)) throw stateConflict('Facts can be removed only before closure');
-  const present = body.fact === 'signature' ? d.signature_date : d.payment_date;
+  const present = body.fact === 'signature' ? hasSignature(d) : Boolean(d.payment_date);
   if (!present) return result(ctx, d); // already removed: no-op
   await assertVersion(ctx, d, body.version);
-  let stage: DealStage;
-  if (body.fact === 'signature') stage = d.stage === 'signed_and_paid' ? 'paid' : 'accepted_opportunity';
-  else stage = d.stage === 'signed_and_paid' ? 'signed' : 'accepted_opportunity';
+  const stage = await stageWithout(ctx, d, body.fact);
   const set: Partial<Record<repo.DealColumn, unknown>> =
     body.fact === 'signature'
       ? { stage, signature_date: null, signature_reference: null, signature_recorded_by_id: null, signature_recorded_at: null }
@@ -665,13 +773,21 @@ export async function removeFact(ctx: CommandContext, id: string, body: { versio
   return result(ctx, next);
 }
 
-/** DEC-006 Alt B: the assigned Developer asks the Owner to verify (ownerVerify mode only). */
+/** 409 naming the D16 evidence still missing (agreement reference, payment date). */
+function assertClosureEvidence(d: DealRow): void {
+  if (!isOpen(d.stage)) throw stateConflict();
+  const missing = closureMissing(d);
+  if (missing.length > 0) throw stateConflict('The agreement reference and the payment date must be recorded first', { missing });
+}
+
+/**
+ * D16: the assigned Developer submits "payment received" for Owner verification once the agreement
+ * reference and the payment date are recorded. This never closes the deal.
+ */
 export async function requestClosureVerification(ctx: CommandContext, id: string, body: { version: number; note?: string }): Promise<DealDto> {
   const d = await lockAndAuthorize(ctx, id, 'deal.request_closure_verification');
-  const policy = deliveryPolicy();
-  if (policy.closureMode !== 'ownerVerify') throw stateConflict('Closure verification is not used in this closure mode');
-  if (!developerMayActOnDeal(principalOf(ctx), { assignedDeveloperId: d.assigned_developer_id }, policy)) throw permissionDenied();
-  if (d.stage !== 'signed_and_paid') throw stateConflict('Signature and payment must both be recorded first');
+  if (!developerMayActOnDeal(principalOf(ctx), { assignedDeveloperId: d.assigned_developer_id })) throw permissionDenied();
+  assertClosureEvidence(d);
   if (await repo.openReview(ctx.tx, d.id)) return result(ctx, d); // one open request: repeat is a no-op
   await assertVersion(ctx, d, body.version);
   const review = await repo.insertReview(ctx.tx, d.id, actorIdOf(ctx)!, body.note ?? null, ctx.now);
@@ -681,7 +797,9 @@ export async function requestClosureVerification(ctx: CommandContext, id: string
   return result(ctx, next);
 }
 
-async function closeDeal(ctx: CommandContext, d: DealRow, mode: 'ownerVerify' | 'direct', reviewId: string | null): Promise<DealRow> {
+/** Only Owner verification makes a deal commercially closed (D16); every closure is `ownerVerify`. */
+async function closeDeal(ctx: CommandContext, d: DealRow, reviewId: string | null): Promise<DealRow> {
+  const mode = 'ownerVerify' as const;
   const next = await save(ctx, d, { stage: 'closed', closed_at: ctx.now, closed_by_id: actorIdOf(ctx), closure_mode: mode });
   await repo.insertChange(ctx.tx, { dealId: d.id, type: 'closed', before: factsOf(d), after: { ...factsOf(next), closureMode: mode }, actorId: actorIdOf(ctx), now: ctx.now });
   await audit(ctx, {
@@ -697,25 +815,23 @@ async function closeDeal(ctx: CommandContext, d: DealRow, mode: 'ownerVerify' | 
   return next;
 }
 
-/** DEC-006 Alt B: the Owner verifies the open request AND finalizes in one transaction. */
+/** The Owner verifies the open "payment received" request AND closes in one transaction. */
 export async function verifyClosure(ctx: CommandContext, id: string, body: { version: number }): Promise<DealDto> {
   const d = await lockAndAuthorize(ctx, id, 'deal.verify_closure');
   requireOwner(ctx);
-  if (deliveryPolicy().closureMode !== 'ownerVerify') throw stateConflict('Closure verification is not used in this closure mode');
   if (d.stage === 'closed') return result(ctx, d);
-  if (d.stage !== 'signed_and_paid') throw stateConflict('Signature and payment must both be recorded first');
+  assertClosureEvidence(d);
   const review = await repo.openReview(ctx.tx, d.id);
   if (!review) throw stateConflict('No closure verification is requested; use Finalize');
   await assertVersion(ctx, d, body.version);
   await repo.decideReview(ctx.tx, review.id, 'verified', actorIdOf(ctx)!, null, ctx.now);
-  return result(ctx, await closeDeal(ctx, d, 'ownerVerify', review.id));
+  return result(ctx, await closeDeal(ctx, d, review.id));
 }
 
 export async function rejectClosure(ctx: CommandContext, id: string, body: { version: number; reason: string }): Promise<DealDto> {
   const d = await lockAndAuthorize(ctx, id, 'deal.reject_closure');
   requireOwner(ctx);
-  if (deliveryPolicy().closureMode !== 'ownerVerify') throw stateConflict('Closure verification is not used in this closure mode');
-  if (d.stage !== 'signed_and_paid') throw stateConflict();
+  if (!isOpen(d.stage)) throw stateConflict();
   const review = await repo.openReview(ctx.tx, d.id);
   if (!review) {
     const latest = await repo.latestReview(ctx.tx, d.id);
@@ -732,26 +848,64 @@ export async function rejectClosure(ctx: CommandContext, id: string, body: { ver
 }
 
 /**
- * Finalize (SEQ-14). Owner in both modes ("Owner may finalize directly"). The assigned Developer only
- * when `deals.closureMode = direct` (DEC-006 Alt A) and DEC-005 = assigned; otherwise 403.
+ * Finalize (SEQ-14). Owner only: "The Owner may record and verify closure directly" (D16). An open
+ * Developer request is marked verified in the same transaction. A Developer never closes a deal.
  */
 export async function finalize(ctx: CommandContext, id: string, body: { version: number }): Promise<DealDto> {
-  const role = roleOf(ctx);
-  const d = await lockAndAuthorize(ctx, id, role === 'owner' ? 'deal.finalize' : 'deal.update_stage');
-  const policy = deliveryPolicy();
-  if (role !== 'owner') {
-    if (policy.closureMode !== 'direct') throw permissionDenied();
-    if (!developerMayActOnDeal(principalOf(ctx), { assignedDeveloperId: d.assigned_developer_id }, policy)) throw permissionDenied();
-  }
+  const d = await lockAndAuthorize(ctx, id, 'deal.finalize');
+  requireOwner(ctx);
   if (d.stage === 'closed') return result(ctx, d);
-  if (d.stage !== 'signed_and_paid') {
-    const missing = [!d.signature_date ? 'signature' : null, !d.payment_date ? 'payment' : null].filter(Boolean);
-    throw stateConflict('Signature and payment must both be recorded first', { missing });
-  }
+  assertClosureEvidence(d);
   await assertVersion(ctx, d, body.version);
   const review = await repo.openReview(ctx.tx, d.id);
   if (review) await repo.decideReview(ctx.tx, review.id, 'verified', actorIdOf(ctx)!, null, ctx.now);
-  return result(ctx, await closeDeal(ctx, d, policy.closureMode, review?.id ?? null));
+  return result(ctx, await closeDeal(ctx, d, review?.id ?? null));
+}
+
+/**
+ * D16 "Owner controls verified financial changes": the Owner corrects the financial facts of a verified
+ * closed deal with a reason. Prior values are kept in deal_changes (`financial_corrected`) and the audit
+ * event. The closure evidence can be corrected, never removed; currency stays required with an amount.
+ */
+export async function correctFinancials(ctx: CommandContext, id: string, body: FinancialCorrectionInput): Promise<DealDto> {
+  const d = await lockAndAuthorize(ctx, id, 'deal.finalize');
+  requireOwner(ctx);
+  if (d.stage !== 'closed') throw stateConflict('Only a verified closed deal is corrected here; before closure the facts are recorded or removed');
+  const set: Partial<Record<repo.DealColumn, unknown>> = {};
+  const change = (col: repo.DealColumn, value: unknown, current: unknown) => {
+    if (value !== undefined && value !== current) set[col] = value;
+  };
+  change('signature_reference', body.agreementReference, d.signature_reference);
+  change('signature_date', body.signatureDate, d.signature_date);
+  change('payment_date', body.paymentDate, d.payment_date);
+  change('payment_reference', body.paymentReference, d.payment_reference);
+  change('payment_currency', body.paymentCurrency, d.payment_currency);
+  change('contract_currency', body.contractCurrency, d.contract_currency);
+  const pay = money(body.paymentAmount);
+  if (pay !== undefined && !sameMoney(pay, d.payment_amount)) set.payment_amount = pay;
+  const contract = money(body.contractAmount);
+  if (contract !== undefined && !sameMoney(contract, d.contract_amount)) set.contract_amount = contract;
+  if (Object.keys(set).length === 0) return result(ctx, d); // nothing differs: no-op
+  await assertVersion(ctx, d, body.version);
+  const pick = <T>(col: repo.DealColumn, current: T): T => (col in set ? (set[col] as T) : current);
+  assertAmountCurrency(pick('payment_amount', d.payment_amount), pick('payment_currency', d.payment_currency), 'paymentCurrency');
+  assertAmountCurrency(pick('contract_amount', d.contract_amount), pick('contract_currency', d.contract_currency), 'contractCurrency');
+  if ('payment_currency' in set) await assertCurrency(ctx, set.payment_currency as string | null, 'paymentCurrency');
+  if ('contract_currency' in set) await assertCurrency(ctx, set.contract_currency as string | null, 'contractCurrency');
+  const next = await save(ctx, d, set);
+  const before = financialsOf(d);
+  const after = financialsOf(next);
+  await repo.insertChange(ctx.tx, { dealId: d.id, type: 'financial_corrected', before, after, reason: body.reason, actorId: actorIdOf(ctx), now: ctx.now });
+  await audit(ctx, {
+    eventName: 'deal.financial_corrected',
+    entityType: 'deal',
+    entityId: d.id,
+    before,
+    after,
+    reason: body.reason,
+    payload: { fields: Object.keys(set) },
+  });
+  return result(ctx, next);
 }
 
 export async function markNotProceeding(ctx: CommandContext, id: string, body: { version: number; reason: string }): Promise<DealDto> {
@@ -811,7 +965,15 @@ export async function reopenNotProceeding(ctx: CommandContext, id: string, body:
       payment_recorded_at: null,
     });
   } else {
-    set.stage = d.signature_date && d.payment_date ? 'signed_and_paid' : d.signature_date ? 'signed' : d.payment_date ? 'paid' : 'accepted_opportunity';
+    const signed = hasSignature(d);
+    if (signed && d.payment_date) set.stage = 'signed_and_paid';
+    else if (signed) set.stage = 'signed';
+    else if (d.payment_date) set.stage = 'paid';
+    else {
+      // D16: no fact recorded → the last pipeline stage the deal held (meeting scheduled / proposal sent).
+      const last = await repo.latestPipelineStage(ctx.tx, d.id);
+      set.stage = last && isPipeline(last as DealStage) ? last : 'accepted_opportunity';
+    }
   }
   const before = { ...factsOf(d), notProceedingReason: d.not_proceeding_reason, notProceedingAt: iso(d.not_proceeding_at) };
   const next = await save(ctx, d, set);

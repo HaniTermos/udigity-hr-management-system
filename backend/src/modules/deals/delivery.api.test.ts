@@ -24,6 +24,9 @@ import { clock } from '../platform/clock.js';
 import { relayOutboxOnce, runDueJobs } from '../platform/service.js';
 import { setProvisioningFaultForTests } from '../projects/service.js';
 import { HttpError } from '../../shared/errors.js';
+import { loadPolicyFlags } from '../../shared/flags.js';
+import { queryExportRows } from '../reports/repo.js';
+import { formatAsCsv } from '../reports/service.js';
 import { createAcceptedOpportunity, findNotProceedingDeal, findOpenDeal, listOpportunities, setDeliveryPolicyForTests, type DeliveryPolicy } from './service.js';
 
 const hasTestDb = Boolean(process.env.TEST_DATABASE_URL);
@@ -172,15 +175,14 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
     expect(s.body.deal.stage).toBe('signed_and_paid');
   }
 
+  /** D16: the Developer records the facts, only the Owner closes (verification). */
   async function closedDealWithProject(): Promise<{ dealId: string; projectId: string; businessId: string }> {
-    policy({ closureMode: 'direct' });
     const { dealId, businessId } = await newDeal();
     await recordBothFacts(dv, dealId);
-    expect((await cmd(dv, dealId, 'finalize')).status).toBe(200);
+    expect((await cmd(owner, dealId, 'finalize')).status).toBe(200);
     await relayAll();
     const { rows } = await query<{ id: string }>('SELECT id FROM projects WHERE deal_id = $1', [dealId]);
     expect(rows).toHaveLength(1);
-    policy({});
     return { dealId, projectId: rows[0].id, businessId };
   }
 
@@ -214,8 +216,8 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
     const v = { version: 1 };
     type Row = { method: 'get' | 'post' | 'patch'; path: string; allowed: Role[]; body?: object };
     const rows: Row[] = [
-      { method: 'get', path: '/api/deals', allowed: ['owner', 'call_center', 'developer'] },
-      { method: 'get', path: `/api/deals/${X}`, allowed: ['owner', 'call_center', 'developer'] },
+      { method: 'get', path: '/api/deals', allowed: ['owner', 'developer'] }, // D15 (approved): no CC deal access,
+      { method: 'get', path: `/api/deals/${X}`, allowed: ['owner', 'developer'] },
       { method: 'post', path: `/api/deals/${X}/developer`, allowed: ['owner', 'call_center'], body: { ...v, developerId: X } },
       { method: 'get', path: '/api/deals/developers', allowed: ['owner', 'call_center'] }, // BL-11
       { method: 'post', path: `/api/deals/${X}/signature`, allowed: ['owner', 'developer'], body: { ...v, date: '2026-10-01', reference: 'R' } },
@@ -224,7 +226,11 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
       { method: 'post', path: `/api/deals/${X}/closure-request`, allowed: ['developer'], body: v },
       { method: 'post', path: `/api/deals/${X}/closure-verify`, allowed: ['owner'], body: v },
       { method: 'post', path: `/api/deals/${X}/closure-reject`, allowed: ['owner'], body: { ...v, reason: 'missing' } },
-      { method: 'post', path: `/api/deals/${X}/finalize`, allowed: ['owner', 'developer'], body: v },
+      // D16: only Owner verification closes (Developer finalize retired with `deals.closureMode=direct`).
+      { method: 'post', path: `/api/deals/${X}/finalize`, allowed: ['owner'], body: v },
+      { method: 'post', path: `/api/deals/${X}/advance-stage`, allowed: ['owner', 'developer'], body: { ...v, to: 'proposal_sent' } },
+      { method: 'post', path: `/api/deals/${X}/contract`, allowed: ['owner', 'developer'], body: { ...v, amount: null, currency: null } },
+      { method: 'post', path: `/api/deals/${X}/financial-correction`, allowed: ['owner'], body: { ...v, reason: 'Typo in reference' } },
       { method: 'post', path: `/api/deals/${X}/not-proceeding`, allowed: ['owner', 'developer'], body: { ...v, reason: 'client left' } },
       { method: 'post', path: `/api/deals/${X}/reopen`, allowed: ['owner'], body: { ...v, reason: 'client back' } },
       { method: 'get', path: `/api/meetings?dealId=${X}`, allowed: ['owner', 'call_center', 'developer'] },
@@ -239,6 +245,7 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
       { method: 'patch', path: `/api/projects/${X}`, allowed: ['owner', 'developer'], body: { ...v, name: 'n' } },
       { method: 'post', path: `/api/projects/${X}/status`, allowed: ['owner', 'developer'], body: { ...v, to: 'in_progress' } },
       { method: 'post', path: `/api/projects/${X}/reopen`, allowed: ['owner'], body: { ...v, reason: 'rework' } },
+      { method: 'post', path: `/api/projects/${X}/cancel`, allowed: ['owner'], body: { ...v, reason: 'Client withdrew' } },
       { method: 'post', path: `/api/projects/${X}/developers`, allowed: ['owner'], body: { ...v, developerIds: [] } },
       { method: 'post', path: `/api/projects/${X}/provision-retry`, allowed: ['owner'], body: {} },
       { method: 'get', path: `/api/tasks?projectId=${X}`, allowed: ['owner', 'developer'] },
@@ -270,7 +277,13 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
     });
 
     it('admin-only commands need a completed Owner 2FA session', async () => {
-      for (const path of [`/api/deals/${X}/closure-verify`, `/api/deals/${X}/reopen`, `/api/projects/${X}/provision-retry`]) {
+      for (const path of [
+        `/api/deals/${X}/closure-verify`,
+        `/api/deals/${X}/reopen`,
+        `/api/projects/${X}/provision-retry`,
+        `/api/deals/${X}/financial-correction`,
+        `/api/projects/${X}/cancel`,
+      ]) {
         const res = await call(pendingOwner, 'post', path, { ...v, reason: 'because' });
         expect(res.status).toBe(403);
         expect(res.body.code).toBe('OWNER_2FA_REQUIRED');
@@ -317,23 +330,22 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
   // SEQ-14 under both DEC-006 modes
   // -------------------------------------------------------------------------------------------
   describe('SEQ-14 closure + provisioning', () => {
-    it('direct (Alt A): the assigned Developer finalizes; missing fact named; project auto-provisioned once', async () => {
-      policy({ closureMode: 'direct' });
+    // Changed by the approved D16 policy: was "direct (Alt A): the assigned Developer finalizes".
+    it('D16: the Owner records and verifies directly; missing evidence named; project auto-provisioned once', async () => {
       const { dealId } = await newDeal();
-      const early = await cmd(dv, dealId, 'finalize');
+      const early = await cmd(owner, dealId, 'finalize');
       expect(early.status).toBe(409);
-      expect(early.body.details).toEqual({ missing: ['signature', 'payment'] });
+      expect(early.body.details).toEqual({ missing: ['agreementReference', 'paymentDate'] });
       await recordBothFacts(dv, dealId);
-      expect((await cmd(dv, dealId, 'closure-request')).body.code).toBe('STATE_CONFLICT');
-      const stale = await call(dv, 'post', `/api/deals/${dealId}/finalize`, { version: 1 });
+      const stale = await call(owner, 'post', `/api/deals/${dealId}/finalize`, { version: 1 });
       expect(stale.status).toBe(409);
       expect(stale.body.code).toBe('VERSION_CONFLICT');
-      const fin = await cmd(dv, dealId, 'finalize');
+      const fin = await cmd(owner, dealId, 'finalize');
       expect(fin.status).toBe(200);
       expect(fin.body.deal.stage).toBe('closed');
-      expect(fin.body.deal.closure.mode).toBe('direct');
+      expect(fin.body.deal.closure.mode).toBe('ownerVerify');
       expect(fin.body.deal.projectProvisioning).toBe('pending');
-      expect((await cmd(dv, dealId, 'finalize')).status).toBe(200); // repeat = no-op
+      expect((await cmd(owner, dealId, 'finalize')).status).toBe(200); // repeat = no-op
       expect(await outboxCount('deal.closed', dealId)).toBe(1);
       expect(await auditCount('deal.closed', dealId)).toBe(1);
       await relayAll();
@@ -348,12 +360,13 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
       expect(d.body.deal.projectId).toBe(rows[0].id);
     });
 
-    it('ownerVerify (Alt B, default): Developer finalize denied; request → reject (reason) → request → verify closes', async () => {
+    it('ownerVerify: Developer finalize denied; request → reject (reason) → request → verify closes', async () => {
       const { dealId } = await newDeal();
       await recordBothFacts(dv, dealId);
       const denied = await cmd(dv, dealId, 'finalize');
       expect(denied.status).toBe(403);
-      expect(denied.body.code).toBe('PERMISSION_DENIED');
+      // Changed by D16: the finalize route is Owner-only now (was PERMISSION_DENIED from the service).
+      expect(denied.body.code).toBe('FORBIDDEN_ROLE');
       const req1 = await cmd(dv, dealId, 'closure-request', { note: 'All set' });
       expect(req1.status).toBe(200);
       expect(req1.body.deal.openClosureReview.status).toBe('requested');
@@ -376,11 +389,11 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
       expect(await count('SELECT COUNT(*)::text AS n FROM projects WHERE deal_id = $1', [dealId])).toBe(1);
     });
 
-    it('ownerVerify: the Owner may finalize directly without a request; direct mode refuses verify/reject', async () => {
+    // Changed by D16: the `direct` closure mode branch is retired (no Developer finalization at all).
+    it('the Owner may finalize directly without a request; verify/reject need an open request', async () => {
       const { dealId } = await newDeal();
       await recordBothFacts(owner, dealId);
       expect((await cmd(owner, dealId, 'finalize')).body.deal.stage).toBe('closed');
-      policy({ closureMode: 'direct' });
       const { dealId: d2 } = await newDeal();
       await recordBothFacts(dv, d2);
       expect((await cmd(owner, d2, 'closure-verify')).body.code).toBe('STATE_CONFLICT');
@@ -388,13 +401,12 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
     });
 
     it('F2 auto: provisioning failure keeps the closure, records E-15, J-07 retries with backoff; Owner retry works', async () => {
-      policy({ closureMode: 'direct' });
       const { dealId } = await newDeal();
       await recordBothFacts(dv, dealId);
       setProvisioningFaultForTests((id) => {
         if (id === dealId) throw new Error('simulated');
       });
-      expect((await cmd(dv, dealId, 'finalize')).status).toBe(200);
+      expect((await cmd(owner, dealId, 'finalize')).status).toBe(200);
       await relayAll();
       expect(await count('SELECT COUNT(*)::text AS n FROM projects WHERE deal_id = $1', [dealId])).toBe(0);
       const { rows: st } = await query<{ attempts: number; last_error_code: string; next_attempt_at: Date }>(
@@ -424,7 +436,7 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
       setProvisioningFaultForTests((id) => {
         if (id === d2) throw new Error('simulated');
       });
-      await cmd(dv, d2, 'finalize');
+      await cmd(owner, d2, 'finalize');
       await relayAll();
       const failed = await call(owner, 'post', `/api/projects/${d2}/provision-retry`, {});
       expect(failed.status).toBe(200);
@@ -438,10 +450,10 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
     });
 
     it('F2 manual: no auto project, no J-07; Owner/assigned Developer create once; auto mode refuses manual create', async () => {
-      policy({ closureMode: 'direct', autoProvision: false });
+      policy({ autoProvision: false });
       const { dealId } = await newDeal();
       await recordBothFacts(dv, dealId);
-      await cmd(dv, dealId, 'finalize');
+      await cmd(owner, dealId, 'finalize');
       await relayAll();
       expect(await count('SELECT COUNT(*)::text AS n FROM projects WHERE deal_id = $1', [dealId])).toBe(0);
       expect(await count(`SELECT COUNT(*)::text AS n FROM background_jobs WHERE kind = 'projects.provision_retry' AND payload->>'dealId' = $1`, [dealId])).toBe(0);
@@ -478,7 +490,7 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
     });
 
     it('closedOnly: the Developer sees only closed deals, cannot record facts or schedule; the Owner records', async () => {
-      policy({ developerPreClosure: 'closedOnly', closureMode: 'direct' });
+      policy({ developerPreClosure: 'closedOnly' });
       const { dealId } = await newDeal();
       expect((await getDeal(dv, dealId)).status).toBe(403);
       expect((await cmd(dv, dealId, 'signature', { date: '2026-10-01', reference: 'X' })).body.code).toBe('PERMISSION_DENIED');
@@ -487,7 +499,7 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
       const list = await call(dv, 'get', '/api/deals?pageSize=100');
       expect(list.body.items.map((d: { id: string }) => d.id)).not.toContain(dealId);
       await recordBothFacts(owner, dealId);
-      expect((await cmd(dv, dealId, 'finalize')).body.code).toBe('PERMISSION_DENIED');
+      expect((await cmd(dv, dealId, 'finalize')).body.code).toBe('FORBIDDEN_ROLE'); // D16: Owner-only route
       expect((await cmd(owner, dealId, 'finalize')).status).toBe(200);
       const after = await getDeal(dv, dealId);
       expect(after.status).toBe(200);
@@ -578,6 +590,24 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
       expect(r.body.code).toBe('POLICY_NOT_CONFIGURED');
     });
 
+    it('D15 (BE2): relevant call notes — assigned Developer and Owner read them; other Developer, CC, DE refused', async () => {
+      const { businessId, dealId } = await newDeal();
+      await query(
+        `INSERT INTO call_attempts (business_id, agent_id, outcome, notes, client_needs_note, service_interest, idempotency_key)
+         VALUES ($1, $2, 'needs_another_call', 'Owner wants a call back on Monday', 'Booking portal for 3 branches', 'web', $3)`,
+        [businessId, cc.id, crypto.randomUUID()]
+      );
+      const mine = await call(dv, 'get', `/api/deals/${dealId}/call-notes`);
+      expect(mine.status).toBe(200);
+      expect(mine.body.items.map((i: { notes: string | null }) => i.notes)).toContain('Owner wants a call back on Monday');
+      for (const item of mine.body.items) {
+        expect(Object.keys(item).sort()).toEqual(['attemptId', 'attemptedAt', 'clientNeedsNote', 'notes', 'outcome', 'serviceInterest']);
+      }
+      expect((await call(owner, 'get', `/api/deals/${dealId}/call-notes`)).status).toBe(200);
+      expect((await call(dv2, 'get', `/api/deals/${dealId}/call-notes`)).status).toBe(403);
+      for (const a of [cc, de]) expect((await call(a, 'get', `/api/deals/${dealId}/call-notes`)).body.code).toBe('FORBIDDEN_ROLE');
+    });
+
     it('Call Center assigns a Developer on its business; leakage: another CC neither reads nor lists it', async () => {
       const { dealId } = await newDeal({ developer: null });
       const a = await cmd(cc, dealId, 'developer', { developerId: dv2.id });
@@ -585,8 +615,11 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
       expect(a.body.deal.assignedDeveloperId).toBe(dv2.id);
       expect(await outboxCount('opportunity.developer_assigned', dealId)).toBe(1);
       expect((await getDeal(cc2, dealId)).status).toBe(403);
+      // Changed expectation (approved D15): Call Center has no deal read at all (was: an empty filtered list).
       const l = await call(cc2, 'get', '/api/deals?pageSize=100');
-      expect(l.body.items.map((d: { id: string }) => d.id)).not.toContain(dealId);
+      expect(l.status).toBe(403);
+      expect(l.body.code).toBe('FORBIDDEN_ROLE');
+      expect((await getDeal(cc, dealId)).body.code).toBe('FORBIDDEN_ROLE');
       expect((await getDeal(de, dealId)).body.code).toBe('FORBIDDEN_ROLE');
     });
   });
@@ -739,6 +772,252 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
       const tasks = await call(dv, 'get', `/api/tasks?projectId=${projectId}`);
       expect(tasks.body.items).toHaveLength(1);
       expect((await call(cc, 'get', `/api/tasks?projectId=${projectId}`)).body.code).toBe('FORBIDDEN_ROLE');
+    });
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // Approved v1 policy (docs/policy-baseline-2026-10-29.md §D16, §D17)
+  // -------------------------------------------------------------------------------------------
+  describe('D16 commercial progression and financial governance', () => {
+    /** Runs `fn` with `deals.currencies` = [USD] saved, then restores the empty list (DEC-018 test). */
+    async function withCurrencies(fn: () => Promise<void>): Promise<void> {
+      await query(`UPDATE company_settings SET "values" = "values" || '{"deals.currencies":["USD"]}'::jsonb WHERE id = 1`);
+      try {
+        await fn();
+      } finally {
+        await query(`UPDATE company_settings SET "values" = "values" - 'deals.currencies' WHERE id = 1`);
+      }
+    }
+    const history = async (id: string) => (await call(owner, 'get', `/api/deals/${id}/history`)).body.items as { type: string; before: Record<string, unknown>; after: Record<string, unknown>; reason: string | null }[];
+
+    it('advance-stage: forward with skips, repeat is a no-op, backward refused; history + audit; other Developer denied', async () => {
+      const { dealId } = await newDeal();
+      const d0 = (await getDeal(dv, dealId)).body.deal;
+      expect(d0.allowed).toMatchObject({ advanceStage: true, advanceTargets: ['meeting_scheduled', 'proposal_sent'] });
+      expect((await cmd(dv2, dealId, 'advance-stage', { to: 'meeting_scheduled' })).status).toBe(403);
+      expect((await cmd(cc, dealId, 'advance-stage', { to: 'meeting_scheduled' })).body.code).toBe('FORBIDDEN_ROLE');
+      const m = await cmd(dv, dealId, 'advance-stage', { to: 'meeting_scheduled' });
+      expect(m.status).toBe(200);
+      expect(m.body.deal.stage).toBe('meeting_scheduled');
+      expect(m.body.deal.allowed.advanceTargets).toEqual(['proposal_sent']);
+      expect((await cmd(dv, dealId, 'advance-stage', { to: 'meeting_scheduled' })).status).toBe(200); // no-op
+      expect((await cmd(owner, dealId, 'advance-stage', { to: 'proposal_sent' })).body.deal.stage).toBe('proposal_sent');
+      const back = await cmd(dv, dealId, 'advance-stage', { to: 'meeting_scheduled' });
+      expect(back.status).toBe(409);
+      expect(back.body.code).toBe('STATE_CONFLICT');
+      expect(back.body.details).toEqual({ from: 'proposal_sent', to: 'meeting_scheduled' });
+      expect((await cmd(dv, dealId, 'advance-stage', { to: 'signed' })).status).toBe(400); // facts, not a move
+      const moves = (await history(dealId)).filter((h) => h.type === 'stage_advanced');
+      expect(moves.map((h) => [h.before.stage, h.after.stage])).toEqual([
+        ['accepted_opportunity', 'meeting_scheduled'],
+        ['meeting_scheduled', 'proposal_sent'],
+      ]);
+      expect(await auditCount('deal.stage_advanced', dealId)).toBe(2);
+      // Recording a fact moves forward from any pipeline stage; a later move back to the pipeline is refused.
+      const signed = await cmd(dv, dealId, 'signature', { reference: 'AGR-77' });
+      expect(signed.body.deal).toMatchObject({ stage: 'signed', facts: { signature: { date: null, reference: 'AGR-77' } } });
+      expect((await cmd(owner, dealId, 'advance-stage', { to: 'proposal_sent' })).status).toBe(409);
+      // Owner removes the signature: the deal returns to the pipeline stage it held, not to Accepted.
+      const removed = await cmd(owner, dealId, 'remove-fact', { fact: 'signature', reason: 'Wrong agreement' });
+      expect(removed.body.deal.stage).toBe('proposal_sent');
+    });
+
+    it('new stages are open stages (meetings can be scheduled); lost with a reason from any non-closed stage', async () => {
+      const { dealId } = await newDeal();
+      await cmd(dv, dealId, 'advance-stage', { to: 'meeting_scheduled' });
+      const m = await call(cc, 'post', '/api/meetings', { dealId, title: 'Discovery', startsAt: '2030-04-01T10:00:00Z', attendeeIds: [cc.id, dv.id] });
+      expect(m.status).toBe(201);
+      const list = await call(owner, 'get', '/api/deals?tab=accepted&needsAttention=developer_not_assigned&pageSize=100');
+      expect(list.status).toBe(200);
+      expect((await call(owner, 'get', `/api/deals?tab=accepted&pageSize=100`)).body.items.map((d: { id: string }) => d.id)).toContain(dealId);
+      expect((await cmd(dv, dealId, 'not-proceeding', {})).status).toBe(400); // reason required
+      const lost = await cmd(dv, dealId, 'not-proceeding', { reason: 'Client chose another vendor' });
+      expect(lost.body.deal).toMatchObject({ stage: 'not_proceeding', notProceeding: { reason: 'Client chose another vendor' } });
+    });
+
+    it('closure evidence = agreement reference + payment date; signature date and payment reference optional', async () => {
+      const { dealId } = await newDeal();
+      const paid = await cmd(dv, dealId, 'payment', { date: '2026-10-22' }); // no payment reference
+      expect(paid.body.deal).toMatchObject({ stage: 'paid', closureMissing: ['agreementReference'], facts: { payment: { date: '2026-10-22', reference: null } } });
+      const early = await cmd(dv, dealId, 'closure-request');
+      expect(early.status).toBe(409);
+      expect(early.body.details).toEqual({ missing: ['agreementReference'] });
+      expect((await cmd(dv, dealId, 'signature', { date: '2026-10-22' })).status).toBe(400); // reference required
+      const signed = await cmd(dv, dealId, 'signature', { reference: 'AGR-NO-DATE' }); // no signature date
+      expect(signed.body.deal).toMatchObject({ stage: 'signed_and_paid', closureMissing: [] });
+      expect(signed.body.deal.allowed).toMatchObject({ requestClosureVerification: true, finalize: false });
+      const req1 = await cmd(dv, dealId, 'closure-request', { note: 'Deposit received' });
+      expect(req1.status).toBe(200);
+      expect(req1.body.deal.stage).toBe('signed_and_paid'); // "Payment pending verification": not closed
+      expect(req1.body.deal.openClosureReview.status).toBe('requested');
+      const ver = await cmd(owner, dealId, 'closure-verify');
+      expect(ver.body.deal).toMatchObject({ stage: 'closed', facts: { signature: { date: null }, payment: { reference: null } } });
+    });
+
+    it('a Developer cannot close: finalize is Owner-only and `deals.closureMode=direct` is no longer accepted', async () => {
+      const { dealId } = await newDeal();
+      await recordBothFacts(dv, dealId);
+      const r = await cmd(dv, dealId, 'finalize');
+      expect(r.status).toBe(403);
+      expect(r.body.code).toBe('FORBIDDEN_ROLE');
+      expect((await getDeal(dv, dealId)).body.deal).toMatchObject({ stage: 'signed_and_paid', allowed: { finalize: false, verifyClosure: false } });
+      expect(() => loadPolicyFlags({ POLICY_DEALS_CLOSURE_MODE: 'direct' })).toThrow();
+    });
+
+    it('contract amount: set on an open deal (currency required with an amount), missing ≠ zero, frozen after closure', async () => {
+      const { dealId } = await newDeal();
+      expect((await getDeal(dv, dealId)).body.deal.contract).toEqual({ amount: null, currency: null });
+      expect((await cmd(dv, dealId, 'contract', { amount: 1200, currency: null })).status).toBe(400);
+      expect((await cmd(dv, dealId, 'contract', { amount: 1200, currency: 'USD' })).body.code).toBe('POLICY_NOT_CONFIGURED');
+      await withCurrencies(async () => {
+        const set = await cmd(dv, dealId, 'contract', { amount: 1200, currency: 'usd' });
+        expect(set.status).toBe(200);
+        expect(set.body.deal.contract).toEqual({ amount: '1200.00', currency: 'USD' });
+        expect((await cmd(dv, dealId, 'contract', { amount: 1200, currency: 'USD' })).status).toBe(200); // no-op
+        expect(await auditCount('deal.contract_updated', dealId)).toBe(1);
+        await recordBothFacts(dv, dealId);
+        await cmd(owner, dealId, 'finalize');
+        // The Developer may no longer even read the closed deal (access rules); either way nothing changes.
+        expect((await cmd(dv, dealId, 'contract', { amount: 1500, currency: 'USD' })).status).not.toBe(200);
+        expect((await cmd(owner, dealId, 'contract', { amount: 1500, currency: 'USD' })).body.code).toBe('STATE_CONFLICT');
+        expect((await getDeal(owner, dealId)).body.deal.contract).toEqual({ amount: '1200.00', currency: 'USD' });
+      });
+    });
+
+    it('Owner financial correction on a verified closed deal: reason, before/after kept, audited; evidence never removed', async () => {
+      const { dealId } = await newDeal();
+      await recordBothFacts(dv, dealId);
+      expect((await cmd(owner, dealId, 'financial-correction', { reason: 'Too early', paymentReference: 'X' })).body.code).toBe('STATE_CONFLICT'); // open deal
+      await cmd(owner, dealId, 'finalize');
+      expect((await cmd(dv, dealId, 'financial-correction', { reason: 'Wrong ref', agreementReference: 'AGR-2' })).body.code).toBe('FORBIDDEN_ROLE');
+      expect((await cmd(owner, dealId, 'financial-correction', { agreementReference: 'AGR-2' })).status).toBe(400); // reason required
+      expect((await cmd(owner, dealId, 'financial-correction', { reason: 'Remove evidence', agreementReference: null })).status).toBe(400);
+      expect((await cmd(owner, dealId, 'financial-correction', { reason: 'Remove evidence', paymentDate: null })).status).toBe(400);
+      await withCurrencies(async () => {
+        const noCurrency = await cmd(owner, dealId, 'financial-correction', { reason: 'Amount known now', paymentAmount: 500 });
+        expect(noCurrency.status).toBe(400);
+        expect(noCurrency.body.details).toEqual({ paymentCurrency: ['A currency is required when an amount exists'] });
+        const fixed = await cmd(owner, dealId, 'financial-correction', {
+          reason: 'Agreement number was mistyped; deposit amount confirmed',
+          agreementReference: 'AGR-1-REV',
+          paymentAmount: 500,
+          paymentCurrency: 'USD',
+          contractAmount: 2000,
+          contractCurrency: 'USD',
+        });
+        expect(fixed.status).toBe(200);
+        expect(fixed.body.deal).toMatchObject({
+          stage: 'closed',
+          facts: { signature: { reference: 'AGR-1-REV' }, payment: { amount: '500.00', currency: 'USD' } },
+          contract: { amount: '2000.00', currency: 'USD' },
+        });
+        const same = await cmd(owner, dealId, 'financial-correction', { reason: 'Repeat', agreementReference: 'AGR-1-REV' });
+        expect(same.status).toBe(200); // nothing differs: no-op
+      });
+      const corr = (await history(dealId)).filter((h) => h.type === 'financial_corrected');
+      expect(corr).toHaveLength(1);
+      expect(corr[0].reason).toBe('Agreement number was mistyped; deposit amount confirmed');
+      expect(corr[0].before).toMatchObject({ agreementReference: 'AGR-1', paymentAmount: null, contractAmount: null });
+      expect(corr[0].after).toMatchObject({ agreementReference: 'AGR-1-REV', paymentAmount: '500.00', contractAmount: '2000.00' });
+      const { rows } = await query<{ before_state: Record<string, unknown>; after_state: Record<string, unknown>; reason: string }>(
+        `SELECT before_state, after_state, reason FROM audit_events WHERE event_name = 'deal.financial_corrected' AND entity_id = $1`,
+        [dealId]
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].before_state).toMatchObject({ agreementReference: 'AGR-1' });
+      expect(rows[0].after_state).toMatchObject({ agreementReference: 'AGR-1-REV' });
+    });
+
+    it('deals export: contract amount, payment received and explicit missing indicators (blank, never 0)', async () => {
+      const { dealId: missing } = await newDeal();
+      await recordBothFacts(dv, missing);
+      await cmd(owner, missing, 'finalize');
+      const { dealId: full } = await newDeal();
+      await withCurrencies(async () => {
+        await cmd(dv, full, 'contract', { amount: 3000, currency: 'USD' });
+        await cmd(dv, full, 'payment', { date: '2026-10-25', amount: 750, currency: 'USD' });
+      });
+      const rows = (await queryExportRows(pool, 'deals', {}, 100_000)) as Record<string, unknown>[];
+      const a = rows.find((r) => r.id === missing)!;
+      const b = rows.find((r) => r.id === full)!;
+      expect(a).toMatchObject({
+        agreement_reference: 'AGR-1',
+        contract_amount: null,
+        contract_amount_missing: true,
+        payment_received: true,
+        payment_received_amount: null,
+        payment_received_amount_missing: true,
+      });
+      expect(b).toMatchObject({
+        contract_amount: '3000.00',
+        contract_currency: 'USD',
+        contract_amount_missing: false,
+        payment_received_amount: '750.00',
+        payment_received_currency: 'USD',
+        payment_received_amount_missing: false,
+      });
+      const csv = formatAsCsv([a, b]).split('\r\n');
+      const header = csv[0].split(',');
+      const cell = (line: string, col: string) => line.split(',')[header.indexOf(col)];
+      expect(header).toEqual(expect.arrayContaining(['contract_amount', 'payment_received_amount', 'contract_amount_missing', 'payment_received_amount_missing']));
+      expect(cell(csv[1], 'contract_amount')).toBe('');
+      expect(cell(csv[1], 'payment_received_amount')).toBe('');
+      expect(cell(csv[1], 'contract_amount_missing')).toBe('true');
+      expect(cell(csv[2], 'contract_amount')).toBe('3000.00');
+      expect(cell(csv[2], 'payment_received_amount')).toBe('750.00');
+    });
+  });
+
+  describe('D17 project cancellation', () => {
+    async function project(id: string) {
+      return (await call(owner, 'get', `/api/projects/${id}`)).body.project;
+    }
+
+    it('Owner cancels with a reason; history preserved, audited, read-only, inactive in workload; Developer cannot', async () => {
+      const { projectId, dealId } = await closedDealWithProject();
+      let p = await project(projectId);
+      await call(owner, 'post', `/api/projects/${projectId}/developers`, { version: p.version, developerIds: [dv.id] });
+      p = await project(projectId);
+      const t = await call(dv, 'post', '/api/tasks', { projectId, title: 'Draft sitemap' });
+      expect(t.status).toBe(201);
+      expect(p.allowed.cancel).toBe(true);
+      expect((await call(dv, 'post', `/api/projects/${projectId}/cancel`, { version: p.version, reason: 'Client withdrew' })).body.code).toBe('FORBIDDEN_ROLE');
+      expect((await call(owner, 'post', `/api/projects/${projectId}/cancel`, { version: p.version })).status).toBe(400); // reason required
+      expect((await call(owner, 'post', `/api/projects/${projectId}/status`, { version: p.version, to: 'cancelled' })).status).toBe(400); // only the cancel command
+      const c = await call(owner, 'post', `/api/projects/${projectId}/cancel`, { version: p.version, reason: 'Client withdrew the project' });
+      expect(c.status).toBe(200);
+      expect(c.body.project).toMatchObject({ status: 'cancelled', cancelReason: 'Client withdrew the project', readOnly: true, allowedNextStatuses: [] });
+      expect(c.body.project.allowed).toMatchObject({ cancel: false, reopen: false, changeStatus: false, createTask: false });
+      expect(c.body.project.cancelledAt).toEqual(expect.any(String));
+      expect((await call(owner, 'post', `/api/projects/${projectId}/cancel`, { version: c.body.project.version, reason: 'Client withdrew the project' })).status).toBe(200); // no-op
+      expect(await auditCount('project.cancelled', projectId)).toBe(1);
+      const last = c.body.project.history.at(-1);
+      expect(last).toMatchObject({ type: 'status_changed', note: 'Client withdrew the project', after: { status: 'cancelled', cancelled: true } });
+      expect(c.body.project.history.length).toBeGreaterThan(1); // earlier history kept
+      // Tasks and the deal are kept untouched; the project is final.
+      expect(await count('SELECT COUNT(*)::text AS n FROM tasks WHERE project_id = $1', [projectId])).toBe(1);
+      expect((await getDeal(owner, dealId)).body.deal.stage).toBe('closed');
+      expect((await call(owner, 'post', `/api/projects/${projectId}/status`, { version: c.body.project.version, to: 'in_progress' })).body.code).toBe('STATE_CONFLICT');
+      expect((await call(owner, 'post', '/api/tasks', { projectId, title: 'Late' })).body.code).toBe('STATE_CONFLICT');
+      expect((await call(dv, 'post', '/api/tasks', { projectId, title: 'Late' })).status).not.toBe(201);
+      expect((await call(owner, 'post', `/api/projects/${projectId}/reopen`, { version: c.body.project.version, reason: 'Back on' })).body.code).toBe('STATE_CONFLICT');
+      // Inactive: not counted as an active project or overdue, not an open item for the Developer.
+      const list = await call(owner, 'get', `/api/projects?status=cancelled&pageSize=100`);
+      expect(list.body.items.map((x: { id: string }) => x.id)).toContain(projectId);
+      expect(list.body.workload).toMatchObject({ activeProjects: 0, deliveryOverdue: 0, openTasks: 0 });
+      const byDeal = await call(owner, 'get', `/api/deals?projectStatus=cancelled&pageSize=100`);
+      expect(byDeal.body.items.map((x: { id: string }) => x.id)).toContain(dealId);
+    });
+
+    it('a completed project cannot be cancelled', async () => {
+      const { projectId } = await closedDealWithProject();
+      const p = await project(projectId);
+      const s1 = await call(owner, 'post', `/api/projects/${projectId}/status`, { version: p.version, to: 'in_progress' });
+      const s2 = await call(owner, 'post', `/api/projects/${projectId}/status`, { version: s1.body.project.version, to: 'delivered' });
+      const s3 = await call(owner, 'post', `/api/projects/${projectId}/status`, { version: s2.body.project.version, to: 'completed' });
+      expect(s3.body.project.status).toBe('completed');
+      expect(s3.body.project.allowed.cancel).toBe(false);
+      expect((await call(owner, 'post', `/api/projects/${projectId}/cancel`, { version: s3.body.project.version, reason: 'Too late' })).body.code).toBe('STATE_CONFLICT');
     });
   });
 });

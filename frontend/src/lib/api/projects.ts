@@ -15,6 +15,7 @@ export const projectsPaths = {
   detail: (id: string) => `/api/projects/${id}`,
   status: (id: string) => `/api/projects/${id}/status`,
   reopen: (id: string) => `/api/projects/${id}/reopen`,
+  cancel: (id: string) => `/api/projects/${id}/cancel`,
   developers: (id: string) => `/api/projects/${id}/developers`,
   /** `:id` is the DEAL id (the project does not exist yet). */
   provisionRetry: (dealId: string) => `/api/projects/${dealId}/provision-retry`,
@@ -22,14 +23,18 @@ export const projectsPaths = {
   task: (id: string) => `/api/tasks/${id}`,
 } as const;
 
-/** DEC-019 (Proposed): project statuses. Separate from task statuses. */
+/**
+ * Stored project statuses (D17 labels: Not started, In progress (Delivered is a sub-step), On hold,
+ * Completed, Cancelled). Separate from task statuses.
+ */
 export type ProjectStatus =
   | 'scheduled'
   | 'in_progress'
   | 'waiting_for_client'
   | 'blocked'
   | 'delivered'
-  | 'completed';
+  | 'completed'
+  | 'cancelled';
 
 /** Proposed task statuses (no DEC ID). "Waiting for client" is a project status only. */
 export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'cancelled';
@@ -83,11 +88,14 @@ export interface Project {
   assignedToMe: boolean;
   /** Derived: target date passed and not delivered. */
   deliveryOverdue: boolean;
-  /** Completed projects are read-only. */
+  /** Completed and Cancelled projects are read-only. */
   readOnly: boolean;
+  /** D17: the Owner's reason while Cancelled. */
+  cancelReason: string | null;
+  cancelledAt: IsoDateTime | null;
   taskCounts: TaskCounts;
   allowedNextStatuses: ProjectStatus[];
-  allowed: { changeStatus: boolean; editSchedule: boolean; assignDevelopers: boolean; reopen: boolean; createTask: boolean };
+  allowed: { changeStatus: boolean; editSchedule: boolean; assignDevelopers: boolean; reopen: boolean; cancel: boolean; createTask: boolean };
   createdAt: IsoDateTime;
   updatedAt: IsoDateTime;
 }
@@ -190,6 +198,11 @@ export async function changeProjectStatus(id: string, body: ProjectStatusChange)
 /** Owner only: Completed -> In progress. */
 export async function reopenProject(id: string, body: { version: number; reason: string }): Promise<Project> {
   return (await api.post<{ project: Project }>(projectsPaths.reopen(id), body)).project;
+}
+
+/** Owner only, reason required (D17): any active status -> Cancelled (final; history kept). */
+export async function cancelProject(id: string, body: { version: number; reason: string }): Promise<Project> {
+  return (await api.post<{ project: Project }>(projectsPaths.cancel(id), body)).project;
 }
 
 /** Manual F2 only (auto mode answers 409 STATE_CONFLICT; an existing project answers 409 CONFLICT_DUPLICATE). */

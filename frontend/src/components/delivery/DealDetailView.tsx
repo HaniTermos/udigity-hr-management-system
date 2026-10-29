@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardInset, CardSection } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { NoticeAccess } from '@/components/ui/NoticeAccess';
-import { NoticePolicy, PolicyPendingChip } from '@/components/ui/NoticePolicy';
+import { PolicyPendingChip } from '@/components/ui/NoticePolicy';
 import { Skeleton } from '@/components/ui/State';
 import { useToast } from '@/components/ui/Toast';
 import { ACTIONS } from '@/lib/actions';
@@ -20,8 +20,9 @@ import { useVersionedSave } from '@/lib/hooks/useVersionedSave';
 import { dealsPaths, type Deal, type DealFactKey, type DealHistoryItem, type DealResponse } from '@/lib/api/deals';
 import { meetingListPath, type Meeting } from '@/lib/api/meetings';
 import { createProject, retryProvisioning, type Project, type ProvisionRetryResult } from '@/lib/api/projects';
-import { DEAL_CONFLICT_LABELS, DealActionDialog, describeDeal, type DealAction } from './DealDialogs';
+import { DEAL_CONFLICT_LABELS, DealActionDialog, describeDeal, moneyText, type DealAction } from './DealDialogs';
 import { ScheduleMeetingDrawer } from './ScheduleMeetingDrawer';
+import { RelevantCallNotes } from './RelevantCallNotes';
 import {
   ActionError,
   AssignedChip,
@@ -37,6 +38,7 @@ import {
   LoadError,
   MEETING_STATUS_LABEL,
   MEETING_TONE,
+  PAYMENT_PENDING_VERIFICATION,
 } from './shared';
 
 export function DealDetailView({ id }: { id: string }) {
@@ -61,7 +63,8 @@ export function DealDetailView({ id }: { id: string }) {
   const notProceeding = deal.stage === 'not_proceeding';
   const mine = Boolean(user && deal.assignedDeveloperId === user.id);
   const isOwner = user?.role === 'owner';
-  const missing: DealFactKey[] = [...(deal.facts.signature ? [] : ['signature' as const]), ...(deal.facts.payment ? [] : ['payment' as const])];
+  const pendingVerification = Boolean(deal.openClosureReview) && !closed;
+  const missing: DealFactKey[] = deal.closureMissing.map((m) => (m === 'agreementReference' ? 'signature' : 'payment'));
 
   function openConflict(mineFields: Record<string, string>) {
     setConflict({
@@ -98,7 +101,7 @@ export function DealDetailView({ id }: { id: string }) {
         <div className="min-w-0 space-y-2">
           <h1 className="text-2xl leading-8 font-semibold tracking-tight text-text-primary">{deal.businessName ?? deal.code}</h1>
           <div className="flex flex-wrap items-center gap-2 text-[13px] text-text-secondary">
-            <DealStageBadge stage={deal.stage} size="md" />
+            <DealStageBadge stage={deal.stage} size="md" pendingVerification={pendingVerification} />
             {mine && <AssignedChip />}
             {deal.assignedDeveloperName ? (
               <span>{deal.assignedDeveloperName} · assigned developer</span>
@@ -110,8 +113,13 @@ export function DealDetailView({ id }: { id: string }) {
             <span className="text-text-muted">{deal.code}</span>
           </div>
         </div>
-        {!closed && (a.markNotProceeding || a.reopen) && (
+        {!closed && (a.markNotProceeding || a.reopen || a.advanceStage) && (
           <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {a.advanceTargets.map((to) => (
+              <Button key={to} variant="secondary" onClick={() => setAction({ kind: 'advance-stage', to })}>
+                {to === 'meeting_scheduled' ? 'Mark meeting scheduled' : 'Mark proposal sent'}
+              </Button>
+            ))}
             {a.reopen && !closed && (
               <>
                 <PolicyPendingChip dec="OQ-15" demo />
@@ -122,7 +130,7 @@ export function DealDetailView({ id }: { id: string }) {
             )}
             {a.markNotProceeding && !closed && (
               <Button variant="ghost" onClick={() => setAction({ kind: 'not-proceeding' })}>
-                Mark not proceeding…
+                Mark lost…
               </Button>
             )}
           </div>
@@ -149,19 +157,19 @@ export function DealDetailView({ id }: { id: string }) {
       {deal.lastRejectedReview && !closed && (
         <Alert
           tone="warning"
-          title="Closure verification was rejected"
-          body={`${deal.lastRejectedReview.rejectReason ?? 'No reason given.'} The deal stays ${DEAL_STAGE_LABEL.signed_and_paid.toLowerCase()}; you can request verification again.`}
+          title="Payment verification was rejected"
+          body={`${deal.lastRejectedReview.rejectReason ?? 'No reason given.'} The deal stays ${DEAL_STAGE_LABEL.signed_and_paid.toLowerCase()}; you can submit it for verification again.`}
         />
       )}
       {deal.openClosureReview && !closed && (
         <Alert
           tone="info"
-          title="Closure verification requested"
-          body={`Requested ${fmtDate(deal.openClosureReview.requestedAt)}${deal.openClosureReview.requestNote ? `: ${deal.openClosureReview.requestNote}` : '.'} Waiting for the Owner.`}
+          title={PAYMENT_PENDING_VERIFICATION}
+          body={`Submitted ${fmtDate(deal.openClosureReview.requestedAt)}${deal.openClosureReview.requestNote ? `: ${deal.openClosureReview.requestNote}` : '.'} Waiting for the Owner to verify.`}
         />
       )}
       {notProceeding && deal.notProceeding && (
-        <Alert tone="danger" title="This deal is not proceeding" body={`${deal.notProceeding.reason} (${fmtDate(deal.notProceeding.at)})`} />
+        <Alert tone="danger" title="This deal is lost" body={`${deal.notProceeding.reason} (${fmtDate(deal.notProceeding.at)})`} />
       )}
       {closed && (
         <ProvisioningNotice
@@ -187,8 +195,14 @@ export function DealDetailView({ id }: { id: string }) {
               <FactCard
                 label="Signature"
                 recorded={Boolean(deal.facts.signature)}
-                headline={deal.facts.signature ? fmtDate(deal.facts.signature.date) : 'Not recorded'}
-                detail={deal.facts.signature ? deal.facts.signature.reference : 'Needs a date and reference'}
+                headline={deal.facts.signature ? (deal.facts.signature.reference ?? 'No agreement reference') : 'Not recorded'}
+                detail={
+                  deal.facts.signature
+                    ? deal.facts.signature.date
+                      ? `Signed ${fmtDate(deal.facts.signature.date)}`
+                      : 'Signature date not recorded'
+                    : 'Needs the agreement reference'
+                }
                 actions={
                   <FactActions
                     canRecord={a.recordSignature && !deal.facts.signature}
@@ -205,8 +219,8 @@ export function DealDetailView({ id }: { id: string }) {
                 headline={deal.facts.payment ? fmtDate(deal.facts.payment.date) : 'Not recorded'}
                 detail={
                   deal.facts.payment
-                    ? `${deal.facts.payment.reference}${deal.facts.payment.amount ? ` · ${deal.facts.payment.amount} ${deal.facts.payment.currency ?? ''}` : ''}`
-                    : 'Needs a date and reference'
+                    ? `${deal.facts.payment.reference ?? 'No payment reference'} · Received: ${moneyText(deal.facts.payment.amount, deal.facts.payment.currency)}`
+                    : 'Needs the payment date'
                 }
                 actions={
                   <FactActions
@@ -222,12 +236,26 @@ export function DealDetailView({ id }: { id: string }) {
                 label="Closure"
                 recorded={Boolean(deal.closure)}
                 headline={deal.closure ? fmtDate(deal.closure.closedAt) : 'Not closed'}
-                detail={deal.closure ? (deal.closure.mode === 'direct' ? 'Finalized by developer' : 'Verified by Owner') : 'Needs all three facts'}
+                detail={deal.closure ? (deal.closure.mode === 'direct' ? 'Finalized by developer (before policy v1)' : 'Verified by Owner') : 'Needs Owner verification'}
               />
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-[13px] text-text-muted">
-              <PolicyPendingChip dec="DEC-018" label="evidence · deposit · amounts" demo />
-              <span>No attachment or amount is required.</span>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[13px] text-text-muted">
+              <span>
+                Contract amount: <span className="font-medium text-text-primary">{moneyText(deal.contract.amount, deal.contract.currency)}</span> · separate from
+                the payment received. No attachment or amount is required.
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {a.updateContract && (
+                  <Button variant="secondary" size="sm" onClick={() => setAction({ kind: 'contract' })}>
+                    {deal.contract.amount === null ? 'Add contract amount' : 'Edit contract amount'}
+                  </Button>
+                )}
+                {a.correctFinancials && (
+                  <Button variant="secondary" size="sm" onClick={() => setAction({ kind: 'financial-correction' })}>
+                    Correct financial facts…
+                  </Button>
+                )}
+              </div>
             </div>
           </CardSection>
 
@@ -235,28 +263,24 @@ export function DealDetailView({ id }: { id: string }) {
             title="Closure"
             subtitle={
               closed
-                ? 'Closed deal. No closure action is available.'
-                : deal.policy.closureMode === 'direct'
-                  ? 'Once signature and payment are recorded, the assigned developer finalizes.'
-                  : 'Once signature and payment are recorded, the developer requests verification and the Owner closes the deal.'
+                ? 'Verified closed deal. No closure action is available.'
+                : 'Once the agreement reference and payment date are recorded, the developer submits payment received and the Owner verifies and closes the deal.'
             }
           >
             {closed || notProceeding ? (
               <CardInset className="text-sm text-text-secondary">
                 {closed && deal.closure
-                  ? `Closure recorded ${fmtDate(deal.closure.closedAt)}. No further closure action is available.`
-                  : 'This deal is not proceeding. No closure action is available.'}
+                  ? `Verified closed ${fmtDate(deal.closure.closedAt)}. A first payment or deposit closes the deal; it does not mean the full contract is settled.`
+                  : 'This deal is lost. No closure action is available.'}
               </CardInset>
             ) : (
               <>
                 <div className="flex flex-wrap items-center gap-3">
-                  {a.finalize && <Button onClick={() => setAction({ kind: 'finalize' })}>Finalize closure…</Button>}
-                  {a.requestClosureVerification && (
-                    <Button variant={a.finalize ? 'secondary' : 'primary'} onClick={() => setAction({ kind: 'closure-request' })}>
-                      Request closure verification
-                    </Button>
-                  )}
                   {a.verifyClosure && <Button onClick={() => setAction({ kind: 'closure-verify' })}>Verify and close…</Button>}
+                  {a.finalize && !a.verifyClosure && <Button onClick={() => setAction({ kind: 'finalize' })}>Verify and close…</Button>}
+                  {a.requestClosureVerification && (
+                    <Button onClick={() => setAction({ kind: 'closure-request' })}>Submit payment received</Button>
+                  )}
                   {a.rejectClosure && (
                     <Button variant="secondary" onClick={() => setAction({ kind: 'closure-reject' })}>
                       Reject verification…
@@ -265,20 +289,16 @@ export function DealDetailView({ id }: { id: string }) {
                   {!a.finalize && !a.requestClosureVerification && !a.verifyClosure && !a.rejectClosure && (
                     <p className="text-sm text-text-muted">
                       {missing.length > 0
-                        ? `Closure becomes available once ${missing.map((m) => (m === 'signature' ? 'the signature' : 'the payment')).join(' and ')} ${missing.length > 1 ? 'are' : 'is'} recorded.`
+                        ? `Closure becomes available once ${missing.map((m) => (m === 'signature' ? 'the agreement reference' : 'the payment date')).join(' and ')} ${missing.length > 1 ? 'are' : 'is'} recorded.`
                         : deal.openClosureReview
                           ? 'Waiting for the Owner to verify.'
                           : 'No closure action is available to you on this deal.'}
                     </p>
                   )}
                 </div>
-                <NoticePolicy
-                  tone="policy"
-                  size="block"
-                  dec="DEC-006 / R-12"
-                  demo
-                  body={`Closure mode in force: ${deal.policy.closureMode === 'direct' ? 'direct (Alt A) — the Developer finalizes' : 'Owner verifies (Alt B) — the Developer requests, the Owner verifies'}. Not decided; R-12 → user decision.`}
-                />
+                <p className="text-[13px] text-text-muted">
+                  Only the Owner&rsquo;s verification closes a deal. Evidence: agreement reference and payment date.
+                </p>
               </>
             )}
           </CardSection>
@@ -290,6 +310,8 @@ export function DealDetailView({ id }: { id: string }) {
               <p className="text-[13px] text-text-muted">Accepted by {deal.acceptedByName ?? 'Call Center'} · from Call Center</p>
             </div>
           </CardSection>
+
+          <RelevantCallNotes dealId={deal.id} show={mine || isOwner} />
 
           <CardSection title="Deal history" subtitle="Every recorded change, newest first">
             {history.error ? (

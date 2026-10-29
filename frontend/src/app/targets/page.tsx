@@ -21,31 +21,28 @@ import {
   createWorkItem,
   updateTarget,
   updateWorkItem,
+  progressNoteLabel,
+  TARGET_METRIC_OPTIONS,
+  targetMetricLabel,
   workPaths,
   type TargetItem,
   type WorkItem,
 } from '@/lib/api/work';
 import { useApi } from '@/lib/hooks/useApi';
 import { useCompanyTime } from '@/lib/hooks/useCompanyTime';
-import { periodEnd } from '@/lib/period';
 import type { Page } from '@/lib/api/types';
 import type { EmployeeRow } from '@/lib/api/employees';
 
 type Period = TargetItem['period'];
 
-const METRIC_OPTIONS = [
-  { value: 'outreach_calls', label: 'Outreach calls' },
-  { value: 'businesses_contacted', label: 'Businesses contacted' },
-  { value: 'closed_deals', label: 'Closed deals' },
-  { value: 'data_entries', label: 'Data entries' },
-];
+const METRIC_OPTIONS = TARGET_METRIC_OPTIONS.map((o) => ({ value: o.value, label: o.label }));
 const PERIOD_OPTIONS = [
   { value: 'daily', label: 'Daily' },
   { value: 'weekly', label: 'Weekly' },
   { value: 'monthly', label: 'Monthly' },
   { value: 'quarterly', label: 'Quarterly' },
 ];
-const metricLabel = (m: string) => METRIC_OPTIONS.find((o) => o.value === m)?.label ?? m.replace(/_/g, ' ');
+const metricLabel = targetMetricLabel;
 const periodLabel = (p: string) => PERIOD_OPTIONS.find((o) => o.value === p)?.label ?? p;
 const dashboardPeriodLabel = { today: 'Today', '7d': 'Last 7 days', '30d': 'Last 30 days', custom: 'Custom range' } as const;
 
@@ -57,32 +54,20 @@ function errText(err: unknown, fallback: string): string {
   return fallback;
 }
 
-type Progress = { current: number; target: number; percentage: number } | undefined;
+/** D7: Monday of the week containing `date` (YYYY-MM-DD); weekly targets run Monday to Sunday. */
+function mondayOf(date: string): string {
+  const [y, m, d] = date.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() - ((dt.getUTCDay() + 6) % 7));
+  return dt.toISOString().slice(0, 10);
+}
 
-function QuotaCard({ title, p, tone }: { title: string; p: Progress; tone: 'brand' | 'success' | 'info' }) {
-  const has = Boolean(p && p.target > 0);
-  const pct = has && p ? Math.max(0, Math.min(100, p.percentage)) : 0;
-  const bar = { brand: 'bg-brand-accent', success: 'bg-status-success-solid', info: 'bg-status-info-solid' }[tone];
+/** D7: secondary metrics are plain numbers, never bars against an invented quota. */
+function MetricCard({ title, value }: { title: string; value: number | undefined }) {
   return (
     <Card className="p-5 space-y-3">
       <span className="text-xs font-semibold text-text-secondary">{title}</span>
-      <div className="flex items-baseline justify-between">
-        <span className="text-3xl font-semibold text-text-primary tabular-nums">
-          {has && p ? p.current : '—'}
-          {has && p && <span className="text-sm font-normal text-text-muted"> / {p.target}</span>}
-        </span>
-        <span className="text-xs font-semibold text-text-secondary tabular-nums">{has ? `${Math.round(pct)}%` : 'No target set'}</span>
-      </div>
-      <div
-        role="progressbar"
-        aria-label={title}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={has ? Math.round(pct) : undefined}
-        className="w-full bg-surface-sunken rounded-full h-2 overflow-hidden"
-      >
-        <div className={`${bar} h-full rounded-full transition-all`} style={{ width: `${pct}%` }} />
-      </div>
+      <div className="text-3xl font-semibold text-text-primary tabular-nums">{typeof value === 'number' ? value : '—'}</div>
     </Card>
   );
 }
@@ -103,7 +88,7 @@ export default function TargetsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<TargetItem | null>(null);
   const [territory, setTerritory] = useState('');
-  const [metric, setMetric] = useState('outreach_calls');
+  const [metric, setMetric] = useState<string>('data_entries');
   const [period, setPeriod] = useState<Period>('monthly');
   const [targetValue, setTargetValue] = useState('50');
   const [employeeId, setEmployeeId] = useState('');
@@ -124,7 +109,7 @@ export default function TargetsPage() {
   const openTargetDialog = (target?: TargetItem) => {
     setEditing(target ?? null);
     setTerritory(target?.territory ?? '');
-    setMetric(target?.metric ?? 'outreach_calls');
+    setMetric(target?.metric ?? 'data_entries');
     setPeriod(target?.period ?? 'monthly');
     setTargetValue(String(target?.targetValue ?? 50));
     setEmployeeId(target?.employeeId ?? employees[0]?.id ?? '');
@@ -143,16 +128,17 @@ export default function TargetsPage() {
     setFormError(null);
     try {
       if (editing) {
-        await updateTarget(editing.id, { version: editing.version, targetValue: parsedTarget, period, territory: territory.trim() || undefined });
+        await updateTarget(editing.id, { version: editing.version, targetValue: parsedTarget, territory: territory.trim() || undefined });
       } else {
-        const start = time.dayKey(new Date());
+        // D7: the period starts today (company timezone); a weekly one on this week's Monday. The
+        // server derives the end date (weekly = Monday to Sunday).
+        const today = time.dayKey(new Date());
         await createTarget({
           employeeId,
           metric,
           period,
           targetValue: parsedTarget,
-          startDate: start,
-          endDate: periodEnd(start, period),
+          startDate: period === 'weekly' ? mondayOf(today) : today,
           territory: territory.trim() || undefined,
         });
       }
@@ -271,9 +257,9 @@ export default function TargetsPage() {
                 [0, 1, 2].map((i) => <Skeleton key={i} className="h-[124px] rounded-xl" />)
               ) : (
                 <>
-                  <QuotaCard title="Outreach calls" p={m.targets?.outreachProgress} tone="brand" />
-                  <QuotaCard title="Closed deals" p={m.targets?.closedDealsProgress} tone="success" />
-                  <QuotaCard title="Businesses contacted" p={m.targets?.contactedBusinessesProgress} tone="info" />
+                  <MetricCard title="Outreach calls" value={m.calling.callAttemptsInPeriod} />
+                  <MetricCard title="Closed deals" value={m.commercial.closedInPeriod} />
+                  <MetricCard title="Businesses contacted" value={m.calling.businessesContactedInPeriod} />
                 </>
               )}
             </div>
@@ -396,15 +382,18 @@ export default function TargetsPage() {
           ) : (
             <ul className="divide-y divide-border-subtle text-xs">
               {targets.data.items.map((t) => {
-                const pct = t.targetValue > 0 ? Math.min(100, Math.round((t.currentValue / t.targetValue) * 100)) : null;
+                const pct = t.targetValue > 0 && typeof t.currentValue === 'number' ? Math.min(100, Math.round((t.currentValue / t.targetValue) * 100)) : null;
+                const note = progressNoteLabel(t.progressNote);
                 return (
                   <li key={t.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div>
                       <div className="font-semibold text-sm text-text-primary">{t.territory || metricLabel(t.metric)}</div>
                       <div className="text-text-secondary mt-0.5">
                         {t.employeeName ? `${t.employeeName} · ` : ''}
-                        {metricLabel(t.metric)} · {periodLabel(t.period)} · {t.currentValue} of {t.targetValue}
+                        {metricLabel(t.metric)} · {periodLabel(t.period)} · {t.startDate === t.endDate ? t.startDate : `${t.startDate} – ${t.endDate}`} ·{' '}
+                        {t.currentValue ?? '—'} of {t.targetValue}
                       </div>
+                      {note && <div className="text-[11px] text-text-muted mt-0.5">{note}</div>}
                     </div>
                     <div className="flex items-center gap-3">
                       {pct !== null && <span className="text-[11px] text-text-secondary font-medium tabular-nums">{pct}%</span>}
@@ -424,14 +413,18 @@ export default function TargetsPage() {
         isOpen={dialogOpen}
         onClose={() => setDialogOpen(false)}
         title={editing ? 'Update target' : 'Allocate target'}
-        description={editing ? 'Change the quota, period or territory. Metric and assignee stay as created.' : 'Give an employee a quota and, optionally, a territory.'}
+        description={
+          editing
+            ? 'Change the target or territory from today on. Metric, period and assignee stay as created; ended periods cannot change.'
+            : 'Give an employee a target and, optionally, a territory. Progress is counted automatically from their work.'
+        }
       >
         <form onSubmit={saveTarget} className="space-y-4 text-sm">
           {formError && <Alert tone="danger" title="Could not save" body={formError} role="alert" />}
           <Input label="Territory (optional)" value={territory} maxLength={120} onChange={(e) => setTerritory(e.target.value)} placeholder="e.g. Beirut Central" />
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Select label="Metric" value={metric} onChange={(e) => setMetric(e.target.value)} options={METRIC_OPTIONS} disabled={editing !== null} />
-            <Select label="Period" value={period} onChange={(e) => setPeriod(e.target.value as Period)} options={PERIOD_OPTIONS} />
+            <Select label="Period" value={period} onChange={(e) => setPeriod(e.target.value as Period)} options={PERIOD_OPTIONS} disabled={editing !== null} />
           </div>
           <Input
             label="Target quota"

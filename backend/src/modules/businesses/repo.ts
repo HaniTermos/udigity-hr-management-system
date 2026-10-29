@@ -25,6 +25,9 @@ export interface SocialJson {
   followers: number | null;
   lastPost: string | null;
   metricsRecordedAt: string | null;
+  /** D13: when each metric was observed (null = Unknown). */
+  followersObservedAt: string | null;
+  lastPostObservedAt: string | null;
 }
 
 export interface BusinessDbRow {
@@ -66,7 +69,9 @@ export function businessSelect(extraCols: string[] = []): string {
            COALESCE((SELECT json_agg(json_build_object('id', s.id, 'platform', s.platform, 'handle', s.handle,
                                                        'followers', s.followers,
                                                        'lastPost', to_char(s.last_post_date, 'YYYY-MM-DD'),
-                                                       'metricsRecordedAt', s.metrics_recorded_at) ORDER BY s.position, s.created_at)
+                                                       'metricsRecordedAt', s.metrics_recorded_at,
+                                                       'followersObservedAt', s.followers_observed_at,
+                                                       'lastPostObservedAt', s.last_post_observed_at) ORDER BY s.position, s.created_at)
                        FROM social_accounts s WHERE s.business_id = b.id), '[]'::json) AS social,
            (SELECT af.has_open_correction FROM access_facts af WHERE af.business_id = b.id) AS has_open_correction${extra}
       FROM businesses b
@@ -180,6 +185,14 @@ export async function setArchived(
   return rows[0]?.version ?? null;
 }
 
+/**
+ * D20 restore with a new category (Owner decision 2026-10-29). Runs inside the restore transaction on the row
+ * already locked by it; the version is bumped once by `setArchived` right after.
+ */
+export async function setCategoryForRestore(db: Queryable, id: string, categoryId: string, actorId: string): Promise<void> {
+  await db.query('UPDATE businesses SET category_id = $2, updated_by = $3, updated_at = now() WHERE id = $1', [id, categoryId, actorId]);
+}
+
 export interface PhoneValues {
   countryCode: string;
   number: string;
@@ -223,6 +236,8 @@ export interface SocialValues {
 /**
  * Replace the social accounts. Latest metric value only (DEC-014/023): `metrics_recorded_at` is kept when
  * the same account's metrics are unchanged, set to `now` when they change, NULL when both are Unknown.
+ * D13: each metric also has its own observation time (`followers_observed_at`, `last_post_observed_at`),
+ * set only when that value is entered or changed, kept while it is unchanged, NULL while it is Unknown.
  */
 export async function replaceSocials(db: Queryable, businessId: string, socials: SocialValues[], now: Date): Promise<void> {
   const { rows: previous } = await db.query<{
@@ -231,8 +246,11 @@ export async function replaceSocials(db: Queryable, businessId: string, socials:
     followers: number | null;
     last_post: string | null;
     metrics_recorded_at: Date | null;
+    followers_observed_at: Date | null;
+    last_post_observed_at: Date | null;
   }>(
-    `SELECT platform, normalized_handle, followers, to_char(last_post_date, 'YYYY-MM-DD') AS last_post, metrics_recorded_at
+    `SELECT platform, normalized_handle, followers, to_char(last_post_date, 'YYYY-MM-DD') AS last_post, metrics_recorded_at,
+            followers_observed_at, last_post_observed_at
        FROM social_accounts WHERE business_id = $1`,
     [businessId]
   );
@@ -243,10 +261,13 @@ export async function replaceSocials(db: Queryable, businessId: string, socials:
     const unknown = s.followers === null && s.lastPost === null;
     const same = prev && prev.followers === s.followers && prev.last_post === s.lastPost;
     const recordedAt = unknown ? null : same ? prev.metrics_recorded_at : now;
+    const followersAt = s.followers === null ? null : prev && prev.followers === s.followers ? prev.followers_observed_at ?? now : now;
+    const lastPostAt = s.lastPost === null ? null : prev && prev.last_post === s.lastPost ? prev.last_post_observed_at ?? now : now;
     await db.query(
-      `INSERT INTO social_accounts (business_id, platform, handle, normalized_handle, followers, last_post_date, metrics_recorded_at, position)
-       VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8)`,
-      [businessId, s.platform, s.handle, s.normalizedHandle, s.followers, s.lastPost, recordedAt, i]
+      `INSERT INTO social_accounts (business_id, platform, handle, normalized_handle, followers, last_post_date, metrics_recorded_at,
+                                    followers_observed_at, last_post_observed_at, position)
+       VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10)`,
+      [businessId, s.platform, s.handle, s.normalizedHandle, s.followers, s.lastPost, recordedAt, followersAt, lastPostAt, i]
     );
   }
 }

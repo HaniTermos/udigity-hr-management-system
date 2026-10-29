@@ -6,7 +6,15 @@ import { digitsOnly } from './format';
  * the top plus inline messages, S4 note N4). "Unknown" disables the value and is stored as null, never 0.
  */
 
-export const COUNTRY_CODES = ['+000', '+961'] as const;
+/**
+ * Country codes offered in the phone picker. D11 (approved): no assumed country code — a new phone row starts
+ * with NO code and the user must choose one explicitly (the `+000` placeholder default is gone). A company
+ * default country code applies on the server only once the Owner has set it.
+ */
+export const COUNTRY_CODES = ['+961'] as const;
+
+/** E.164 country calling code: `+`, first digit 1–9, at most 4 digits (mirrors the server rule). */
+export const COUNTRY_CODE_PATTERN = /^\+[1-9]\d{0,3}$/;
 export const PLATFORMS = ['Instagram', 'TikTok', 'Facebook', 'YouTube', 'LinkedIn', 'X', 'Other'] as const;
 export const NOTES_MAX = 2000;
 
@@ -69,7 +77,7 @@ export interface ErrorSummaryItem {
 let rowSeq = 0;
 export const newRowKey = (): string => `row-${++rowSeq}`;
 
-export const emptyPhone = (): PhoneFormRow => ({ key: newRowKey(), countryCode: COUNTRY_CODES[0], number: '' });
+export const emptyPhone = (): PhoneFormRow => ({ key: newRowKey(), countryCode: '', number: '' });
 export const emptySocial = (): SocialFormRow => ({
   key: newRowKey(),
   platform: '',
@@ -145,6 +153,9 @@ export function validate(v: BusinessFormValues, today: string = new Date().toISO
     const d = digitsOnly(p.number);
     if (!d) e.phones[p.key] = 'Enter the number, or remove this row.';
     else if (d.length < 6 || d.length > 15) e.phones[p.key] = 'Enter a valid phone number.';
+    else if (!p.number.trim().startsWith('+') && !COUNTRY_CODE_PATTERN.test(p.countryCode.trim())) {
+      e.phones[p.key] = 'Choose the country code.';
+    }
   });
 
   if (v.hasWebsite) {

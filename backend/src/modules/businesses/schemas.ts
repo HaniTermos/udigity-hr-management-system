@@ -17,6 +17,7 @@ export const BUSINESS_ACTIONS = defineMatrixActions([
   'business.read',
   'business.create',
   'business.duplicate_check',
+  'business.duplicate_review_request',
   'business.update',
   'business.archive',
   'business.restore',
@@ -102,6 +103,12 @@ export const VersionBodySchema = z
   .object({ version: z.number().int().min(1), reason: trimmed(500).optional() })
   .strict();
 
+/**
+ * Restore body (D20 + Owner decision 2026-10-29). `categoryId` = an ACTIVE category to apply when the business's
+ * own category was deactivated while it was archived ("Pick a new category").
+ */
+export const RestoreBodySchema = VersionBodySchema.extend({ categoryId: z.string().uuid().optional() }).strict();
+
 export const DuplicateCheckSchema = z
   .object({
     name: trimmed(255).optional(),
@@ -111,6 +118,22 @@ export const DuplicateCheckSchema = z
     excludeBusinessId: z.string().uuid().optional(),
   })
   .strict();
+
+/**
+ * D10 "Request Owner review" from the duplicate warning. The match is re-derived on the server from these
+ * details; a client-supplied business id is never accepted (the schema is strict, so one is a 400).
+ */
+export const DuplicateReviewRequestSchema = z
+  .object({
+    name: trimmed(255).optional(),
+    branch: trimmed(120).nullable().optional(),
+    phones: z.array(PhoneInputSchema).max(10).default([]),
+    /** Optional explanation for the Owner (bounded; stored on the audit row only). */
+    explanation: trimmed(500).optional(),
+  })
+  .strict();
+
+export type DuplicateReviewRequestInput = z.infer<typeof DuplicateReviewRequestSchema>;
 
 export const BusinessListQuerySchema = PageQuerySchema.extend({
   q: trimmed(100).optional(),
@@ -163,6 +186,10 @@ export interface SocialDto {
   /** YYYY-MM-DD or null = Unknown. */
   lastPost: string | null;
   metricsRecordedAt: string | null;
+  /** D13: when the followers value was entered/changed; null while Unknown. */
+  followersObservedAt: string | null;
+  /** D13: when the last-post date was entered/changed; null while Unknown. */
+  lastPostObservedAt: string | null;
 }
 
 /** `hidden_from_others` and `archived` reach the Owner only. */

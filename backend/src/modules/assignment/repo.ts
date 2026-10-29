@@ -71,22 +71,37 @@ export async function endOpen(
   return rows[0] ?? null;
 }
 
-/** Number of assignments an agent received since `since` (DEC-021 per-agent daily cap). */
-export async function countAssignedSince(db: Queryable, assigneeId: string, since: Date): Promise<number> {
-  const { rows } = await db.query<{ n: number }>(
-    'SELECT count(*)::int AS n FROM calling_assignments WHERE assignee_id = $1 AND started_at >= $2',
-    [assigneeId, since]
+/**
+ * D8 queue size per agent: open assignments whose business is still eligible (not archived, has a phone,
+ * not Rejected/Accepted, no open deal). This is what the auto-fill queue cap counts — not per-day intake.
+ */
+export async function eligibleQueueSizes(db: Queryable, assigneeIds: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>(assigneeIds.map((id) => [id, 0]));
+  if (assigneeIds.length === 0) return out;
+  const { rows } = await db.query<{ assignee_id: string; n: number }>(
+    `SELECT ca.assignee_id, count(*)::int AS n
+       FROM calling_assignments ca
+       JOIN businesses b ON b.id = ca.business_id
+       LEFT JOIN business_calling_states s ON s.business_id = b.id
+      WHERE ca.ended_at IS NULL
+        AND ca.assignee_id = ANY($1::uuid[])
+        AND b.archived_at IS NULL
+        AND COALESCE(s.outcome, 'pending') NOT IN ('rejected', 'accepted')
+        AND EXISTS (SELECT 1 FROM business_phones p WHERE p.business_id = b.id)
+        AND NOT EXISTS (SELECT 1 FROM deals d WHERE d.business_id = b.id AND d.stage NOT IN ('closed', 'not_proceeding'))
+      GROUP BY ca.assignee_id`,
+    [assigneeIds]
   );
-  return rows[0].n;
+  for (const r of rows) out.set(r.assignee_id, r.n);
+  return out;
 }
 
-/** Start of "today" in the company timezone (UTC fallback until company.timezone is set). */
-export async function startOfCompanyDay(db: Queryable, tz: string, now: Date): Promise<Date> {
-  const { rows } = await db.query<{ d: Date }>(
-    `SELECT (date_trunc('day', timezone($1::text, $2::timestamptz)) AT TIME ZONE $1::text) AS d`,
-    [tz || 'UTC', now]
+/** D8 round-robin order: every active Call Center agent, stable order (name, then id). */
+export async function activeCallCenterAgents(db: Queryable): Promise<string[]> {
+  const { rows } = await db.query<{ id: string }>(
+    `SELECT id FROM employees WHERE role = 'call_center' AND is_active = true ORDER BY full_name, id`
   );
-  return rows[0].d;
+  return rows.map((r) => r.id);
 }
 
 /**

@@ -347,15 +347,81 @@ describe.skipIf(!hasTestDb)('BE3 Increment 4 — calling (DB)', () => {
       expect((await call(owner, 'get', '/api/calling-assignments?q=%25%25')).body.total).toBe(0);
     });
 
-    it('autofill respects the per-agent daily cap (DEMO DEC-021)', async () => {
-      const agent = await agentFor('call_center');
-      await newBusiness(owner.id);
-      await newBusiness(owner.id);
-      const r = await call(owner, 'post', '/api/calling-assignments/autofill', { agentId: agent.id, limit: 2 });
-      expect(r.status, JSON.stringify(r.body)).toBe(200);
-      expect(r.body.assigned).toHaveLength(2);
-      expect(r.body.assigned.every((x: { source: string }) => x.source === 'automatic')).toBe(true);
-      expect(r.body.cap).toBe(40);
+    // Policy baseline 2026-10-29 §D8 replaced the DEC-021 per-agent *daily* cap with a queue cap of
+    // current eligible assigned businesses (work.autofillQueueCap, default 40) and round-robin auto-fill.
+    describe('auto-fill queues (D8)', () => {
+      const setCap = (values: Record<string, number>) =>
+        query(
+          `UPDATE company_settings SET "values" = ("values" - 'work.autofillQueueCap' - 'work.autofillPerAgentPerDay') || $1::jsonb WHERE id = 1`,
+          [JSON.stringify(values)]
+        );
+      afterEach(() => setCap({}));
+
+      it('single agent: default cap 40; only `limit` new businesses, all automatic', async () => {
+        const agent = await agentFor('call_center');
+        await newBusiness(owner.id);
+        await newBusiness(owner.id);
+        const r = await call(owner, 'post', '/api/calling-assignments/autofill', { agentId: agent.id, limit: 2 });
+        expect(r.status, JSON.stringify(r.body)).toBe(200);
+        expect(r.body.assigned).toHaveLength(2);
+        expect(r.body.assigned.every((x: { source: string; assigneeId: string }) => x.source === 'automatic' && x.assigneeId === agent.id)).toBe(true);
+        expect(r.body.cap).toBe(40);
+        expect(r.body.agents).toEqual([expect.objectContaining({ agentId: agent.id, queueBefore: 0, assignedNow: 2 })]);
+      });
+
+      it('queue cap counts current eligible assigned businesses (not per-day intake); ineligible ones do not count', async () => {
+        await setCap({ 'work.autofillQueueCap': 3 });
+        const agent = await agentFor('call_center');
+        const kept = await newBusiness(owner.id);
+        await assignTo(kept, agent);
+        const rejected = await newBusiness(owner.id);
+        await assignTo(rejected, agent);
+        await query(`UPDATE business_calling_states SET outcome = 'rejected' WHERE business_id = $1`, [rejected]);
+        for (let i = 0; i < 4; i++) await newBusiness(owner.id);
+        const r = await call(owner, 'post', '/api/calling-assignments/autofill', { agentId: agent.id });
+        expect(r.status, JSON.stringify(r.body)).toBe(200);
+        expect(r.body.cap).toBe(3);
+        expect(r.body.agents[0]).toMatchObject({ queueBefore: 1, assignedNow: 2 });
+        // Full queue: a second run (same day) adds nothing; after one leaves the queue, one more fits.
+        const again = await call(owner, 'post', '/api/calling-assignments/autofill', { agentId: agent.id });
+        expect(again.body.assigned).toHaveLength(0);
+        await query(`UPDATE business_calling_states SET outcome = 'rejected' WHERE business_id = $1`, [kept]);
+        const third = await call(owner, 'post', '/api/calling-assignments/autofill', { agentId: agent.id });
+        expect(third.body.assigned).toHaveLength(1);
+      });
+
+      it('a value saved under the retired key work.autofillPerAgentPerDay is still honoured', async () => {
+        await setCap({ 'work.autofillPerAgentPerDay': 1 });
+        const agent = await agentFor('call_center');
+        await newBusiness(owner.id);
+        const r = await call(owner, 'post', '/api/calling-assignments/autofill', { agentId: agent.id });
+        expect(r.body.cap).toBe(1);
+        expect(r.body.assigned).toHaveLength(1);
+      });
+
+      it('no agent: round-robin across active Call Center agents, each up to the cap; inactive agents get none', async () => {
+        await setCap({ 'work.autofillQueueCap': 2 });
+        const a = await agentFor('call_center', 'RR A');
+        const b = await agentFor('call_center', 'RR B');
+        const gone = await agentFor('call_center', 'RR Gone');
+        await query('UPDATE employees SET is_active = false WHERE id = $1', [gone.id]);
+        const { rows } = await query<{ n: number }>(`SELECT count(*)::int AS n FROM employees WHERE role = 'call_center' AND is_active`);
+        for (let i = 0; i < rows[0].n * 2 + 2; i++) await newBusiness(owner.id);
+        const r = await call(owner, 'post', '/api/calling-assignments/autofill', {});
+        expect(r.status, JSON.stringify(r.body)).toBe(200);
+        type AgentRow = { agentId: string; queueBefore: number; assignedNow: number };
+        const agents = r.body.agents as AgentRow[];
+        expect(agents.map((x) => x.agentId)).toEqual(expect.arrayContaining([a.id, b.id]));
+        expect(agents.map((x) => x.agentId)).not.toContain(gone.id);
+        // Never past the cap (an agent already at or over it — earlier tests — gets nothing).
+        for (const x of agents) expect(x.assignedNow).toBeLessThanOrEqual(Math.max(0, 2 - x.queueBefore));
+        expect(agents.find((x) => x.agentId === a.id)!.assignedNow).toBe(2);
+        expect(agents.find((x) => x.agentId === b.id)!.assignedNow).toBe(2);
+        // Round-robin: nobody gets a second business before every agent with room got one.
+        const withRoom = agents.filter((x) => x.queueBefore < 2).length;
+        const firstRound = (r.body.assigned as { assigneeId: string }[]).slice(0, withRoom).map((x) => x.assigneeId);
+        expect(new Set(firstRound).size).toBe(withRoom);
+      }, 60_000);
     });
   });
 
@@ -605,7 +671,13 @@ describe.skipIf(!hasTestDb)('BE3 Increment 4 — calling (DB)', () => {
       expect(await count('SELECT count(*)::int AS n FROM deals WHERE accepted_attempt_id = $1', [r.body.attempt.id])).toBe(1);
       const { rows } = await query<{ state: string }>('SELECT state FROM follow_ups WHERE id = $1', [fu.body.followUp.id]);
       expect(rows[0].state).toBe('scheduled');
-      const opp = await call(cc, 'get', '/api/calling/opportunities?pageSize=100');
+      // Changed expectation (approved D15): accepted opportunities are the assigned Developer's and the Owner's
+      // only; the accepting Call Center agent is refused the opportunities list and the deal.
+      const ccOpp = await call(cc, 'get', '/api/calling/opportunities?pageSize=100');
+      expect(ccOpp.status).toBe(403);
+      expect(ccOpp.body.code).toBe('FORBIDDEN_ROLE');
+      expect((await call(cc, 'get', `/api/deals/${r.body.dealId}`)).body.code).toBe('FORBIDDEN_ROLE');
+      const opp = await call(owner, 'get', '/api/calling/opportunities?pageSize=100');
       expect(opp.status).toBe(200);
       const item = opp.body.items.find((i: { businessId: string }) => i.businessId === biz);
       expect(item).toMatchObject({ clientNeedsNote: 'Needs an online shop for 200 items', serviceInterest: 'e-commerce', attemptId: r.body.attempt.id });
@@ -794,6 +866,8 @@ describe.skipIf(!hasTestDb)('BE3 Increment 4 — calling (DB)', () => {
       await query(`UPDATE business_calling_states SET outcome = 'needs_another_call', callback_marker = true WHERE business_id = $1`, [marker]);
       const old = await newBusiness(owner.id, { createdAt: new Date(Date.now() - 20 * 86_400_000) });
       await assignTo(old, agent);
+      // Approved D9: the Call Center window runs from the assignment, so the assignment itself is 20 days old.
+      await query(`UPDATE calling_assignments SET started_at = now() - interval '20 days' WHERE business_id = $1 AND ended_at IS NULL`, [old]);
       const q = await call(agent, 'get', '/api/calling/queue?pageSize=100');
       expect(q.status).toBe(200);
       const ids = q.body.items.map((i: { businessId: string }) => i.businessId);
@@ -824,6 +898,7 @@ describe.skipIf(!hasTestDb)('BE3 Increment 4 — calling (DB)', () => {
       expect(ws.body.policy.label).toContain('Demonstration alternative');
       const old = await newBusiness(owner.id, { createdAt: new Date(Date.now() - 20 * 86_400_000) });
       await assignTo(old, cc);
+      await query(`UPDATE calling_assignments SET started_at = now() - interval '20 days' WHERE business_id = $1 AND ended_at IS NULL`, [old]);
       const hidden = await call(cc, 'get', `/api/calling/businesses/${old}/workspace`);
       expect(hidden.status).toBe(403);
       expect(hidden.body.code).toBe('HIDDEN_BY_POLICY');

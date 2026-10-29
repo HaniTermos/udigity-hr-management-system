@@ -13,6 +13,30 @@ export const workPaths = {
   myWorkItems: '/api/work-items',
 } as const;
 
+/** D7 (policy baseline 2026-10-29): metrics the server counts. Primary per role, then secondary metrics. */
+export const TARGET_METRIC_OPTIONS = [
+  { value: 'data_entries', label: 'Businesses created (Data Entry)' },
+  { value: 'businesses_contacted', label: 'Businesses contacted (Call Center)' },
+  { value: 'tasks_completed', label: 'Tasks completed (Developer)' },
+  { value: 'outreach_calls', label: 'Outreach calls' },
+  { value: 'closed_deals', label: 'Closed deals' },
+] as const;
+
+export const targetMetricLabel = (m: string): string =>
+  TARGET_METRIC_OPTIONS.find((o) => o.value === m)?.label ?? m.replace(/_/g, ' ');
+
+export type TargetProgressNote = 'schedule_not_configured' | 'non_working_day' | 'unsupported_metric' | null;
+
+/** Short qualifier shown next to a computed progress value. */
+export const progressNoteLabel = (n: TargetProgressNote | undefined): string | null =>
+  n === 'schedule_not_configured'
+    ? 'Schedule not configured: all days counted'
+    : n === 'non_working_day'
+      ? 'Not a scheduled working day'
+      : n === 'unsupported_metric'
+        ? 'Not counted automatically'
+        : null;
+
 export interface TargetItem {
   id: string;
   employeeId: string;
@@ -20,7 +44,9 @@ export interface TargetItem {
   metric: string;
   period: 'daily' | 'weekly' | 'monthly' | 'quarterly';
   targetValue: number;
-  currentValue: number;
+  /** D7: computed by the server from who did the work; null = metric without a counting rule. */
+  currentValue: number | null;
+  progressNote?: TargetProgressNote;
   startDate: string;
   endDate: string;
   territory: string | null;
@@ -63,9 +89,9 @@ export async function createTarget(input: {
   metric: string;
   period: 'daily' | 'weekly' | 'monthly' | 'quarterly';
   targetValue: number;
-  currentValue?: number;
   startDate: string;
-  endDate: string;
+  /** Derived by the server from startDate + period (weekly = Monday to Sunday). */
+  endDate?: string;
   territory?: string;
 }): Promise<TargetItem> {
   return api.post<TargetItem>(workPaths.targets, input);
@@ -76,7 +102,6 @@ export async function updateTarget(
   input: {
     version: number;
     targetValue?: number;
-    currentValue?: number;
     period?: 'daily' | 'weekly' | 'monthly' | 'quarterly';
     territory?: string;
   }

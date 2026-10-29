@@ -22,8 +22,8 @@ export const REOPEN_TARGET_DEFAULT: ReopenTarget = 'accepted_opportunity';
 export interface DeliveryPolicy {
   /** DEC-005 `deals.developerPreClosure`. */
   developerPreClosure: 'assigned' | 'closedOnly';
-  /** DEC-006 `deals.closureMode`. */
-  closureMode: 'ownerVerify' | 'direct';
+  /** DEC-006 `deals.closureMode`. D16 (approved): only Owner verification closes; `direct` is retired. */
+  closureMode: 'ownerVerify';
   /** F2 `projects.autoProvision`. */
   autoProvision: boolean;
   /** OQ-15 (pending registry key `deals.reopenTarget`). */

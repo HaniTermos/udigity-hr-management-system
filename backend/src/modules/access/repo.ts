@@ -9,6 +9,8 @@ import { EXCEPTION_ROWS, type RuleFragments } from './rules.js';
 
 export interface DecisionRow {
   business_id: string;
+  /** False when the business is archived and the principal is not the Owner (D9/D20). */
+  live: boolean;
   in_scope: boolean;
   related: boolean;
   in_window: boolean;
@@ -17,6 +19,7 @@ export interface DecisionRow {
 
 interface RawRow {
   business_id: string;
+  live: boolean | null;
   in_scope: boolean;
   related: boolean;
   in_window: boolean;
@@ -42,6 +45,7 @@ export async function fetchDecisionRows(
   const cols = EXCEPTION_ROWS.map((r, i) => `COALESCE(${fr.rows[r]}, FALSE) AS r${i + 1}`).join(', ');
   const { rows } = await db.query<RawRow>(
     `SELECT af.business_id,
+            COALESCE(${fr.live}, FALSE) AS live,
             COALESCE(${fr.scope}, FALSE) AS in_scope,
             COALESCE(${fr.relation}, FALSE) AS related,
             COALESCE(${fr.window}, FALSE) AS in_window,
@@ -54,6 +58,8 @@ export async function fetchDecisionRows(
   for (const r of rows) {
     out.set(r.business_id, {
       business_id: r.business_id,
+      // Scripted fact rows in unit tests may omit the column: absent = live.
+      live: r.live !== false,
       in_scope: r.in_scope,
       related: r.related,
       in_window: r.in_window,

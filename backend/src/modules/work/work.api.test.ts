@@ -90,17 +90,19 @@ describe.skipIf(!hasTestDb)('MOD-work API (/api/targets & /api/work-items)', () 
   });
 
   it('Owner sets target for employee and reads it; employee reads own target', async () => {
-    // Owner creates target for developer
+    // Owner creates target for developer. D7: metric is one of the counted metrics (was free text
+    // 'projects_completed'), and the period is the current month so it is not retroactive.
+    const now = new Date();
+    const monthStart = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-01`;
     const res = await call(owner, 'post', '/api/targets', {
       employeeId: dev.id,
-      metric: 'projects_completed',
+      metric: 'tasks_completed',
       targetValue: 5,
       period: 'monthly',
-      startDate: '2026-10-01',
-      endDate: '2026-10-31',
+      startDate: monthStart,
     });
-    expect(res.status).toBe(201);
-    expect(res.body.metric).toBe('projects_completed');
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.metric).toBe('tasks_completed');
     expect(res.body.targetValue).toBe(5);
     const targetId = res.body.id;
 

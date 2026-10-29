@@ -54,7 +54,7 @@ export default function MyDayPage() {
           <Alert
             tone="warning"
             title={`You still have an open session from ${dayLabel(earlier.workDate, 'short')}`}
-            body={`Checked in ${time.formatTime(earlier.effectiveCheckInAt)} with no checkout. Check-in stays blocked until the session is corrected.`}
+            body={`Checked in ${time.formatTime(earlier.effectiveCheckInAt)} with no checkout. Check-in stays blocked until you send a correction request with your checkout time.`}
           />
         )}
 
@@ -67,9 +67,8 @@ export default function MyDayPage() {
             ) : (
               <>
                 <AttendanceCard today={today.data} time={time} onCheckIn={() => setCheckInOpen(true)} onCheckOut={() => setCheckOutOpen(true)} />
-                {today.data.session?.state === 'open' && (
-                  <BreakTimerCard onBreakChanged={refresh} />
-                )}
+                {/* Fixed v1 scope "no break tracking": the timer only exists when the server enables breaks. */}
+                {today.data.breaksEnabled && today.data.session?.state === 'open' && <BreakTimerCard onBreakChanged={refresh} />}
                 <CheckInNote today={today.data} time={time} />
               </>
             )}

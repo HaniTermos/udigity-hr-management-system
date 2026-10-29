@@ -26,6 +26,9 @@ export interface DealRow {
   payment_currency: string | null;
   payment_recorded_by_id: string | null;
   payment_recorded_at: Date | null;
+  /** D16 contract amount (987). NULL = missing, never zero. */
+  contract_amount: string | null;
+  contract_currency: string | null;
   closed_at: Date | null;
   closed_by_id: string | null;
   closure_mode: 'ownerVerify' | 'direct' | null;
@@ -41,7 +44,8 @@ export interface DealRow {
 const DEAL_COLUMNS = `d.id, d.code, d.business_id, d.accepted_attempt_id, d.accepted_by_id, d.stage, d.client_needs_note,
   d.assigned_developer_id, d.signature_date::text AS signature_date, d.signature_reference, d.signature_recorded_by_id,
   d.signature_recorded_at, d.payment_date::text AS payment_date, d.payment_reference, d.payment_amount::text AS payment_amount,
-  d.payment_currency, d.payment_recorded_by_id, d.payment_recorded_at, d.closed_at, d.closed_by_id, d.closure_mode,
+  d.payment_currency, d.payment_recorded_by_id, d.payment_recorded_at, d.contract_amount::text AS contract_amount,
+  d.contract_currency, d.closed_at, d.closed_by_id, d.closure_mode,
   d.not_proceeding_reason, d.not_proceeding_at, d.not_proceeding_by_id, d.version, d.created_at, d.updated_at`;
 
 export async function findById(db: Queryable, id: string, forUpdate = false): Promise<DealRow | null> {
@@ -95,6 +99,8 @@ export type DealColumn =
   | 'payment_currency'
   | 'payment_recorded_by_id'
   | 'payment_recorded_at'
+  | 'contract_amount'
+  | 'contract_currency'
   | 'closed_at'
   | 'closed_by_id'
   | 'closure_mode'
@@ -115,6 +121,8 @@ const DEAL_SETTABLE: ReadonlySet<DealColumn> = new Set<DealColumn>([
   'payment_currency',
   'payment_recorded_by_id',
   'payment_recorded_at',
+  'contract_amount',
+  'contract_currency',
   'closed_at',
   'closed_by_id',
   'closure_mode',
@@ -220,7 +228,24 @@ export type DealChangeType =
   | 'handoff_updated'
   | 'not_proceeding'
   | 'reopened'
-  | 'closed';
+  | 'closed'
+  | 'stage_advanced'
+  | 'contract_updated'
+  | 'financial_corrected';
+
+/**
+ * D16: the pipeline stage a deal last held (latest forward move or reopen), for a stage revert after a
+ * recorded fact is removed. Null when the deal never left `accepted_opportunity` through a recorded move.
+ */
+export async function latestPipelineStage(db: Queryable, dealId: string): Promise<string | null> {
+  const { rows } = await db.query<{ stage: string | null }>(
+    `SELECT after_value->>'stage' AS stage FROM deal_changes
+      WHERE deal_id = $1 AND change_type IN ('stage_advanced','reopened')
+      ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [dealId]
+  );
+  return rows[0]?.stage ?? null;
+}
 
 export async function insertChange(
   db: Queryable,

@@ -97,6 +97,7 @@ const ROLE_LEVEL_TYPES: ReadonlySet<ResourceType> = new Set<ResourceType>(['cate
  * `self` / `assigned_only` = own records only. A system role never reaches this (matrix rules apply).
  */
 function customScopeFor(principal: Principal, action: Action): DataScope | null {
+  // Fixed v1 scope: `dynamicGrantFor` answers null for every role (custom roles are turned off).
   return isSystemRole(principal.role) ? null : dynamicGrantFor(principal.role, action);
 }
 
@@ -138,6 +139,8 @@ function decide(row: DecisionRow | undefined, role: Role, f: RuleFlags): AccessD
       ...(hiddenForOthers && f['access.auditOwnerHiddenReads'] ? { ownerViewedHidden: true } : {}),
     };
   }
+  // D9/D20: an archived business (and everything related to it) does not exist for non-Owners (security R10).
+  if (!row.live) return DENY_NOT_FOUND;
   if (!row.in_scope || !row.related) return DENY_PERMISSION;
   if (row.in_window) return { allowed: true, level: 'full' };
   const granting = EXCEPTION_ROWS.find((r) => row.rows[r]);

@@ -23,11 +23,11 @@ import {
   type ProvisionRetryResult,
   type UnprovisionedDeal,
 } from '@/lib/api/projects';
-import { ActionError, AssignedChip, fmtDate, LoadError, OverdueChip, PageTitle, PersonCell, ProjectStatusBadge, PROJECT_STATUS_LABEL } from './shared';
+import { ActionError, AssignedChip, fmtDate, LoadError, OverdueChip, PageTitle, PersonCell, ProjectStatusBadge, PROJECT_STATUS_OPTION_LABEL } from './shared';
 
 const STATUS_OPTIONS = [
   { value: 'any', label: 'Status: Any' },
-  ...(Object.keys(PROJECT_STATUS_LABEL) as ProjectStatus[]).map((s) => ({ value: s, label: PROJECT_STATUS_LABEL[s] })),
+  ...(Object.keys(PROJECT_STATUS_OPTION_LABEL) as ProjectStatus[]).map((s) => ({ value: s, label: PROJECT_STATUS_OPTION_LABEL[s] })),
 ];
 const SCOPE_OPTIONS = [
   { value: 'all', label: 'All eligible projects' },

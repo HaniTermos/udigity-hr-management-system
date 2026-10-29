@@ -50,9 +50,10 @@ export interface AssignResultDto {
   skipped: SkippedItem[];
 }
 
+/** D8 auto-fill: queue cap = current eligible assigned businesses per agent (not a quota). */
 export interface AutofillResultDto extends AssignResultDto {
   cap: number;
-  alreadyToday: number;
+  agents: Array<{ agentId: string; agentName: string; queueBefore: number; assignedNow: number }>;
 }
 
 export interface ReassignImpactDto {
@@ -96,7 +97,8 @@ export const listAssignments = (q: AssignmentListQuery = {}) => api.get<Page<Ass
 export const assignBusinesses = (input: { businessIds: string[]; assigneeId: string }) =>
   api.post<AssignResultDto>(callingPaths.assignmentsCommand('assign'), { ...input, source: 'manual' }, { idempotencyKey: newIdempotencyKey() });
 
-export const autofillAgent = (input: { agentId: string; limit?: number }) =>
+/** No `agentId`: round-robin across every active Call Center agent ("Auto-fill queues"). */
+export const autofillQueues = (input: { agentId?: string; limit?: number } = {}) =>
   api.post<AutofillResultDto>(callingPaths.assignmentsCommand('autofill'), input, { idempotencyKey: newIdempotencyKey() });
 
 export const getReassignImpact = (input: { businessId: string; newAssigneeId: string }) =>

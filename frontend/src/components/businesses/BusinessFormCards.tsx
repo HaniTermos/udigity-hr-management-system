@@ -162,9 +162,10 @@ export function PhoneNumbersCard({
                     aria-label={`Phone ${i + 1} country code`}
                     value={p.countryCode}
                     onChange={(e) => onChangeRow(p.key, { countryCode: e.target.value })}
+                    placeholder="Code"
                     options={[
                       ...(COUNTRY_CODES as readonly string[]).map((c) => ({ value: c, label: c })),
-                      ...((COUNTRY_CODES as readonly string[]).includes(p.countryCode) ? [] : [{ value: p.countryCode, label: p.countryCode || 'Default' }]),
+                      ...(!p.countryCode || (COUNTRY_CODES as readonly string[]).includes(p.countryCode) ? [] : [{ value: p.countryCode, label: p.countryCode }]),
                     ]}
                     wrapperClassName="min-w-0"
                     className="pl-2 pr-6"

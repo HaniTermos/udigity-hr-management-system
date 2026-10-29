@@ -187,7 +187,7 @@ function CorrectionForm({
       {open && (
         <NoticePolicy
           dec="F-01"
-          body="If you propose a check-out for a session that is still open, it closes provisionally and you can check in again. The Owner decides the request."
+          body="If you propose a check-out for a session that is still open, it goes to the Owner for review and you can check in again. Your proposed check-out counts only once the Owner approves it."
         />
       )}
       {alert && <Alert tone="danger" title="Request not sent" body={alert} />}

@@ -15,6 +15,7 @@ import { initModules } from './modules/index.js';
 import { assertEmailConfigSafe, describeEmailConfig, emailDeliveryWarning, loadEmailConfig } from './modules/notifications/emailConfig.js';
 import { beat, companyTimezone, errorSummary, relayOutboxOnce, runDueJobs, schedulerTick, WORKER_ID } from './modules/platform/service.js';
 import { assertRuntimeRole } from './shared/runtimeRole.js';
+import { exitOnCrash } from './shared/crash.js';
 
 const POLL_MS = 2000;
 
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
   await beat();
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
+  exitOnCrash('worker');
   schedule();
 }
 

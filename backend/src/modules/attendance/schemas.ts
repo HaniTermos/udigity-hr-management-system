@@ -1,14 +1,14 @@
 /**
  * MOD-attendance — Zod request schemas (.strict()), DTO types and VT-3 action declarations. Owner: BE1.
- * Contract: board post BE1-C2 (docs/implementation/coordination.md). Every policy value is a
- * Demonstration alternative — not approved (docs/policy-defaults.md).
+ * Contract: board post BE1-C2 (docs/implementation/coordination.md). Policy: the approved baseline
+ * docs/policy-baseline-2026-10-29.md (D1–D6); the remaining flags are Demonstration alternatives.
  */
 import { z } from 'zod';
 import { defineActions, type Action, type ActionPolicy } from '../../shared/access.js';
 import { PageQuerySchema } from '../../shared/pagination.js';
 import { defineMatrixActions } from '../access/schemas.js';
 import type { Role } from '../../middleware/auth.js';
-import { VERIFICATION_MODES, WEEKDAYS, isValidDate, type Punctuality, type VerificationMode } from './time.js';
+import { VERIFICATION_MODES, WEEKDAYS, isValidDate, type Punctuality } from './time.js';
 
 /** authz-matrix §3.3, declared FROM the matrix so roles cannot drift. */
 export const ATTENDANCE_ACTIONS = defineMatrixActions([
@@ -31,6 +31,7 @@ export const ATTENDANCE_ACTIONS = defineMatrixActions([
  * - `attendance.overview.read`: OWN-004 monitoring (Owner + 2FA). FE2 nav uses this name.
  * - `attendance.remote_exception.request`: DEC-010 self request; the flag
  *   `attendance.remoteSelfRequest` (default false) gates it in the service.
+ * - `attendance.days_off.manage`: D1 approved employee days off (Owner + 2FA; create/list/cancel).
  */
 export const ATTENDANCE_EXTRA_ACTIONS = defineActions({
   ['attendance.overview.read' as Action]: {
@@ -41,6 +42,11 @@ export const ATTENDANCE_EXTRA_ACTIONS = defineActions({
   ['attendance.remote_exception.request' as Action]: {
     roles: ['owner', 'data_entry', 'call_center', 'developer'],
     description: 'Own remote-exception request; DEMO DEC-010 flag attendance.remoteSelfRequest',
+  } satisfies ActionPolicy,
+  ['attendance.days_off.manage' as Action]: {
+    roles: ['owner'],
+    admin: true,
+    description: 'D1 approved employee days off: create, list, cancel (Owner + 2FA)',
   } satisfies ActionPolicy,
 });
 
@@ -60,6 +66,7 @@ export const A = {
   remoteRequest: 'attendance.remote_exception.request' as Action,
   failedCheckoutReview: 'attendance.failed_checkout.review' as Action,
   overview: 'attendance.overview.read' as Action,
+  daysOff: 'attendance.days_off.manage' as Action,
   settingsRead: 'settings.read' as Action,
   settingsUpdate: 'settings.update' as Action,
 } as const;
@@ -156,16 +163,20 @@ export const RejectCorrectionSchema = z
 
 export const WithdrawSchema = z.object({ version: z.number().int().positive() }).strict();
 
+/** D6: an Owner-completed "Work completed" (accepted only while the summary is missing). */
+const ownerSummary = z.string().trim().max(4000).optional();
+
 export const AdjustSchema = z
   .object({
     version: z.number().int().positive(),
     checkInAt: isoInstant.optional(),
     checkOutAt: isoInstant.optional(),
     checkOutUnknown: z.boolean().optional(),
+    workCompleted: ownerSummary,
     reason: reasonText,
   })
   .strict()
-  .refine((b) => b.checkInAt !== undefined || b.checkOutAt !== undefined || b.checkOutUnknown === true, {
+  .refine((b) => b.checkInAt !== undefined || b.checkOutAt !== undefined || b.checkOutUnknown === true || b.workCompleted !== undefined, {
     message: 'Nothing to change',
     path: ['checkOutAt'],
   })
@@ -180,6 +191,8 @@ export const ResolveReviewSchema = z
     version: z.number().int().positive(),
     checkOutAt: isoInstant.optional(),
     checkOutUnknown: z.boolean().optional(),
+    workCompleted: ownerSummary,
+    /** D4: required when the resolution changes the checkout or completes the summary (service rule). */
     reason: z.string().trim().max(1000).optional(),
   })
   .strict()
@@ -208,9 +221,11 @@ const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Must be HH:MM (24 h)
 
 /**
  * FX-BE-C2: weekday ids are accepted in any case and as full names ("mon", "Monday", "MON") and are
- * stored uppercase. Every field except `version` is optional: an omitted field keeps the value of the
- * current version, so a form that edits only some fields never wipes the others (holidays, summary
- * policy, missing-checkout hours, office IPs).
+ * stored uppercase. On a later save an omitted field keeps the value of the current Owner-saved
+ * version, so a form that edits only some fields never wipes the others.
+ * D1: the FIRST save must state timezone, working days, shift start, office IPs, holidays and
+ * `holidaysConfirmed: true` explicitly (env values are only suggestions; nothing is defaulted).
+ * D1/D6: no shift end (derived: start + 9 h) and no summary policy (pinned: required, 10 characters).
  */
 const weekday = z.preprocess(
   (v) => (typeof v === 'string' ? v.trim().slice(0, 3).toUpperCase() : v),
@@ -223,13 +238,14 @@ export const PutSettingsSchema = z
     timezone: z.string().trim().min(1).max(64).optional(),
     workingDays: z.array(weekday).min(1).max(7).optional(),
     shiftStart: hhmm.optional(),
-    shiftEnd: hhmm.optional(),
     graceMinutes: z.number().int().min(0).max(240).optional(),
     verificationMode: z.enum(VERIFICATION_MODES).optional(),
     officeIps: z.array(z.string().trim().min(1).max(64)).max(50).optional(),
+    /** Owner decision 2026-10-29: dynamic-DNS names of the office router (no static IP), e.g. office.ddns.net. */
+    officeHostnames: z.array(z.string().trim().min(1).max(253)).max(5).optional(),
     holidays: z.array(localDate).max(400).optional(),
-    summaryRequired: z.boolean().optional(),
-    summaryMinLength: z.number().int().min(0).max(2000).optional(),
+    /** D1: the Owner confirms the holiday list (possibly empty). Must end up true on every save. */
+    holidaysConfirmed: z.boolean().optional(),
     missingCheckoutFlagHours: z.number().int().min(0).max(72).optional(),
     reason: z.string().trim().max(500).optional(),
   })
@@ -259,6 +275,39 @@ export const RequestRemoteSchema = z
   .strict()
   .refine(rangeOk, { message: 'End date is before start date', path: ['endDate'] });
 export const RemoteDecisionSchema = VersionReasonSchema;
+
+/** D1 approved employee days off (Owner). One date or a range; reason required. */
+export const CreateDayOffSchema = z
+  .object({ employeeId: z.string().uuid(), ...remoteBase })
+  .strict()
+  .refine(rangeOk, { message: 'End date is before start date', path: ['endDate'] });
+export type CreateDayOffInput = z.infer<typeof CreateDayOffSchema>;
+export const CancelDayOffSchema = z.object({ version: z.number().int().positive(), reason: reasonText }).strict();
+export const DaysOffQuerySchema = PageQuerySchema.extend({
+  ...RangeQuery,
+  employeeId: z.string().uuid().optional(),
+  includeCancelled: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
+}).strict();
+export type DaysOffQuery = z.infer<typeof DaysOffQuerySchema>;
+
+/**
+ * Owner decision 2026-10-29: an employee's own start time and/or working days from `effectiveFrom`
+ * (default: today, company date). `null` (or `useCompanyDefault`) = the company value.
+ */
+export const PutEmployeeScheduleSchema = z
+  .object({
+    effectiveFrom: localDate.optional(),
+    shiftStart: hhmm.nullable().optional(),
+    workingDays: z.array(weekday).min(1).max(7).nullable().optional(),
+    useCompanyDefault: z.boolean().optional(),
+    reason: z.string().trim().max(500).optional(),
+  })
+  .strict()
+  .refine((b) => b.useCompanyDefault === true || b.shiftStart !== undefined || b.workingDays !== undefined, {
+    message: 'Give a start time or working days, or use the company default',
+    path: ['shiftStart'],
+  });
+export type PutEmployeeScheduleInput = z.infer<typeof PutEmployeeScheduleSchema>;
 export const RemoteQuerySchema = PageQuerySchema.extend({
   employeeId: z.string().uuid().optional(),
   status: z.enum(REMOTE_STATUSES).optional(),
@@ -273,7 +322,8 @@ export type VerificationResult = 'passed' | 'failed' | 'remote' | 'disabled' | '
 
 export interface VerificationDto {
   result: VerificationResult;
-  mode: VerificationMode | null;
+  /** 'ip'; older sessions may carry a retired mode name. */
+  mode: string | null;
 }
 
 export interface SessionDto {
@@ -298,7 +348,14 @@ export interface SessionDto {
   durationStatus: 'met' | 'short' | 'open' | 'unknown';
   verification: { checkIn: VerificationDto; checkOut: VerificationDto | null };
   checkoutFailureReason: string | null;
-  summary: { workCompleted: string | null; outstandingTasks: string | null; blockers: string | null; notes: string | null } | null;
+  summary: {
+    workCompleted: string | null;
+    outstandingTasks: string | null;
+    blockers: string | null;
+    notes: string | null;
+    /** D6: the Owner who completed a missing summary; null = written by the employee. */
+    writtenBy: string | null;
+  } | null;
   missingCheckout: boolean;
   reviewPending: boolean;
   pendingCorrectionId: string | null;
@@ -350,11 +407,15 @@ export interface SettingsVersionDto {
   timezone: string;
   workingDays: string[];
   shiftStart: string;
+  /** Derived: shift start + 9 h (D1). */
   shiftEnd: string;
   graceMinutes: number;
-  verificationMode: VerificationMode;
+  verificationMode: string;
   officeIps?: string[];
+  officeHostnames?: string[];
   holidays?: string[];
+  holidaysConfirmed: boolean;
+  /** Pinned (D6): always true / 10. */
   summaryRequired: boolean;
   summaryMinLength: number;
   missingCheckoutFlagHours: number;
@@ -384,8 +445,29 @@ export interface OverviewRowDto {
   reviewPending: boolean;
   pendingCorrections: number;
   remoteExceptionToday: boolean;
+  /** D1: an approved day off covers this date (non-working for this employee). */
+  dayOff: boolean;
+  /** The employee's own schedule on this date (per-employee override or company); null = not configured. */
+  workingDay: boolean | null;
+  shiftStart: string | null;
   employee: { id: string; fullName: string; role: Role };
   session: SessionDto | null;
+}
+
+export interface DayOffDto {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  startDate: string;
+  endDate: string;
+  reason: string;
+  createdBy: string;
+  createdByName: string | null;
+  createdAt: string;
+  cancelledAt: string | null;
+  cancelledBy: string | null;
+  cancelReason: string | null;
+  version: number;
 }
 
 /** OWN-005 review queue (FE2 `ReviewItem`). */

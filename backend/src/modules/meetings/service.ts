@@ -39,8 +39,10 @@ import * as repo from './repo.js';
 import type { MeetingRow } from './repo.js';
 import type { MeetingDto, MeetingStatus } from './schemas.js';
 import { findOpenForBusiness } from '../deals/repo.js';
+import { OPEN_DEAL_STAGES as DEAL_OPEN_STAGES } from '../deals/schemas.js';
 
-const OPEN_DEAL_STAGES = new Set(['accepted_opportunity', 'signed', 'paid', 'signed_and_paid']);
+/** D16: every open deal stage (incl. meeting scheduled / proposal sent), from the deals stage list. */
+const OPEN_DEAL_STAGES = new Set<string>(DEAL_OPEN_STAGES);
 
 /** Reason written on meetings cancelled because their deal stopped (delivery-design §6). */
 export const DEAL_NOT_PROCEEDING_REASON = 'Deal not proceeding';

@@ -28,7 +28,9 @@ describe('shared/flags (policy registry)', () => {
   });
 
   it('reads env overrides and rejects invalid values', () => {
-    expect(loadPolicyFlags({ POLICY_DEALS_CLOSURE_MODE: 'direct' })['deals.closureMode']).toBe('direct');
+    // D16 (approved): 'direct' (Developer finalizes) is retired; only ownerVerify is accepted.
+    expect(loadPolicyFlags({ POLICY_DEALS_CLOSURE_MODE: 'ownerVerify' })['deals.closureMode']).toBe('ownerVerify');
+    expect(() => loadPolicyFlags({ POLICY_DEALS_CLOSURE_MODE: 'direct' })).toThrow();
     expect(() => loadPolicyFlags({ POLICY_DEALS_CLOSURE_MODE: 'nope' })).toThrow();
     expect(() => loadPolicyFlags({ POLICY_RESERVATION_LEASE_SECONDS: '5' })).toThrow();
   });

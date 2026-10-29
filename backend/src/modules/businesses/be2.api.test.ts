@@ -30,7 +30,7 @@ import { clock } from '../platform/clock.js';
 import businessesModule from './module.js';
 import correctionsModule from '../corrections/module.js';
 import { releaseForDeactivatedReviewer } from '../corrections/service.js';
-import { setCategoryFlagForTests } from './service.js';
+import { HIDDEN_MATCH_FIELDS } from '../duplicates/schemas.js';
 
 const hasTestDb = Boolean(process.env.TEST_DATABASE_URL);
 const ORIGIN = 'http://localhost:3000';
@@ -222,7 +222,6 @@ describe.skipIf(!hasTestDb)('BE2 Increment 3: businesses, categories, search, co
   afterEach(() => {
     clock.set(null);
     setRuleFlagOverridesForTests({});
-    setCategoryFlagForTests(null);
   });
 
   afterAll(async () => {
@@ -240,6 +239,7 @@ describe.skipIf(!hasTestDb)('BE2 Increment 3: businesses, categories, search, co
       { method: 'get', path: '/api/businesses', roles: ['owner', 'data_entry', 'call_center', 'developer'] },
       { method: 'post', path: '/api/businesses', roles: ['owner', 'data_entry'], body: {} },
       { method: 'post', path: '/api/businesses/duplicate-check', roles: ['owner', 'data_entry'], body: {} },
+      { method: 'post', path: '/api/businesses/duplicate-review-requests', roles: ['data_entry'], body: {} },
       { method: 'get', path: `/api/businesses/${Z}`, roles: ['owner', 'data_entry', 'call_center', 'developer'] },
       { method: 'patch', path: `/api/businesses/${Z}`, roles: ['owner', 'data_entry'], body: { version: 1 } },
       { method: 'post', path: `/api/businesses/${Z}/archive`, roles: ['owner'], body: { version: 1 } },
@@ -399,19 +399,57 @@ describe.skipIf(!hasTestDb)('BE2 Increment 3: businesses, categories, search, co
       expect(await auditCount('business.similar_name_confirmed', ok.body.id)).toBe(1);
     });
 
-    it('a hidden match reveals existence only to Data Entry; the Owner sees it in full (AC-DUP-007/008)', async () => {
-      const a = await created(de);
+    // Changed expectation (approved D10; was `{ visibility: 'hidden' }` only): exactly the matched field type,
+    // name, category and creation date; never id, phones, socials, notes or assignee.
+    it('D10: a hidden match discloses exactly matchedOn/name/category/createdAt to Data Entry; the Owner sees it in full', async () => {
+      const handle = `@${uniq()}secret`;
+      const a = await created(de, { notes: 'Private note SECRETNOTE', website: 'secret-site.example', social: [{ platform: 'instagram', handle, followers: 5, lastPost: null }] });
+      await assign(a.id, cc.id);
       await ageBusiness(a.id, 16);
       const p = { countryCode: '+961', number: a.phones[0].normalized.slice(4) };
       const deRes = await createBiz(de2, { phones: [p] });
       expect(deRes.status).toBe(409);
-      expect(deRes.body.details).toEqual({ visibility: 'hidden' });
-      expect(JSON.stringify(deRes.body)).not.toContain(a.id);
+      expect(Object.keys(deRes.body.details).sort()).toEqual([...HIDDEN_MATCH_FIELDS].sort());
+      expect(deRes.body.details).toEqual({ visibility: 'hidden', matchedOn: 'phone', name: a.name, categoryName: 'Other', createdAt: expect.any(String) });
+      const leak = JSON.stringify(deRes.body);
+      for (const secret of [a.id, a.phones[0].normalized, handle, 'SECRETNOTE', 'secret-site', cc.id]) expect(leak).not.toContain(secret);
       const check = await call(de2, 'post', '/api/businesses/duplicate-check', { phones: [p] });
       expect(check.status).toBe(200);
-      expect(check.body).toEqual({ blocked: true, match: { visibility: 'hidden' }, similar: [] });
+      expect(check.body).toEqual({ blocked: true, match: deRes.body.details, similar: [] });
+      const byName = await call(de2, 'post', '/api/businesses/duplicate-check', { name: a.name });
+      expect(byName.body.match).toMatchObject({ visibility: 'hidden', matchedOn: 'name', name: a.name });
       const ownerRes = await createBiz(owner, { phones: [p] });
       expect(ownerRes.body.details).toMatchObject({ visibility: 'visible', id: a.id });
+    });
+
+    it('D10: "Request Owner review" re-derives the match server-side, is audited, notifies Owners, grants no access', async () => {
+      const a = await created(de, { notes: 'Private review note' });
+      await ageBusiness(a.id, 16);
+      const p = { countryCode: '+961', number: a.phones[0].normalized.slice(4) };
+      // Client-supplied ids are refused (strict schema): the match is never taken from the client.
+      const withId = await call(de2, 'post', '/api/businesses/duplicate-review-requests', { phones: [p], businessId: a.id });
+      expect(withId.status).toBe(400);
+      const tooLong = await call(de2, 'post', '/api/businesses/duplicate-review-requests', { phones: [p], explanation: 'x'.repeat(501) });
+      expect(tooLong.status).toBe(400);
+      const none = await call(de2, 'post', '/api/businesses/duplicate-review-requests', { phones: [phone()] });
+      expect(none.status).toBe(422);
+      const res = await call(de2, 'post', '/api/businesses/duplicate-review-requests', { phones: [p], explanation: 'Same shop, new branch?' });
+      expect(res.status).toBe(201);
+      expect(res.body).toEqual({ requested: true, match: { visibility: 'hidden', matchedOn: 'phone', name: a.name, categoryName: 'Other', createdAt: expect.any(String) } });
+      const { rows: au } = await query<{ actor_id: string; reason: string; payload: { matchedOn: string } }>(
+        `SELECT actor_id, reason, payload FROM audit_events WHERE event_name = 'business.duplicate_review_requested' AND entity_id = $1`,
+        [a.id]
+      );
+      expect(au).toHaveLength(1);
+      expect(au[0]).toMatchObject({ actor_id: de2.id, reason: 'Same shop, new branch?', payload: { matchedOn: 'phone' } });
+      const { rows: ob } = await query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM outbox_events WHERE name = 'business.duplicate_review_requested' AND aggregate_id = $1`,
+        [a.id]
+      );
+      expect(ob[0].n).toBe(1);
+      // No access is granted by the request.
+      expect((await call(de2, 'get', `/api/businesses/${a.id}`)).status).toBe(403);
+      for (const other of [cc, dv]) expect((await call(other, 'post', '/api/businesses/duplicate-review-requests', { phones: [p] })).status).toBe(403);
     });
 
     it('similar names never list a record the caller cannot read', async () => {
@@ -431,7 +469,8 @@ describe.skipIf(!hasTestDb)('BE2 Increment 3: businesses, categories, search, co
       expect(arch.status).toBe(200);
       const res = await createBiz(de, { phones: [{ countryCode: '+961', number: a.phones[0].normalized.slice(4) }] });
       expect(res.status).toBe(409);
-      expect(res.body.details).toEqual({ visibility: 'hidden' });
+      // Changed expectation (approved D10): the hidden disclosure now carries the five allowed fields.
+      expect(res.body.details).toEqual({ visibility: 'hidden', matchedOn: 'phone', name: a.name, categoryName: 'Other', createdAt: expect.any(String) });
     });
 
     it('a record does not match itself on edit (DR-7); duplicate-check excludes it too', async () => {
@@ -657,34 +696,51 @@ describe.skipIf(!hasTestDb)('BE2 Increment 3: businesses, categories, search, co
       expect(await auditCount('business_access.owner_viewed_hidden', hidden.id)).toBe(1);
     });
 
-    it('VT-7 day-16 boundary in the company timezone (Asia/Beirut): visible at 23:59 on day 15, hidden at 00:00 on day 16', async () => {
-      setRuleFlagOverridesForTests({ 'company.timezone': 'Asia/Beirut' });
+    // Changed expectation (approved D9; was the company-day boundary at 00:00 on created-date + 15, and the
+    // UTC+14 fail-closed zone when the timezone was unset): 15 ELAPSED days, independent of the timezone.
+    it('D9 elapsed window through the API: visible until created_at + 15 × 24 h, hidden from that instant (any timezone)', async () => {
       const marker = uniq();
       const b = await created(de, { name: `${marker} boundary` });
-      // Created Oct 9 00:30 in Beirut (UTC+3) → hidden from Oct 24 00:00 Beirut = Oct 23 21:00Z.
       await query(`UPDATE businesses SET created_at = '2026-10-08T21:30:00Z' WHERE id = $1`, [b.id]);
-      clock.set(new Date('2026-10-23T20:59:59Z'));
-      expect((await call(de2, 'get', `/api/businesses/${b.id}`)).status).toBe(200);
-      expect((await call(de2, 'get', `/api/businesses?q=${marker}`)).body.total).toBe(1);
-      expect((await call(de2, 'get', `/api/search?q=${marker}`)).body.total).toBe(1);
-      clock.set(new Date('2026-10-23T21:00:00Z'));
-      const at = await call(de2, 'get', `/api/businesses/${b.id}`);
-      expect(at.status).toBe(403);
-      expect(at.body.code).toBe('HIDDEN_BY_POLICY');
-      expect((await call(de2, 'get', `/api/businesses?q=${marker}`)).body.total).toBe(0);
-      expect((await call(de2, 'get', `/api/search?q=${marker}`)).body.total).toBe(0);
+      for (const tz of ['Asia/Beirut', '']) {
+        setRuleFlagOverridesForTests({ 'company.timezone': tz });
+        clock.set(new Date('2026-10-23T21:29:59Z'));
+        expect((await call(de2, 'get', `/api/businesses/${b.id}`)).status, tz).toBe(200);
+        expect((await call(de2, 'get', `/api/businesses?q=${marker}`)).body.total).toBe(1);
+        expect((await call(de2, 'get', `/api/search?q=${marker}`)).body.total).toBe(1);
+        clock.set(new Date('2026-10-23T21:30:00Z'));
+        const at = await call(de2, 'get', `/api/businesses/${b.id}`);
+        expect(at.status, tz).toBe(403);
+        expect(at.body.code).toBe('HIDDEN_BY_POLICY');
+        expect((await call(de2, 'get', `/api/businesses?q=${marker}`)).body.total).toBe(0);
+        expect((await call(de2, 'get', `/api/search?q=${marker}`)).body.total).toBe(0);
+      }
       expect((await call(owner, 'get', `/api/businesses/${b.id}`)).status).toBe(200);
     });
 
-    it('VT-7 with company.timezone NOT CONFIGURED: fail closed at UTC+14 (security review R4)', async () => {
-      setRuleFlagOverridesForTests({ 'company.timezone': '' });
+    it('D9 editing does not restart the Data Entry window', async () => {
       const b = await created(de);
-      // Oct 9 11:30 at UTC+14 → hidden from Oct 24 00:00 (+14) = Oct 23 10:00Z, eleven hours before Beirut.
-      await query(`UPDATE businesses SET created_at = '2026-10-08T21:30:00Z' WHERE id = $1`, [b.id]);
-      clock.set(new Date('2026-10-23T09:59:59Z'));
-      expect((await call(de2, 'get', `/api/businesses/${b.id}`)).status).toBe(200);
-      clock.set(new Date('2026-10-23T10:00:00Z'));
+      await ageBusiness(b.id, 14);
+      const edit = await call(de, 'patch', `/api/businesses/${b.id}`, { version: b.version, notes: 'touch' });
+      expect(edit.status).toBe(200);
+      await ageBusiness(b.id, 16);
       expect((await call(de2, 'get', `/api/businesses/${b.id}`)).body.code).toBe('HIDDEN_BY_POLICY');
+    });
+
+    it('D9 Call Center: window from assignment; reassignment cuts the old agent off at once; the new agent starts fresh', async () => {
+      const b = await created(de);
+      await ageBusiness(b.id, 40);
+      await assign(b.id, cc.id);
+      expect((await call(cc, 'get', `/api/businesses/${b.id}`)).status).toBe(200);
+      await query(`UPDATE calling_assignments SET ended_at = now(), end_reason = 'reassigned' WHERE business_id = $1 AND ended_at IS NULL`, [b.id]);
+      await assign(b.id, cc2.id);
+      const old = await call(cc, 'get', `/api/businesses/${b.id}`);
+      expect(old.status).toBe(403);
+      expect(old.body.code).toBe('PERMISSION_DENIED');
+      expect((await call(cc2, 'get', `/api/businesses/${b.id}`)).status).toBe(200);
+      await query(`UPDATE calling_assignments SET started_at = now() - interval '15 days 1 minute' WHERE business_id = $1 AND ended_at IS NULL`, [b.id]);
+      expect((await call(cc2, 'get', `/api/businesses/${b.id}`)).body.code).toBe('HIDDEN_BY_POLICY');
+      await unassign(b.id);
     });
 
     it('DE-2 branch (OI-02): another creator\'s fresh business is permission denied; DE-1 reads it', async () => {
@@ -748,7 +804,7 @@ describe.skipIf(!hasTestDb)('BE2 Increment 3: businesses, categories, search, co
         expect(r.body.items.map((i: { name: string }) => i.name)).toContain('Other');
       }
       expect(o.body.total).toBeGreaterThan(0);
-    });
+    }, 30_000); // 4 role calls; slower on a reused DB with many categories
 
     it('CA-A (default): Owner creates/renames; Data Entry 403; normalised duplicate → 409 (AC-CAT-001/002)', async () => {
       const name = `${uniq()} Salon`;
@@ -767,14 +823,25 @@ describe.skipIf(!hasTestDb)('BE2 Increment 3: businesses, categories, search, co
       expect(stale.body.code).toBe('VERSION_CONFLICT');
     });
 
-    it('CA-B (flag on): Data Entry may create and rename, never deactivate; CC/DV still 403', async () => {
-      setCategoryFlagForTests(true);
-      const c = await call(de, 'post', '/api/categories', { name: `${uniq()} Gym` });
-      expect(c.status).toBe(201);
-      const rn = await call(de, 'patch', `/api/categories/${c.body.id}`, { name: `${uniq()} Gym 2`, version: c.body.version });
-      expect(rn.status).toBe(200);
-      expect((await call(de, 'post', `/api/categories/${c.body.id}/deactivate`, { version: rn.body.version })).body.code).toBe('FORBIDDEN_ROLE');
-      for (const a of [cc, dv]) expect((await call(a, 'post', '/api/categories', { name: `${uniq()} y` })).body.code).toBe('FORBIDDEN_ROLE');
+    // Replaces the CA-B test (approved D12): there is no delegation toggle. Even with the retired env variable
+    // set, Data Entry (and CC/DV) cannot create, rename or deactivate categories.
+    it('D12: category management is Owner only, even with POLICY_CATEGORIES_DATA_ENTRY_MANAGE=true in the environment', async () => {
+      const prev = process.env.POLICY_CATEGORIES_DATA_ENTRY_MANAGE;
+      process.env.POLICY_CATEGORIES_DATA_ENTRY_MANAGE = 'true';
+      try {
+        const own = await call(owner, 'post', '/api/categories', { name: `${uniq()} Gym` });
+        expect(own.status).toBe(201);
+        for (const a of [de, cc, dv]) {
+          expect((await call(a, 'post', '/api/categories', { name: `${uniq()} y` })).body.code).toBe('FORBIDDEN_ROLE');
+          expect((await call(a, 'patch', `/api/categories/${own.body.id}`, { name: `${uniq()} z`, version: own.body.version })).body.code).toBe('FORBIDDEN_ROLE');
+          expect((await call(a, 'post', `/api/categories/${own.body.id}/deactivate`, { version: own.body.version })).body.code).toBe('FORBIDDEN_ROLE');
+        }
+        // Data Entry still selects the active categories (the denied management state stays in the UI).
+        expect((await call(de, 'get', '/api/categories?pageSize=100')).status).toBe(200);
+      } finally {
+        if (prev === undefined) delete process.env.POLICY_CATEGORIES_DATA_ENTRY_MANAGE;
+        else process.env.POLICY_CATEGORIES_DATA_ENTRY_MANAGE = prev;
+      }
     });
 
     it('"Other" always exists and cannot be deactivated or renamed (OI-21); deactivate is not delete (AC-CAT-003/004)', async () => {
@@ -967,17 +1034,28 @@ describe.skipIf(!hasTestDb)('BE2 Increment 3: businesses, categories, search, co
       expect(q.body.tabCounts.resolved).toBe(0);
     });
 
-    it('OI-09: the requester still sees their request with the business redacted, and it is counted', async () => {
+    // Changed expectation (approved D9): the requester keeps context access WHILE the request is open (was:
+    // redacted as soon as the assignment ended). Once it is no longer open, OI-09 redaction applies again.
+    it('D9: the requester keeps context access while the request is open; redacted once it is withdrawn (OI-09)', async () => {
       const b = await created(de);
       await assign(b.id, cc.id);
       const c = await submitted(cc, b.id);
       await unassign(b.id);
       const d = await call(cc, 'get', `/api/correction-requests/${c.id}`);
       expect(d.status).toBe(200);
-      expect(d.body).toMatchObject({ redacted: true, businessId: null, businessName: null, status: 'submitted' });
-      const list = await call(cc, 'get', '/api/correction-requests?tab=open&pageSize=100');
-      const row = list.body.items.find((i: { id: string }) => i.id === c.id);
-      expect(row).toMatchObject({ redacted: true, businessId: null });
+      expect(d.body).toMatchObject({ redacted: false, businessId: b.id, status: 'submitted' });
+      const biz = await call(cc, 'get', `/api/businesses/${b.id}`);
+      expect(biz.status).toBe(200);
+      expect(biz.body).toMatchObject({ access: 'context_limited', exceptionRow: 'R6_OPEN_CORRECTION' });
+      // Context only: not in the directory or search.
+      expect((await call(cc, 'get', `/api/businesses?q=${encodeURIComponent(b.name)}`)).body.total).toBe(0);
+      const w = await call(cc, 'post', `/api/correction-requests/${c.id}/withdraw`, { version: d.body.version });
+      expect(w.status).toBe(200);
+      expect((await call(cc, 'get', `/api/businesses/${b.id}`)).status).toBe(403);
+      const after = await call(cc, 'get', `/api/correction-requests/${c.id}`);
+      expect(after.body).toMatchObject({ redacted: true, businessId: null, businessName: null, status: 'withdrawn' });
+      const list = await call(cc, 'get', '/api/correction-requests?tab=withdrawn&pageSize=100');
+      expect(list.body.items.find((i: { id: string }) => i.id === c.id)).toMatchObject({ redacted: true, businessId: null });
     });
 
     it('N-4: a deactivated reviewer\'s In-review requests return to Submitted (AC-DFIX-008)', async () => {
@@ -1003,6 +1081,111 @@ describe.skipIf(!hasTestDb)('BE2 Increment 3: businesses, categories, search, co
       ]);
       expect(m.size).toBe(2); // the business id resolves to one entry; the unresolved deal is denied
       expect(m.get(b.id)).toEqual({ allowed: true, level: 'full' });
+    });
+  });
+
+  // -------------------------------------------------------------------------------------------
+  describe('approved v1 policy (2026-10-29): D11 phones, D20 restore and archiving', () => {
+    async function submitted2(by: Agent, businessId: string) {
+      const r = await call(by, 'post', '/api/correction-requests', { businessId, issueType: 'Incorrect phone', description: 'The number rings a different shop' });
+      expect(r.status, JSON.stringify(r.body)).toBe(201);
+      return r.body as { id: string; version: number };
+    }
+
+    it('D11: an explicit, valid E.164 country code is required: +000 / 0961 / letters are refused, never normalised', async () => {
+      for (const countryCode of ['+000', '0961', '+0', 'abc', '+12345']) {
+        const res = await createBiz(de, { phones: [{ countryCode, number: `7${rnd7()}` }] });
+        expect(res.status, countryCode).toBe(400);
+        expect(res.body.code).toBe('VALIDATION_ERROR');
+        expect(Object.keys(res.body.details)).toContain('phones.0.number');
+      }
+      const intlZero = await createBiz(de, { phones: [{ countryCode: '', number: `+0${rnd7()}12` }] });
+      expect(intlZero.status).toBe(400);
+      // No default country code is configured (company input still required): a bare national number is not
+      // normalised with an assumed code.
+      const bare = await createBiz(de, { phones: [{ countryCode: '', number: `7${rnd7()}` }] });
+      expect(bare.status).toBe(409);
+      expect(bare.body.code).toBe('POLICY_NOT_CONFIGURED');
+      const ok = await createBiz(de, { phones: [{ countryCode: '+961', number: `07${rnd7()}` }] });
+      expect(ok.status).toBe(201);
+      expect(ok.body.phones[0].normalized).toMatch(/^\+9617\d{7}$/);
+    });
+
+    it('D20: restore re-validates the category (inactive → 422 CATEGORY_INACTIVE)', async () => {
+      const cat = await call(owner, 'post', '/api/categories', { name: `${uniq()} Florist` });
+      expect(cat.status).toBe(201);
+      const b = await created(de, { category: undefined, categoryId: cat.body.id });
+      const arch = await call(owner, 'post', `/api/businesses/${b.id}/archive`, { version: b.version });
+      expect(arch.status).toBe(200);
+      expect((await call(owner, 'post', `/api/categories/${cat.body.id}/deactivate`, { version: cat.body.version })).status).toBe(200);
+      const res = await call(owner, 'post', `/api/businesses/${b.id}/restore`, { version: arch.body.version });
+      expect(res.status).toBe(422);
+      expect(res.body.details).toMatchObject({ reason: 'CATEGORY_INACTIVE' });
+      expect(res.body.error).toMatch(/Choose an active category/);
+      expect((await call(owner, 'get', `/api/businesses/${b.id}`)).body.archived).toBe(true);
+      // Owner decision 2026-10-29 "Pick a new category": the inactive one is refused as the replacement too…
+      const stillInactive = await call(owner, 'post', `/api/businesses/${b.id}/restore`, { version: arch.body.version, categoryId: cat.body.id });
+      expect(stillInactive.status).toBe(400);
+      expect(Object.keys(stillInactive.body.details)).toContain('categoryId');
+      // …an active one is applied in the same transaction, with history + audit, then the business is restored.
+      const other = (await call(owner, 'get', '/api/categories?pageSize=100')).body.items.find((i: { system: boolean }) => i.system);
+      const ok = await call(owner, 'post', `/api/businesses/${b.id}/restore`, { version: arch.body.version, categoryId: other.id });
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+      expect(ok.body).toMatchObject({ archived: false, categoryId: other.id, category: 'Other' });
+      const { rows: hist } = await query<{ field: string; before_value: unknown; after_value: unknown }>(
+        `SELECT field, before_value, after_value FROM business_edit_history WHERE business_id = $1 AND change_kind = 'updated' AND field = 'category'`,
+        [b.id]
+      );
+      expect(hist).toEqual([{ field: 'category', before_value: cat.body.name, after_value: 'Other' }]);
+      const { rows: au } = await query<{ reason: string }>(
+        `SELECT reason FROM audit_events WHERE event_name = 'business.updated' AND entity_id = $1`,
+        [b.id]
+      );
+      expect(au.map((r) => r.reason)).toContain('category inactive at restore');
+      expect(await auditCount('business.restored', b.id)).toBe(1);
+    });
+
+    it('restore with an active category refuses a categoryId change (edit after restoring instead); a failed restore changes nothing', async () => {
+      const b = await created(de);
+      const arch = await call(owner, 'post', `/api/businesses/${b.id}/archive`, { version: b.version });
+      const cat = await call(owner, 'post', '/api/categories', { name: `${uniq()} Spa` });
+      const res = await call(owner, 'post', `/api/businesses/${b.id}/restore`, { version: arch.body.version, categoryId: cat.body.id });
+      expect(res.status).toBe(400);
+      expect((await call(owner, 'get', `/api/businesses/${b.id}`)).body).toMatchObject({ archived: true, category: 'Other' });
+    });
+
+    it('D20: restore re-runs the duplicate check (a colliding name blocks the restore; nothing is changed)', async () => {
+      const base = `${uniq()} Restore Bakery`;
+      const a = await created(de, { name: `${base} old` });
+      const arch = await call(owner, 'post', `/api/businesses/${a.id}/archive`, { version: a.version });
+      expect(arch.status).toBe(200);
+      const b = await created(de, { name: base });
+      // A legacy row (no stored key) that normalises to the same name + branch as the live record.
+      const { rows } = await query<{ normalized_name: string; normalized_branch: string }>('SELECT normalized_name, normalized_branch FROM businesses WHERE id = $1', [b.id]);
+      await query('UPDATE businesses SET name_key = NULL, normalized_name = $2, normalized_branch = $3 WHERE id = $1', [a.id, rows[0].normalized_name, rows[0].normalized_branch]);
+      const res = await call(owner, 'post', `/api/businesses/${a.id}/restore`, { version: arch.body.version });
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('DUPLICATE_BLOCKED');
+      expect(res.body.details).toMatchObject({ visibility: 'visible', id: b.id, matchedOn: 'name' });
+      expect((await call(owner, 'get', `/api/businesses/${a.id}`)).body.archived).toBe(true);
+      // A clean archived record restores.
+      const c = await created(de);
+      const ca = await call(owner, 'post', `/api/businesses/${c.id}/archive`, { version: c.version });
+      expect((await call(owner, 'post', `/api/businesses/${c.id}/restore`, { version: ca.body.version })).status).toBe(200);
+    });
+
+    it('D9/D20: archiving removes access everywhere for non-Owners, even for an open correction requester', async () => {
+      const b = await created(de);
+      await assign(b.id, cc.id);
+      const c = await submitted2(cc, b.id);
+      expect((await call(cc, 'get', `/api/businesses/${b.id}`)).status).toBe(200);
+      const v = await call(owner, 'get', `/api/businesses/${b.id}`);
+      expect((await call(owner, 'post', `/api/businesses/${b.id}/archive`, { version: v.body.version })).status).toBe(200);
+      for (const a of [cc, de]) expect((await call(a, 'get', `/api/businesses/${b.id}`)).status, a.role).toBe(404);
+      const req = await call(cc, 'get', `/api/correction-requests/${c.id}`);
+      expect(req.body).toMatchObject({ redacted: true, businessId: null });
+      expect((await call(de, 'get', `/api/correction-requests?businessId=${b.id}`)).body.total).toBe(0);
+      await unassign(b.id);
     });
   });
 });

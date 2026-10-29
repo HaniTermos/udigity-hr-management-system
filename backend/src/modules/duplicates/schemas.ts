@@ -4,8 +4,10 @@
  */
 
 /**
- * DEC-003 (i) shaping of a blocking match (Demonstration alternative — not approved).
- * `visible`: the caller may open the match (Owner always, C1). `hidden`: existence only — no id, no field.
+ * Shaping of a blocking match. `visible`: the caller may open the match (Owner always, C1).
+ * `hidden` (approved D10, docs/policy-baseline-2026-10-29.md): a match the caller cannot otherwise access
+ * reveals EXACTLY "this business already exists", the matched field type, the business name, its category
+ * and its creation date. Never an id, phones, social links, notes or the assignee. Disclosure grants no access.
  */
 export type DuplicateMatch =
   | {
@@ -20,7 +22,17 @@ export type DuplicateMatch =
       phones: string[];
       archived: boolean;
     }
-  | { visibility: 'hidden' };
+  | {
+      visibility: 'hidden';
+      matchedOn: 'name' | 'phone';
+      name: string;
+      categoryName: string;
+      /** ISO timestamp of the match's creation. */
+      createdAt: string;
+    };
+
+/** Fields of a hidden match (D10); the shape test asserts the response has these and nothing else. */
+export const HIDDEN_MATCH_FIELDS = ['visibility', 'matchedOn', 'name', 'categoryName', 'createdAt'] as const;
 
 /** DEC-013 SN-1 warning row. Only matches the caller may read are listed (no hint of hidden ones). */
 export interface SimilarName {

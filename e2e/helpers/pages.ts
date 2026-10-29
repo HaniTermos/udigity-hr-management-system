@@ -10,7 +10,7 @@ export const DATA_ENTRY_PAGES: [string, RegExp][] = [
   ['/my-day', /My Day/], ['/businesses', /Businesses/], ['/businesses/new', /New business/], ['/corrections', /Correction/],
 ];
 export const CALL_CENTER_PAGES: [string, RegExp][] = [
-  ['/my-day', /My Day/], ['/queue', /Calling queue/], ['/calendar', /Follow-ups/], ['/opportunities', /Opportunities/], ['/do-not-call', /Do-not-call/],
+  ['/my-day', /My Day/], ['/queue', /Calling queue/], ['/calendar', /Follow-ups/], ['/opportunities', /handled by the assigned developer/], ['/do-not-call', /Do-not-call/],
 ];
 export const DEVELOPER_PAGES: [string, RegExp][] = [
   ['/my-day', /My Day/], ['/deals', /Deals/], ['/meetings', /Meetings/], ['/projects', /Projects/],

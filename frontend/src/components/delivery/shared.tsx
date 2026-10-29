@@ -46,17 +46,30 @@ export function todayInput(): string {
 
 /* ---------------- labels and badges ---------------- */
 
+/** D16 (approved) stage names. "Payment pending verification" is derived: see `dealStageLabel`. */
 export const DEAL_STAGE_LABEL: Record<DealStage, string> = {
-  accepted_opportunity: 'Accepted opportunity',
+  accepted_opportunity: 'Accepted',
+  meeting_scheduled: 'Meeting scheduled',
+  proposal_sent: 'Proposal sent',
   signed: 'Signed',
   paid: 'Paid',
-  signed_and_paid: 'Signed and paid - awaiting closure',
-  closed: 'Closed deal',
-  not_proceeding: 'Not proceeding',
+  signed_and_paid: 'Signed and paid',
+  closed: 'Verified closed',
+  not_proceeding: 'Lost',
 };
+
+export const PAYMENT_PENDING_VERIFICATION = 'Payment pending verification';
+
+/** Paid / Signed and paid with an open Owner verification request reads "Payment pending verification". */
+export function dealStageLabel(stage: DealStage, pendingVerification = false): string {
+  if (pendingVerification && (stage === 'paid' || stage === 'signed_and_paid')) return PAYMENT_PENDING_VERIFICATION;
+  return DEAL_STAGE_LABEL[stage];
+}
 
 const DEAL_TONE: Record<DealStage, BadgeTone> = {
   accepted_opportunity: 'neutral',
+  meeting_scheduled: 'neutral',
+  proposal_sent: 'neutral',
   signed: 'warning',
   paid: 'warning',
   signed_and_paid: 'warning',
@@ -78,6 +91,9 @@ export const DEAL_HISTORY_LABEL: Record<string, string> = {
   'deal.not_proceeding': 'Marked not proceeding',
   'deal.marked_not_proceeding': 'Marked not proceeding',
   'deal.reopened': 'Deal reopened',
+  stage_advanced: 'Stage moved forward',
+  contract_updated: 'Contract amount updated',
+  financial_corrected: 'Financial facts corrected by the Owner',
 };
 
 export function dealHistoryLabel(type: string): string {
@@ -86,21 +102,33 @@ export function dealHistoryLabel(type: string): string {
   return t ? t.charAt(0).toUpperCase() + t.slice(1) : 'Updated';
 }
 
-export function DealStageBadge({ stage, size }: { stage: DealStage; size?: 'sm' | 'md' }) {
+export function DealStageBadge({ stage, size, pendingVerification }: { stage: DealStage; size?: 'sm' | 'md'; pendingVerification?: boolean }) {
   return (
     <Badge tone={DEAL_TONE[stage]} size={size} hasDot>
-      {DEAL_STAGE_LABEL[stage]}
+      {dealStageLabel(stage, pendingVerification)}
     </Badge>
   );
 }
 
+/**
+ * D17 (approved) labels. Waiting for client and Blocked both read "On hold" (the reason stays shown next to
+ * it); Delivered is a sub-step of In progress. Stored values are unchanged.
+ */
 export const PROJECT_STATUS_LABEL: Record<ProjectStatus, string> = {
-  scheduled: 'Scheduled',
+  scheduled: 'Not started',
   in_progress: 'In progress',
-  waiting_for_client: 'Waiting for client',
-  blocked: 'Blocked',
-  delivered: 'Delivered',
+  waiting_for_client: 'On hold',
+  blocked: 'On hold',
+  delivered: 'In progress · Delivered',
   completed: 'Completed',
+  cancelled: 'Cancelled',
+};
+
+/** Distinct option text where both On hold values appear side by side (filters, move menus). */
+export const PROJECT_STATUS_OPTION_LABEL: Record<ProjectStatus, string> = {
+  ...PROJECT_STATUS_LABEL,
+  waiting_for_client: 'On hold · Waiting for client',
+  blocked: 'On hold · Blocked',
 };
 
 const PROJECT_TONE: Record<ProjectStatus, BadgeTone> = {
@@ -110,6 +138,7 @@ const PROJECT_TONE: Record<ProjectStatus, BadgeTone> = {
   blocked: 'danger',
   delivered: 'brand',
   completed: 'success',
+  cancelled: 'danger',
 };
 
 export function isProjectStatus(v: string | null | undefined): v is ProjectStatus {
@@ -252,7 +281,7 @@ export function ActionError({ route, error, onRetry }: { route: ErrorRoute | nul
       <Alert
         tone="warning"
         title="Closure needs more facts"
-        body={`Still missing: ${missing.map((m) => (m === 'signature' ? 'Signature' : 'Payment')).join(' and ')}. Record them, then finalize.`}
+        body={`Still missing: ${missing.map((m) => (m === 'signature' ? 'Agreement reference' : 'Payment date')).join(' and ')}. Record them, then verify.`}
       />
     );
   }

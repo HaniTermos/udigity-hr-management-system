@@ -70,7 +70,7 @@ describe('fail-closed configuration', () => {
     const c = loadConfig({ NODE_ENV: 'development' });
     expect(c.session).toMatchObject({ idleMinutes: 120, absoluteHours: 12, pending2faMinutes: 10 });
     expect(c.lockout).toEqual({ maxFailures: 5, windowMinutes: 15, lockMinutes: 15 });
-    expect(c.password).toEqual({ minLength: 12, resetTtlMinutes: 60, bcryptRounds: 12, recoveryCodeBcryptRounds: 10 });
+    expect(c.password).toEqual({ minLength: 12, resetTtlMinutes: 30, bcryptRounds: 12, recoveryCodeBcryptRounds: 10 });
     expect(c.owner2faPendingScope).toBe('R11-a');
     expect(loadConfig({ NODE_ENV: 'development', OWNER_PENDING_2FA_SCOPE: 'R11-b' }).owner2faPendingScope).toBe('R11-b');
     expect(() => loadConfig({ NODE_ENV: 'development', OWNER_PENDING_2FA_SCOPE: 'x' })).toThrow();

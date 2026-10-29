@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
 import { config } from '../config/index.js';
 import { isHttpError } from '../shared/errors.js';
+import { raiseOpsAlert } from '../shared/opsAlert.js';
 
 export interface AppError extends Error {
   statusCode?: number;
@@ -10,6 +11,9 @@ export interface AppError extends Error {
   details?: unknown;
   expose?: boolean;
 }
+
+/** Route pattern for operator alerts (e.g. `GET /api/deals/:id`): never the query string or ids. */
+const routeOf = (req: Request) => `${req.method} ${req.baseUrl}${req.route?.path ?? ''}`;
 
 /**
  * Generic error responses. Internal messages (SQL, stack, driver errors) never reach the client;
@@ -20,6 +24,7 @@ export function errorHandler(err: AppError, req: Request, res: Response, _next: 
   if (isHttpError(err)) {
     if (err.statusCode >= 500) {
       console.error('API Error:', { requestId: req.requestId, url: req.originalUrl, method: req.method, code: err.code });
+      if (err.statusCode === 500) void raiseOpsAlert(`api.error:${routeOf(req)}`, `${routeOf(req)} ${err.code} request ${req.requestId}`);
     }
     return res.status(err.statusCode).json(err.toBody(req.requestId));
   }
@@ -53,6 +58,8 @@ export function errorHandler(err: AppError, req: Request, res: Response, _next: 
   });
 
   if (statusCode === 500) {
+    // Operator alert: route pattern + request id only (no query string, body or message).
+    void raiseOpsAlert(`api.error:${routeOf(req)}`, `${routeOf(req)} ${err.name} request ${req.requestId}`);
     return res.status(500).json({ error: 'Internal server error', code: 'INTERNAL_ERROR', requestId: req.requestId });
   }
   return res.status(statusCode).json({ error: 'Request failed', code: 'ERROR' });

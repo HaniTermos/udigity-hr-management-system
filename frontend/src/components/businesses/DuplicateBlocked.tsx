@@ -1,7 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import Link from 'next/link';
-import type { DuplicateMatch, SimilarName } from '@/lib/api/businesses';
+import { requestDuplicateReview, type DuplicateMatch, type SimilarName } from '@/lib/api/businesses';
+import { ApiError } from '@/lib/api/client';
 import { Button } from '@/components/ui/Button';
+import { Textarea } from '@/components/ui/Input';
+import { useToast } from '@/components/ui/Toast';
 import { CardInset } from '@/components/ui/Card';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
@@ -17,10 +20,16 @@ export function DuplicateBlockedDialog({
   open,
   match,
   onClose,
+  reviewProbe,
 }: {
   open: boolean;
   match: DuplicateMatch | null;
   onClose: () => void;
+  /**
+   * D10: the details the user tried to save. When set and the match is hidden, the dialog offers
+   * "Request Owner review"; the server re-derives the match from these details (no id is sent).
+   */
+  reviewProbe?: DuplicateReviewProbe;
 }) {
   if (!match) return null;
   const visible = match.visibility === 'visible';
@@ -68,26 +77,87 @@ export function DuplicateBlockedDialog({
             )}
           </CardInset>
         ) : (
-          <NoticeAccess
-            type="hidden-by-policy"
-            size="inline"
-            title="Details are not shown"
-            body="You cannot open the matching business."
-          />
+          <>
+            <HiddenMatchSummary match={match} />
+            <NoticeAccess
+              type="hidden-by-policy"
+              size="inline"
+              title="You cannot open this business"
+              body="Phones, social links, notes and the assignee are not shown. Seeing this warning does not give access."
+            />
+            {reviewProbe && <RequestOwnerReview probe={reviewProbe} />}
+          </>
         )}
-        <NoticePolicy
-          size="inline"
-          dec="DEC-003"
-          demo
-          body={
-            visible
-              ? 'What a blocked user may see about a match is not decided. This shows the match only because you can open it.'
-              : 'What a blocked user may see about a match they cannot open is not decided. This shows existence only.'
-          }
-        />
         <p className="text-[13px] leading-[18px] text-text-muted">No role can bypass a duplicate block.</p>
       </div>
     </Dialog>
+  );
+}
+
+export interface DuplicateReviewProbe {
+  name?: string;
+  branch?: string | null;
+  phones: { countryCode: string; number: string }[];
+}
+
+/** D10 hidden-match disclosure: matched field type, business name, category and creation date only. */
+function HiddenMatchSummary({ match }: { match: Extract<DuplicateMatch, { visibility: 'hidden' }> }) {
+  if (!match.name) return null;
+  const created = match.createdAt ? new Date(match.createdAt) : null;
+  return (
+    <CardInset className="flex flex-col gap-1">
+      <p className="ds-overline text-text-muted">Existing business</p>
+      <p className="text-base font-semibold leading-6 text-text-primary">{match.name}</p>
+      <p className="text-[13px] leading-[18px] text-text-secondary">
+        {match.categoryName ? `${match.categoryName} · ` : ''}
+        Matched on {match.matchedOn === 'phone' ? 'phone' : 'name'}
+        {created && !Number.isNaN(created.getTime()) ? ` · created ${created.toLocaleDateString()}` : ''}
+      </p>
+    </CardInset>
+  );
+}
+
+const REVIEW_EXPLANATION_MAX = 500;
+
+/** D10 "Request Owner review": optional explanation, audited on the server, Owner notified, no access granted. */
+function RequestOwnerReview({ probe }: { probe: DuplicateReviewProbe }) {
+  const toast = useToast();
+  const [explanation, setExplanation] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function send() {
+    setBusy(true);
+    setError(null);
+    try {
+      await requestDuplicateReview({ ...probe, ...(explanation.trim() ? { explanation: explanation.trim() } : {}) });
+      setSent(true);
+      toast.show({ tone: 'success', title: 'Owner review requested', body: 'The Owner has been notified. This does not give you access.' });
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'The request could not be sent. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (sent) return <p className="text-[13px] leading-[18px] text-text-secondary">Owner review requested. The Owner can resolve the duplicate, correct the data or reassign it.</p>;
+  return (
+    <div className="flex flex-col gap-2">
+      <Textarea
+        label="Explanation for the Owner (optional)"
+        value={explanation}
+        maxLength={REVIEW_EXPLANATION_MAX}
+        counter={`${explanation.length}/${REVIEW_EXPLANATION_MAX}`}
+        onChange={(e) => setExplanation(e.target.value)}
+        error={error ?? undefined}
+      />
+      <div>
+        <Button variant="secondary" isLoading={busy} onClick={() => void send()}>
+          Request Owner review
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -113,7 +183,9 @@ export function DuplicateBlockedBanner({
               {match.branch ? ` (${match.branch})` : ''}.
             </>
           ) : (
-            'A matching business exists. Details are not shown.'
+            match.name
+              ? `${match.name}${match.categoryName ? ` (${match.categoryName})` : ''} already exists — matched on ${match.matchedOn === 'phone' ? 'phone' : 'name'}. You cannot open it.`
+              : 'A matching business exists. Details are not shown.'
           )}
           {excludedSelf ? ' This record was excluded from its own check.' : ''} No role can bypass the block.
         </p>

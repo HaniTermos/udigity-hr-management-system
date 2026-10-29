@@ -10,7 +10,7 @@ import { Drawer } from '@/components/ui/Drawer';
 import { Icon } from '@/components/ui/Icon';
 import { Input, Select, Textarea } from '@/components/ui/Input';
 import { StateView } from '@/components/ui/State';
-import { ApiError, swrFetcher } from '@/lib/api/client';
+import { ApiError } from '@/lib/api/client';
 import {
   createEmployee,
   employeesPaths,
@@ -20,9 +20,9 @@ import {
   type EmployeeRow,
   type OpenItemsDto,
 } from '@/lib/api/employees';
-import { rolesPaths, type RoleSummary } from '@/lib/api/roles';
 import { requestPasswordReset } from '@/lib/api/identity';
 import type { Role } from '@/lib/api/types';
+import { AttendanceEmployeeSchedule } from './AttendanceEmployeeSchedule';
 import { formatClock, formatRoleName, ROLE_OPTIONS } from './format';
 
 export interface EmployeeDrawerProps {
@@ -107,11 +107,8 @@ function EmployeeForm({
       setResetSending(false);
     }
   }
-  const { data: rolesResp } = useSWR<{ roles: RoleSummary[] }>(rolesPaths.roles, swrFetcher);
-  const dynamicRoles = rolesResp?.roles;
-  const roleOptions = dynamicRoles && dynamicRoles.length > 0
-    ? dynamicRoles.map((r) => ({ value: r.id as Role, label: r.name }))
-    : ROLE_OPTIONS;
+  // Fixed v1 scope (approved 2026-10-29): the four roles only; custom roles are not offered.
+  const roleOptions = ROLE_OPTIONS;
   const set = <K extends keyof Fields>(k: K, v: Fields[K]) => setF((cur) => ({ ...cur, [k]: v }));
 
   const fieldErrors = error instanceof ApiError ? error.fieldErrors : {};
@@ -205,6 +202,8 @@ function EmployeeForm({
           />
         )}
       </section>
+
+      {employee && <AttendanceEmployeeSchedule employeeId={employee.id} />}
 
       {employee && (
         <section className="space-y-4 pt-4 border-t border-border-subtle" aria-labelledby="emp-role">
@@ -316,11 +315,8 @@ function ChangeRoleDialog({
   const [role, setRole] = useState<Role>(employee.role);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const { data: rolesResp } = useSWR<{ roles: RoleSummary[] }>(isOpen ? rolesPaths.roles : null, swrFetcher);
-  const dynamicRoles = rolesResp?.roles;
-  const roleOptions = dynamicRoles && dynamicRoles.length > 0
-    ? dynamicRoles.map((r) => ({ value: r.id as Role, label: r.name }))
-    : ROLE_OPTIONS;
+  // Fixed v1 scope: the four roles only.
+  const roleOptions = ROLE_OPTIONS;
 
   async function confirm() {
     setBusy(true);

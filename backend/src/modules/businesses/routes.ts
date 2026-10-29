@@ -6,9 +6,9 @@
 import { Router, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import { pool } from '../../db/pool.js';
 import { authenticate } from '../../middleware/auth.js';
-import { assertAllowed, principalFromRequest, requireAction, type AccessDecision, type Principal } from '../../shared/access.js';
+import { assertAllowed, principalFromRequest, type AccessDecision, type Principal } from '../../shared/access.js';
 import { audit, runCommand } from '../../shared/tx.js';
-import { auditOwnerHiddenRead, guard, tagGuard } from '../access/schemas.js';
+import { auditOwnerHiddenRead, guard } from '../access/schemas.js';
 import { idempotent } from '../platform/idempotency.js';
 import { categoryRequired, idOf, parse } from './http.js';
 import { LIMITS, perUserLimiter } from '../../shared/rateLimit.js';
@@ -19,6 +19,8 @@ import {
   CategoryVersionSchema,
   CreateBusinessSchema,
   DuplicateCheckSchema,
+  DuplicateReviewRequestSchema,
+  RestoreBodySchema,
   HistoryQuerySchema,
   SearchQuerySchema,
   UpdateBusinessSchema,
@@ -80,6 +82,18 @@ router.post(
   })
 );
 
+/** D10 "Request Owner review" (audited; Owner in-app notice; grants no access). Same rate limit as the check. */
+router.post(
+  '/duplicate-review-requests',
+  guard('business.duplicate_review_request'),
+  perUserLimiter('duplicate-review', LIMITS.duplicateCheck.limit, LIMITS.duplicateCheck.windowMs),
+  wrap(async (req, res) => {
+    const body = parse(DuplicateReviewRequestSchema, req.body);
+    const principal = principalFromRequest(req);
+    res.status(201).json(await runCommand(req, (ctx) => service.requestDuplicateReview(ctx, principal, body)));
+  })
+);
+
 router.post(
   '/',
   guard('business.create'),
@@ -133,10 +147,12 @@ router.post(
   guard('business.restore'),
   wrap(async (req, res) => {
     const id = idOf(req);
-    const body = parse(VersionBodySchema, req.body);
+    const body = parse(RestoreBodySchema, req.body);
     const principal = principalFromRequest(req);
     res.json(
-      await service.runBusinessCommand(req, principal, (ctx) => service.setBusinessArchived(ctx, principal, id, body.version, false, body.reason ?? null))
+      await service.runBusinessCommand(req, principal, (ctx) =>
+        service.setBusinessArchived(ctx, principal, id, body.version, false, body.reason ?? null, body.categoryId ?? null)
+      )
     );
   })
 );
@@ -169,15 +185,11 @@ export default router;
 // ---------------------------------------------------------------------------------------------
 
 /**
- * DEC-015 guard (FLAG `categories.dataEntryManage`): CA-A (default) = matrix row, Owner + 2FA only;
- * CA-B = Data Entry may also create and rename. "Demonstration alternative — not approved".
+ * D12 (approved 2026-10-29): category management is Owner only (matrix row, Owner + completed 2FA). There is
+ * no delegation toggle: the retired DEC-015 `categories.dataEntryManage` flag is not read anywhere.
  */
 function categoryManageGuard(action: 'category.create' | 'category.rename'): RequestHandler {
-  const strict = requireAction(action);
-  return tagGuard((req: Request, res: Response, next: NextFunction) => {
-    if (req.user?.role === 'data_entry' && service.dataEntryManagesCategories()) return next();
-    return strict(req, res, next);
-  }, action);
+  return guard(action);
 }
 
 export const categoriesRouter = Router();

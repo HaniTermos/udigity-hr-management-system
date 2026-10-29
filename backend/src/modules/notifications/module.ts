@@ -11,9 +11,11 @@ import {
   dispatchDueDeliveries,
   dispatchDueReminders,
   reminderPlannerConsumer,
+  runDailyDigests,
   securityEmailConsumer,
 } from './service.js';
 import { getDelivery } from './repo.js';
+import { sendOpsAlerts } from './opsAlerts.js';
 
 /** J-01: reminder dispatch. Runs every 30s. */
 const reminderDispatchJob: PlatformJobHandler = {
@@ -39,6 +41,31 @@ const deliveryDispatchJob: PlatformJobHandler = {
   },
 };
 
+/**
+ * J-13 (D18): shift-start digests (agent follow-ups due today; Owner morning digest). Every 5 min like
+ * J-04; sends only from the Owner-saved shift start on scheduled working days, once per recipient per day.
+ */
+const dailyDigestJob: PlatformJobHandler = {
+  kind: 'notifications.daily_digest',
+  schedule: { spec: 'every:300' },
+  maxAttempts: 3,
+  leaseSeconds: 120,
+  async run(ctx) {
+    await runDailyDigests(ctx);
+  },
+};
+
+/** J-14: email operator failure alerts (ops_alerts) to ALERT_EMAIL_TO; no address set = nothing sent. */
+const opsAlertsJob: PlatformJobHandler = {
+  kind: 'notifications.ops_alerts',
+  schedule: { spec: 'every:60' },
+  maxAttempts: 3,
+  leaseSeconds: 60,
+  async run() {
+    await sendOpsAlerts();
+  },
+};
+
 const definition: ModuleDefinition = {
   name: 'notifications',
   archId: 'MOD-notifications',
@@ -56,6 +83,8 @@ const definition: ModuleDefinition = {
 
     registerJob(reminderDispatchJob); // J-01
     registerJob(deliveryDispatchJob); // J-02 (email part)
+    registerJob(dailyDigestJob); // J-13 (D18 digests)
+    registerJob(opsAlertsJob); // J-14 (operator failure alerts)
 
     registerResourceResolver('notification', async (db, id) => {
       const d = await getDelivery(db, id);

@@ -9,7 +9,7 @@ import { Card, CardInset } from '@/components/ui/Card';
 import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
 import { Checkbox, DateInput, Input, Textarea } from '@/components/ui/Input';
-import { NoticePolicy, PolicyPendingChip } from '@/components/ui/NoticePolicy';
+import { NoticePolicy } from '@/components/ui/NoticePolicy';
 import { Skeleton } from '@/components/ui/State';
 import { useToast } from '@/components/ui/Toast';
 import { useApi } from '@/lib/hooks/useApi';
@@ -21,6 +21,7 @@ import {
   createTask,
   projectsPaths,
   reopenProject,
+  cancelProject,
   updateTask,
   type OpenTasksWarning,
   type Project,
@@ -46,6 +47,7 @@ import {
   LoadError,
   ProjectStatusBadge,
   PROJECT_STATUS_LABEL,
+  PROJECT_STATUS_OPTION_LABEL,
   TASK_STATUS_LABEL,
   TaskStatusBadge,
   todayInput,
@@ -55,8 +57,8 @@ const COLUMNS: TaskStatus[] = ['todo', 'in_progress', 'done', 'cancelled'];
 
 /** Statuses that need a typed explanation before the move (server: 400 without `note`). */
 const NEEDS_NOTE: Partial<Record<ProjectStatus, { title: string; label: string }>> = {
-  blocked: { title: 'Mark project blocked', label: 'Blocker reason' },
-  waiting_for_client: { title: 'Mark waiting for client', label: 'What are we waiting for?' },
+  blocked: { title: 'Put project on hold (blocked)', label: 'Blocker reason' },
+  waiting_for_client: { title: 'Put project on hold (waiting for client)', label: 'What are we waiting for?' },
 };
 
 const CONFLICT_LABELS = [
@@ -76,9 +78,9 @@ function describeProject(p: Project): Record<string, string> {
 function moveLabel(from: ProjectStatus, to: ProjectStatus): string {
   if (to === 'delivered') return 'Record delivered';
   if (to === 'completed') return 'Record completed';
-  if (to === 'scheduled') return 'Back to Scheduled';
+  if (to === 'scheduled') return 'Back to Not started';
   if (to === 'in_progress') return from === 'delivered' ? 'Back to In progress' : 'Start work';
-  return `${PROJECT_STATUS_LABEL[to]}…`;
+  return `${PROJECT_STATUS_OPTION_LABEL[to]}…`;
 }
 
 function taskActionLabel(from: TaskStatus, to: TaskStatus): string {
@@ -92,6 +94,7 @@ type Pending =
   | { kind: 'note'; to: ProjectStatus }
   | { kind: 'task-cancel'; task: Task }
   | { kind: 'reopen' }
+  | { kind: 'cancel' }
   | { kind: 'add-task' };
 
 interface StatusInput {
@@ -134,12 +137,15 @@ export function ProjectBoard({ id }: { id: string }) {
   const reopenSave = useVersionedSave<{ reason: string; mine: Record<string, string> }, Project>((input, ctx) =>
     reopenProject(id, { version: ctx.version, reason: input.reason })
   );
+  const cancelSave = useVersionedSave<{ reason: string; mine: Record<string, string> }, Project>((input, ctx) =>
+    cancelProject(id, { version: ctx.version, reason: input.reason })
+  );
 
   const p: ProjectDetail | undefined = data?.project;
 
   const reported = useRef<unknown>(null);
   useEffect(() => {
-    const c = statusSave.conflict ?? taskSave.conflict ?? reopenSave.conflict;
+    const c = statusSave.conflict ?? taskSave.conflict ?? reopenSave.conflict ?? cancelSave.conflict;
     if (!c || reported.current === c || !p) return;
     reported.current = c;
     const attempted = c.attempted as { mine: Record<string, string> };
@@ -151,14 +157,14 @@ export function ProjectBoard({ id }: { id: string }) {
       baseUpdatedAt: p.updatedAt,
     });
     void retry();
-  }, [statusSave.conflict, taskSave.conflict, reopenSave.conflict, p, retry]);
+  }, [statusSave.conflict, taskSave.conflict, reopenSave.conflict, cancelSave.conflict, p, retry]);
 
   if (error) return <LoadError error={error} onRetry={() => void retry()} backHref="/projects" backLabel="Back to Projects" what="this project" />;
   if (isLoading || !p) return <BoardSkeleton />;
 
   const readOnly = p.readOnly;
   const canChange = p.allowed.changeStatus && !readOnly;
-  const busy = statusSave.status === 'saving' || taskSave.status === 'saving' || reopenSave.status === 'saving';
+  const busy = statusSave.status === 'saving' || taskSave.status === 'saving' || reopenSave.status === 'saving' || cancelSave.status === 'saving';
   const lastStatusChange = [...p.history].filter((h) => h.type === 'status_changed').sort((x, y) => y.at.localeCompare(x.at))[0];
   const milestones = p.tasks.filter((t) => t.isMilestone);
 
@@ -219,7 +225,7 @@ export function ProjectBoard({ id }: { id: string }) {
 
   const noteCfg = pending?.kind === 'note' ? NEEDS_NOTE[pending.to] : null;
   const dialogBusy = busy;
-  const dialogRoute = pending?.kind === 'task-cancel' ? taskSave : pending?.kind === 'reopen' ? reopenSave : statusSave;
+  const dialogRoute = pending?.kind === 'task-cancel' ? taskSave : pending?.kind === 'reopen' ? reopenSave : pending?.kind === 'cancel' ? cancelSave : statusSave;
 
   return (
     <div className="space-y-5 max-w-[1200px] mx-auto">
@@ -239,7 +245,7 @@ export function ProjectBoard({ id }: { id: string }) {
           <div className="flex flex-wrap items-center gap-2 text-[13px] text-text-secondary">
             <ProjectStatusBadge status={p.status} />
             <Badge tone="info" hasDot>
-              Deal · Closed deal
+              Deal · Verified closed
             </Badge>
             {p.assignedToMe && <AssignedChip />}
             {p.developers.length === 0 ? (
@@ -268,13 +274,34 @@ export function ProjectBoard({ id }: { id: string }) {
             <Button leadingIcon={<Icon name="plus" size={16} />} disabled={!p.allowed.createTask || busy} onClick={() => setPending({ kind: 'add-task' })}>
               Add task
             </Button>
+            {p.allowed.cancel && (
+              <Button
+                variant="ghost"
+                disabled={busy}
+                onClick={() => {
+                  cancelSave.reset();
+                  setPending({ kind: 'cancel' });
+                }}
+              >
+                Cancel project…
+              </Button>
+            )}
           </div>
         )}
       </div>
 
       {readOnly && (
         <div className="space-y-2">
-          <NoticePolicy tone="decision" size="inline" dec="Read-only" body="This project is Completed. Status, schedule and tasks can no longer be changed." />
+          <NoticePolicy
+            tone="decision"
+            size="inline"
+            dec="Read-only"
+            body={
+              p.status === 'cancelled'
+                ? `This project was cancelled${p.cancelledAt ? ` on ${fmtDate(p.cancelledAt)}` : ''}: ${p.cancelReason ?? 'no reason recorded'}. Its history and tasks are kept; nothing can be changed.`
+                : 'This project is Completed. Status, schedule and tasks can no longer be changed.'
+            }
+          />
           {p.allowed.reopen && (
             <Button
               variant="secondary"
@@ -300,10 +327,10 @@ export function ProjectBoard({ id }: { id: string }) {
           onCancel={closeAll}
         />
       )}
-      {!pending && !warning && (statusSave.status === 'failed' || taskSave.status === 'failed' || reopenSave.status === 'failed') && (
+      {!pending && !warning && (statusSave.status === 'failed' || taskSave.status === 'failed' || reopenSave.status === 'failed' || cancelSave.status === 'failed') && (
         <ActionError
-          route={statusSave.route ?? taskSave.route ?? reopenSave.route}
-          error={statusSave.error ?? taskSave.error ?? reopenSave.error}
+          route={statusSave.route ?? taskSave.route ?? reopenSave.route ?? cancelSave.route}
+          error={statusSave.error ?? taskSave.error ?? reopenSave.error ?? cancelSave.error}
         />
       )}
 
@@ -314,7 +341,6 @@ export function ProjectBoard({ id }: { id: string }) {
               <span className="ds-overline text-text-muted">Project status</span>
               <ProjectStatusBadge status={p.status} />
               <span className="text-[13px] text-text-muted">since {fmtDate(lastStatusChange?.at ?? p.createdAt, false)}</span>
-              <PolicyPendingChip dec="DEC-019" label="Policy pending · statuses proposed" className="sm:ml-auto" demo />
             </div>
             {p.statusNote && <p className="text-[13px] text-text-secondary">{p.statusNote}</p>}
             {canChange && p.allowedNextStatuses.length > 0 && (
@@ -481,12 +507,14 @@ export function ProjectBoard({ id }: { id: string }) {
       )}
 
       <Dialog
-        isOpen={(pending?.kind === 'note' || pending?.kind === 'task-cancel' || pending?.kind === 'reopen') && !conflict}
+        isOpen={(pending?.kind === 'note' || pending?.kind === 'task-cancel' || pending?.kind === 'reopen' || pending?.kind === 'cancel') && !conflict}
         onClose={() => {
           setPending(null);
           setText('');
         }}
-        title={pending?.kind === 'task-cancel' ? 'Cancel task' : pending?.kind === 'reopen' ? 'Reopen project' : noteCfg?.title ?? ''}
+        title={
+          pending?.kind === 'task-cancel' ? 'Cancel task' : pending?.kind === 'reopen' ? 'Reopen project' : pending?.kind === 'cancel' ? 'Cancel project' : noteCfg?.title ?? ''
+        }
         description={pending?.kind === 'task-cancel' ? pending.task.title : p.name}
         footer={
           <>
@@ -515,6 +543,14 @@ export function ProjectBoard({ id }: { id: string }) {
                     void retry();
                   }
                 }
+                if (pending?.kind === 'cancel') {
+                  const r = await cancelSave.save({ reason, mine: { status: PROJECT_STATUS_LABEL.cancelled } }, p.version);
+                  if (r) {
+                    toast.show({ tone: 'success', title: 'Project cancelled' });
+                    closeAll();
+                    void retry();
+                  }
+                }
               }}
             >
               Save
@@ -524,11 +560,17 @@ export function ProjectBoard({ id }: { id: string }) {
       >
         <div className="space-y-3">
           <Textarea
-            label={pending?.kind === 'task-cancel' ? 'Cancel reason' : pending?.kind === 'reopen' ? 'Reason' : noteCfg?.label ?? ''}
+            label={pending?.kind === 'task-cancel' ? 'Cancel reason' : pending?.kind === 'reopen' || pending?.kind === 'cancel' ? 'Reason' : noteCfg?.label ?? ''}
             required
             value={text}
             onChange={(e) => setText(e.target.value)}
-            helperText={pending?.kind === 'reopen' ? 'Owner only. Completed returns to In progress.' : 'Required. Recorded in the project activity.'}
+            helperText={
+              pending?.kind === 'reopen'
+                ? 'Owner only. Completed returns to In progress.'
+                : pending?.kind === 'cancel'
+                  ? 'Owner only. Cancelled is final; the project history and tasks are kept.'
+                  : 'Required. Recorded in the project activity.'
+            }
             error={fieldMessage(dialogRoute.fieldErrors, 'note', 'cancelReason', 'reason')}
           />
           <ActionError route={dialogRoute.route} error={dialogRoute.error} />

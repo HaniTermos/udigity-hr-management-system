@@ -4,6 +4,7 @@
  */
 import { z } from 'zod';
 import { defineMatrixActions } from '../access/matrix.js';
+import { TARGET_METRICS, type ProgressNote } from './progress.js';
 
 export const WORK_ACTIONS = defineMatrixActions([
   'target.set',
@@ -14,15 +15,18 @@ export const WORK_ACTIONS = defineMatrixActions([
   'work_item.update',
 ] as const);
 
+/**
+ * D7 (policy baseline 2026-10-29): progress is computed on the server, so there is no `currentValue`
+ * input. `endDate` is derived from `startDate` + `period` (weekly = Monday + 6); when sent it must match.
+ */
 export const CreateTargetSchema = z
   .object({
     employeeId: z.string().uuid(),
-    metric: z.string().min(1).max(60),
+    metric: z.enum(TARGET_METRICS),
     period: z.enum(['daily', 'weekly', 'monthly', 'quarterly']),
     targetValue: z.number().positive(),
-    currentValue: z.number().nonnegative().optional().default(0),
     startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     territory: z.string().max(120).optional(),
   })
   .strict();
@@ -33,7 +37,7 @@ export const UpdateTargetSchema = z
   .object({
     version: z.number().int().positive(),
     targetValue: z.number().positive().optional(),
-    currentValue: z.number().nonnegative().optional(),
+    /** The period defines the dates, so it cannot change; accepted only when equal to the current one. */
     period: z.enum(['daily', 'weekly', 'monthly', 'quarterly']).optional(),
     territory: z.string().max(120).optional(),
   })
@@ -99,7 +103,10 @@ export interface TargetDto {
   metric: string;
   period: 'daily' | 'weekly' | 'monthly' | 'quarterly';
   targetValue: number;
-  currentValue: number;
+  /** D7: computed on the server from the actor columns; null = metric has no counting rule. */
+  currentValue: number | null;
+  /** Qualifier for the value: schedule not configured, daily target on a non-working day, unsupported metric. */
+  progressNote?: ProgressNote;
   startDate: string;
   endDate: string;
   territory: string | null;

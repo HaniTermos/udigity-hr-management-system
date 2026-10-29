@@ -63,7 +63,13 @@ export function AttendanceCard({
           {formatHMS(elapsed)}
         </p>
         <p className="text-[13px] text-text-secondary">
-          {session ? (open ? `Since ${time.formatTime(session.effectiveCheckInAt)} · today` : `${time.formatTime(session.effectiveCheckInAt)} to ${session.effectiveCheckOutAt ? time.formatTime(session.effectiveCheckOutAt) : '—'}`) : today.workingDay ? 'Not checked in yet today' : 'Not a working day'}
+          {session ? (open ? `Since ${time.formatTime(session.effectiveCheckInAt)} · today` : `${time.formatTime(session.effectiveCheckInAt)} to ${session.effectiveCheckOutAt ? time.formatTime(session.effectiveCheckOutAt) : '—'}`) : !today.configured
+              ? 'Attendance is not set up yet'
+              : today.workingDay
+                ? 'Not checked in yet today'
+                : today.nonWorkingReason === 'day_off'
+                  ? 'Approved day off'
+                  : 'Not a working day'}
         </p>
       </div>
 
@@ -82,9 +88,14 @@ export function AttendanceCard({
       )}
 
       {open ? (
-        <Button variant="secondary" size="lg" fullWidth onClick={onCheckOut}>
-          Check out
-        </Button>
+        <>
+          <Button variant="secondary" size="lg" fullWidth onClick={onCheckOut} disabled={!today.canCheckOut}>
+            Check out
+          </Button>
+          {!today.canCheckOut && session.missingCheckout && (
+            <p className="text-[13px] text-text-secondary">This session is flagged as a missing checkout. Send a correction request with your checkout time from My Attendance.</p>
+          )}
+        </>
       ) : session ? (
         <p className="text-sm text-text-secondary">You have checked out for today.</p>
       ) : (

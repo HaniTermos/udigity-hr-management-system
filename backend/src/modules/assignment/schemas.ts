@@ -68,8 +68,21 @@ export const UnassignBody = z
   .object({ businessId: uuid, version: z.number().int().min(1), reason, followUps: z.array(FollowUpChoice).max(1) })
   .strict();
 
-/** POST /autofill — DEC-021 (40 per agent per day demonstration default). */
-export const AutofillBody = z.object({ agentId: uuid, limit: z.number().int().min(1).max(200).optional() }).strict();
+/**
+ * POST /autofill — policy baseline 2026-10-29 §D8 "Auto-fill queues" (Owner-triggered only).
+ * No `agentId`: round-robin across every active Call Center agent. With `agentId`: that agent only.
+ * Each agent is filled up to the queue cap (work.autofillQueueCap, default 40 current eligible assigned
+ * businesses) — a queue cap, not a performance quota. `limit` caps how many are added in this call.
+ */
+export const AutofillBody = z.object({ agentId: uuid.optional(), limit: z.number().int().min(1).max(200).optional() }).strict();
+
+export interface AutofillAgentResultDto {
+  agentId: string;
+  agentName: string;
+  /** Current eligible assigned businesses before this run. */
+  queueBefore: number;
+  assignedNow: number;
+}
 
 export interface CallingAssignmentDto {
   id: string;

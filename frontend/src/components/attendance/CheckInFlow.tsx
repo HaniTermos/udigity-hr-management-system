@@ -21,6 +21,7 @@ import {
 } from '@/lib/api/attendance';
 import { offlineSaveMessage } from '@/lib/errorRouting';
 import { useCompanyTime, type CompanyTime } from '@/lib/hooks/useCompanyTime';
+import { CorrectionDrawer } from './CorrectionDrawer';
 import { PUNCTUALITY_LABEL, dayLabel, verificationText } from './format';
 
 type Phase = 'idle' | 'verifying' | 'done' | 'failed' | 'blocked' | 'not-configured' | 'error' | 'remote' | 'remote-sent';
@@ -184,6 +185,9 @@ export function CheckInBody({
   const time = useCompanyTime();
   const { phase, result } = flow;
   const earlier = today?.openSessionFromEarlierDay;
+  // D5: the correction request opens right here when check-in is blocked by an earlier open session.
+  const [correcting, setCorrecting] = useState(false);
+  const [correctionSent, setCorrectionSent] = useState(false);
 
   if (phase === 'idle') {
     return (
@@ -191,7 +195,9 @@ export function CheckInBody({
         <CardInset className="space-y-1">
           <p className="text-sm font-medium text-text-primary">Office verification</p>
           <p className="text-[13px] leading-[18px] text-text-secondary">
-            {today?.officeCheck.active ? 'We check that you are at the office when you check in.' : 'The office check is not active yet. Your check-in is recorded without it.'}
+            {today?.officeCheck.active
+              ? 'We check that you are at the office when you check in.'
+              : 'Attendance is not set up yet. Check-in opens once the Owner saves the attendance settings.'}
           </p>
         </CardInset>
         <PolicyPendingChip dec="DEC-009" demo />
@@ -236,23 +242,32 @@ export function CheckInBody({
         <Alert
           tone="warning"
           title={earlier ? `Open session from ${dayLabel(earlier.workDate, 'short')}` : 'Open session from an earlier day'}
-          body={`${earlier ? `Checked in ${time.formatTime(earlier.effectiveCheckInAt)} with no checkout. ` : ''}Check-in stays blocked until it is corrected.`}
+          body={`${earlier ? `Checked in ${time.formatTime(earlier.effectiveCheckInAt)} with no checkout. ` : ''}Send a correction request with your checkout time; you can check in again once it is sent.`}
         />
-        <NoticePolicy
-          dec="DEC-011"
-          demo
-          body={
-            today?.employeeRequestsEnabled
-              ? 'Demonstration setting: you send a correction request from My Attendance and the Owner decides it.'
-              : 'Demonstration setting: the Owner corrects the session and you are notified.'
-          }
-        />
+        {!today?.employeeRequestsEnabled && (
+          <NoticePolicy dec="DEC-011" demo body="Demonstration setting: the Owner corrects the session and you are notified." />
+        )}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Close
           </Button>
-          <Button onClick={onViewAttendance}>View my attendance</Button>
+          {correctionSent ? (
+            <Button onClick={flow.start}>Check in now</Button>
+          ) : earlier && today?.employeeRequestsEnabled ? (
+            <Button onClick={() => setCorrecting(true)}>Request correction</Button>
+          ) : (
+            <Button onClick={onViewAttendance}>View my attendance</Button>
+          )}
         </div>
+        {correcting && earlier && (
+          <CorrectionDrawer
+            session={earlier}
+            correction={undefined}
+            employeeRequests={Boolean(today?.employeeRequestsEnabled)}
+            onClose={() => setCorrecting(false)}
+            onSubmitted={() => setCorrectionSent(true)} // the review state no longer blocks check-in
+          />
+        )}
       </div>
     );
   }
@@ -271,11 +286,7 @@ export function CheckInBody({
         ) : (
           <NoticePolicy dec="DEC-010" demo body="Demonstration setting: employees cannot request a remote exception. The Owner records remote work." />
         )}
-        <NoticePolicy
-          dec="DEC-009"
-          demo
-          body={`Which check applies (network, location, either or both) is undecided. Demonstration check: ${flow.failedMode ?? today?.officeCheck.mode ?? 'ip'}.`}
-        />
+        <NoticePolicy dec="D2" body="Attendance needs the office network (its public IP). Location is not used." />
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Cancel
@@ -291,7 +302,7 @@ export function CheckInBody({
   if (phase === 'not-configured') {
     return (
       <div className="space-y-4">
-        <Alert tone="warning" title="Attendance verification is not configured" body="Ask the Owner to set up the office check. Nothing was recorded." />
+        <Alert tone="warning" title="Attendance is not set up yet" body="The Owner has not saved the attendance settings (schedule, timezone, office network, holidays). Nothing was recorded." />
         <div className="flex justify-end">
           <Button variant="secondary" onClick={onClose}>
             Close
