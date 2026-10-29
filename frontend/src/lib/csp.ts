@@ -26,9 +26,10 @@ export function buildCsp({ nonce, isDev = false }: CspOptions): string {
   const directives: Record<string, string[]> = {
     'default-src': ["'self'"],
     'script-src': ["'self'", `'nonce-${nonce}'`, "'strict-dynamic'", ...(isDev ? ["'unsafe-eval'"] : [])],
-    'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+    'style-src': ["'self'", "'unsafe-inline'"],
     'img-src': ["'self'", 'data:', 'blob:'],
-    'font-src': ["'self'", 'data:', 'https://fonts.gstatic.com'],
+    // Fonts are bundled with the app (no Google Fonts), so only our own origin is allowed.
+    'font-src': ["'self'", 'data:'],
     'connect-src': ["'self'", ...(isDev ? ['ws:', 'wss:'] : [])],
     'object-src': ["'none'"],
     'base-uri': ["'self'"],

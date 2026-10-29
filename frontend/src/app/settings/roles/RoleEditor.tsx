@@ -152,8 +152,8 @@ export function RoleEditor({ role, permissions, inspectedAction, onInspect, onDi
               {isOwner ? 'System · locked' : role.isSystem ? 'System role' : 'Custom role'}
             </Badge>
           </div>
-          <p className="text-xs text-text-secondary mt-0.5 font-mono">
-            Role ID: {role.id} · Assigned users: {role.employeeCount}
+          <p className="text-xs text-text-secondary mt-0.5">
+            Assigned users: {role.employeeCount}
           </p>
         </div>
       </div>
@@ -344,7 +344,6 @@ export function RoleEditor({ role, permissions, inspectedAction, onInspect, onDi
                                 </button>
                               </div>
                               <p className="text-[11px] text-text-secondary mt-0.5 line-clamp-1">{perm.description}</p>
-                              <code className="text-[10px] text-text-muted font-mono block mt-0.5">{perm.action}</code>
                             </div>
                           </div>
                           {checked && (

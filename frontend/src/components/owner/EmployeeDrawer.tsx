@@ -10,7 +10,8 @@ import { Drawer } from '@/components/ui/Drawer';
 import { Icon } from '@/components/ui/Icon';
 import { Input, Select, Textarea } from '@/components/ui/Input';
 import { StateView } from '@/components/ui/State';
-import { ApiError } from '@/lib/api/client';
+import { ApiError, swrFetcher } from '@/lib/api/client';
+import { rolesPaths, type RoleSummary } from '@/lib/api/roles';
 import {
   createEmployee,
   employeesPaths,
@@ -24,6 +25,11 @@ import { requestPasswordReset } from '@/lib/api/identity';
 import type { Role } from '@/lib/api/types';
 import { AttendanceEmployeeSchedule } from './AttendanceEmployeeSchedule';
 import { formatClock, formatRoleName, ROLE_OPTIONS } from './format';
+
+/** Role picker options: the server's role list by display name; the four built-in roles until it loads. */
+function roleOptionsFrom(roles: RoleSummary[] | undefined): { value: Role; label: string }[] {
+  return roles && roles.length > 0 ? roles.map((r) => ({ value: r.id as Role, label: r.name })) : ROLE_OPTIONS;
+}
 
 export interface EmployeeDrawerProps {
   /** `null` = closed. `'new'` = create. */
@@ -107,8 +113,9 @@ function EmployeeForm({
       setResetSending(false);
     }
   }
-  // Fixed v1 scope (approved 2026-10-29): the four roles only; custom roles are not offered.
-  const roleOptions = ROLE_OPTIONS;
+  // Custom roles are on (Owner decision 2026-10-29): the four built-in roles plus the active custom roles, by name.
+  const { data: rolesResp } = useSWR<{ roles: RoleSummary[] }>(rolesPaths.roles, swrFetcher);
+  const roleOptions = roleOptionsFrom(rolesResp?.roles);
   const set = <K extends keyof Fields>(k: K, v: Fields[K]) => setF((cur) => ({ ...cur, [k]: v }));
 
   const fieldErrors = error instanceof ApiError ? error.fieldErrors : {};
@@ -315,8 +322,8 @@ function ChangeRoleDialog({
   const [role, setRole] = useState<Role>(employee.role);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  // Fixed v1 scope: the four roles only.
-  const roleOptions = ROLE_OPTIONS;
+  const { data: rolesResp } = useSWR<{ roles: RoleSummary[] }>(isOpen ? rolesPaths.roles : null, swrFetcher);
+  const roleOptions = roleOptionsFrom(rolesResp?.roles);
 
   async function confirm() {
     setBusy(true);

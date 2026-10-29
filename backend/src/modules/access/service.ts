@@ -97,7 +97,6 @@ const ROLE_LEVEL_TYPES: ReadonlySet<ResourceType> = new Set<ResourceType>(['cate
  * `self` / `assigned_only` = own records only. A system role never reaches this (matrix rules apply).
  */
 function customScopeFor(principal: Principal, action: Action): DataScope | null {
-  // Fixed v1 scope: `dynamicGrantFor` answers null for every role (custom roles are turned off).
   return isSystemRole(principal.role) ? null : dynamicGrantFor(principal.role, action);
 }
 

@@ -14,8 +14,7 @@ import {
   getActionPolicy,
   isSystemRole,
   registerDynamicRoleChecker,
-  CUSTOM_ROLES_ENABLED,
-  dynamicGrantFor,
+  registerSecondFactorVerifier,
   type Action,
   type DataScope,
   type Principal,
@@ -378,14 +377,10 @@ describe('rule table: both branches of every FLAG it reads', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Custom roles (migration 014; authz-matrix.md §3.11) — TURNED OFF in v1.
-// Fixed v1 scope (docs/policy-baseline-2026-10-29.md, approved): four roles, no custom-role management.
-// Changed expectations: these tests used to prove that validated grants opened access; they now prove that a
-// custom role id gets nothing even WITH a stored grant (the data is kept, the feature is off). The grant-
-// semantics tests that have no refusal equivalent (department scope, second-factor gate on grantable rows)
-// are skipped with that reason rather than deleted, so re-enabling the feature has a starting point.
+// Custom roles (migration 014; authz-matrix.md §3.11): nothing by default, validated grants only,
+// data_scope enforced, system roles never widened, grantable admin rows behind the second factor.
 // ---------------------------------------------------------------------------
-describe('custom roles are off in v1 (fixed four roles): refused everywhere, grants ignored', () => {
+describe('custom roles: rule table and route gate (§3.11)', () => {
   const HR = 'human_resources';
   const grants: Record<string, Record<string, DataScope>> = {};
   beforeAll(() => {
@@ -416,68 +411,80 @@ describe('custom roles are off in v1 (fixed four roles): refused everywhere, gra
     const fr = buildRuleFragments({ role, employeeId: U, action, resourceType: 'business', now: new Date(), flags: baseFlags(over), params, dataScope });
     return { fr, sql: combinedPredicate(fr) };
   };
-  const NOTHING = '(af.archived_at IS NULL AND FALSE AND FALSE AND FALSE)';
 
-  it('the feature switch is off', () => {
-    expect(CUSTOM_ROLES_ENABLED).toBe(false);
+  it('an unknown or custom role without a grant gets nothing: (FALSE AND FALSE AND FALSE) on every surface', () => {
+    for (const role of [HR, 'typo_role', 'OWNER']) {
+      for (const action of ['business.read', 'business.list', 'business.search', 'deal.read'] as Action[]) {
+        const { fr, sql } = frag(role, action, null);
+        expect(sql, `${role} ${action}`).toBe('(af.archived_at IS NULL AND FALSE AND FALSE AND FALSE)');
+        expect(Object.values(fr.rows).every((s) => s === 'FALSE')).toBe(true);
+      }
+    }
     expect(isSystemRole(HR)).toBe(false);
   });
 
-  it('rule table: a custom or unknown role gets nothing on every surface, with or without a grant', () => {
-    for (const role of [HR, 'typo_role', 'OWNER']) {
-      for (const action of ['business.read', 'business.list', 'business.search', 'deal.read'] as Action[]) {
-        for (const scope of [null, 'global', 'self', 'department', 'assigned_only'] as const) {
-          const { fr, sql } = frag(role, action, scope);
-          expect(sql, `${role} ${action} ${scope}`).toBe(NOTHING);
-          expect(Object.values(fr.rows).every((s) => s === 'FALSE')).toBe(true);
-        }
-      }
-    }
+  it('a grant opens the base scope per data_scope; the 15-day window still applies; DEC-002 rows never do', () => {
+    const g = frag(HR, 'business.read', 'global');
+    expect(g.fr).toMatchObject({ scope: 'TRUE', relation: 'TRUE' });
+    expect(g.fr.window).toContain('af.created_at + make_interval(days => 15)');
+    expect(Object.values(g.fr.rows).every((s) => s === 'FALSE')).toBe(true);
+    expect(g.sql).toBe(`(af.archived_at IS NULL AND TRUE AND TRUE AND (${g.fr.window}))`);
+    expect(frag(HR, 'business.read', 'self').fr.relation).toBe('(af.created_by = $1::uuid)');
+    expect(frag(HR, 'business.read', 'department').fr.relation).toBe('(af.created_by = $1::uuid)');
+    const a = frag(HR, 'business.read', 'assigned_only').fr.relation;
+    expect(a).toContain('af.assignee_id = $1::uuid');
+    expect(a).toContain('ANY(af.deal_developer_ids)');
+    expect(a).toContain('ANY(af.project_developer_ids)');
+    // Context-limited surfaces stay closed for custom roles even with a global grant.
+    expect(frag(HR, 'business.search', 'global').fr.rows.R2_CLOSED_DEAL).toBe('FALSE');
   });
 
   it('a system role ignores dataScope: the matrix rule is the whole answer', () => {
     expect(frag('developer', 'business.read', 'global').fr.window).toBe('FALSE');
     expect(frag('developer', 'business.read', 'global').fr.relation).toContain("af.deal_stage = 'closed'");
     expect(frag('developer', 'business.search', 'global').sql).toBe('(af.archived_at IS NULL AND TRUE AND FALSE AND FALSE)');
-    expect(frag('call_center', 'business.read', 'global').fr.relation).toContain('af.assignee_id = $1::uuid');
+    expect(frag('call_center', 'business.read', 'global').fr.relation).toContain('(af.assignee_id = $1::uuid OR ($1::uuid = ANY(af.open_correction_requester_ids)))');
   });
 
-  it('Developer: never full through the window; relation = context rows; list = row 2 only', () => {
+  it('Developer: never full through the window; relation = rows 1–4; list = row 2 only', () => {
     const read = frag('developer', 'business.read', null, { 'deals.developerPreClosure': 'assigned' }).fr;
     expect(read.window).toBe('FALSE');
-    for (const r of ['R1_ACCEPTED_OPPORTUNITY', 'R2_CLOSED_DEAL', 'R3_ACTIVE_PROJECT', 'R4_COMPLETED_PROJECT', 'R6_OPEN_CORRECTION'] as const) {
-      expect(read.relation).toContain(read.rows[r]);
-    }
+    for (const r of ['R1_ACCEPTED_OPPORTUNITY', 'R2_CLOSED_DEAL', 'R3_ACTIVE_PROJECT', 'R4_COMPLETED_PROJECT'] as const) expect(read.relation).toContain(read.rows[r]);
     const list = frag('developer', 'business.list', null).fr;
     expect(list.relation).toBe(`(${list.rows.R2_CLOSED_DEAL})`);
     expect(list.rows.R3_ACTIVE_PROJECT).toBe('FALSE');
   });
 
-  it('requireAction: a custom role is FORBIDDEN_ROLE on every matrix action, even holding grants', async () => {
+  it('requireAction: no grant → FORBIDDEN_ROLE on every matrix action; a grant passes non-privileged rows only', async () => {
     delete grants[HR];
     for (const action of Object.keys(AUTHZ_MATRIX)) {
       const r = await run(action, HR);
       expect(r.nexted, action).toBe(false);
       expect(r.body?.code).toBe('FORBIDDEN_ROLE');
     }
-    grants[HR] = { 'attendance.read': 'global', 'business.read': 'global', 'attendance.overview.read': 'global' };
-    for (const action of Object.keys(grants[HR])) {
-      const r = await run(action, HR);
-      expect(r.nexted, action).toBe(false);
-      expect(r.body?.code).toBe('FORBIDDEN_ROLE');
-    }
-    expect(can({ employeeId: U, role: HR, sessionState: 'active' }, 'attendance.read' as Action)).toBe(false);
-    delete grants[HR];
+    grants[HR] = { 'attendance.read': 'global', 'employee.create': 'global', 'business.delete': 'global', 'attendance.overview.read': 'global' };
+    expect((await run('attendance.read', HR)).nexted).toBe(true);
+    expect((await run('employee.create', HR)).body?.code).toBe('FORBIDDEN_ROLE'); // admin, not grantable
+    expect((await run('business.delete', HR)).body?.code).toBe('FORBIDDEN_ROLE'); // nobody
+    expect(can({ employeeId: U, role: HR, sessionState: 'active' }, 'attendance.read' as Action)).toBe(true);
+    expect(can({ employeeId: U, role: HR, sessionState: 'active' }, 'employee.create' as Action)).toBe(false);
   });
 
-  it('custom-role management is allowed to nobody (role.create / role.update / role.delete)', async () => {
-    for (const a of ['role.create', 'role.update', 'role.delete']) {
-      expect(AUTHZ_MATRIX[a].roles).toEqual([]);
-      for (const role of ROLES) expect((await run(a, role)).body?.code, `${a} ${role}`).toBe('FORBIDDEN_ROLE');
+  it("a grantable admin row needs the holder's verified second factor (fail closed until identity registers one)", async () => {
+    // The attendance module (which declares this row) is not imported here: declare it from the matrix.
+    if (!getActionPolicy('attendance.overview.read' as Action)) defineMatrixActions(['attendance.overview.read']);
+    grants[HR] = { 'attendance.overview.read': 'global' };
+    const closed = await run('attendance.overview.read', HR);
+    expect(closed.nexted).toBe(false);
+    expect(closed.body?.code).toBe('OWNER_2FA_REQUIRED');
+    registerSecondFactorVerifier((u) => u.sessionId === 's');
+    try {
+      expect((await run('attendance.overview.read', HR)).nexted).toBe(true);
+      expect((await run('attendance.overview.read', HR, 'pending_2fa_verification')).body?.code).toBe('OWNER_2FA_REQUIRED');
+    } finally {
+      registerSecondFactorVerifier(() => false);
     }
   });
-
-  it.skip("v1-disabled: a grantable admin row needs the holder's verified second factor (custom roles are off; nothing is grantable)", () => {});
 
   it('the four system roles are never widened by a grant', async () => {
     grants.data_entry = { 'employee.list': 'global', 'audit.read': 'global' };
@@ -493,41 +500,92 @@ describe('custom roles are off in v1 (fixed four roles): refused everywhere, gra
     }
   });
 
-  it('engine: own-record types ignore custom grants (own records only, never global)', async () => {
+  it('engine: own-record types honour data_scope (global → all, department → same department, self → own)', async () => {
     registerResourceResolver('attendance_session', async (_db, id) => ({ kind: 'own', ownerIds: [id === B ? U : B2] }));
     const hr = (): Principal => ({ employeeId: U, role: HR, sessionState: 'active' });
     const e = engine();
     const ref = { type: 'attendance_session' as const, id: B2 };
-    for (const scope of ['global', 'department', 'self'] as const) {
-      grants[HR] = { 'attendance.read': scope };
-      expect(await e.check(dbWith([]), hr(), 'attendance.read' as Action, ref)).toEqual({ allowed: false, reason: 'permission_denied' });
-      expect(e.scopeFilter(hr(), 'attendance.read' as Action, 'attendance_session', { alias: 's', params: new SqlParams() })).toBe('s.employee_id = $1');
-    }
+    delete grants[HR];
+    expect(await e.check(dbWith([]), hr(), 'attendance.read' as Action, ref)).toEqual({ allowed: false, reason: 'permission_denied' });
+    expect(e.scopeFilter(hr(), 'attendance.read' as Action, 'attendance_session', { alias: 's', params: new SqlParams() })).toBe('s.employee_id = $1');
+    grants[HR] = { 'attendance.read': 'global' };
+    expect(await e.check(dbWith([]), hr(), 'attendance.read' as Action, ref)).toEqual({ allowed: true, level: 'full' });
+    expect(e.scopeFilter(hr(), 'attendance.read' as Action, 'attendance_session', { alias: 's', params: new SqlParams() })).toBe('TRUE');
+    grants[HR] = { 'attendance.read': 'self' };
+    expect(await e.check(dbWith([]), hr(), 'attendance.read' as Action, ref)).toEqual({ allowed: false, reason: 'permission_denied' });
+    expect(await e.check(dbWith([]), hr(), 'attendance.read' as Action, { type: 'attendance_session', id: B })).toEqual({ allowed: true, level: 'full' });
+    grants[HR] = { 'attendance.read': 'department' };
+    const same = new FakeDb().on(/JOIN employees o ON o\.department = h\.department/, [{ ok: true }]);
+    expect(await e.check(same, hr(), 'attendance.read' as Action, ref)).toEqual({ allowed: true, level: 'full' });
+    const other = new FakeDb().on(/JOIN employees o ON o\.department = h\.department/, [{ ok: false }]);
+    expect(await e.check(other, hr(), 'attendance.read' as Action, ref)).toEqual({ allowed: false, reason: 'permission_denied' });
+    const sql = e.scopeFilter(hr(), 'attendance.read' as Action, 'attendance_session', { alias: 's', params: new SqlParams() });
+    expect(sql).toContain('s.employee_id = $1 OR EXISTS');
+    expect(sql).toContain('h.department IS NOT NULL');
+    // Owner-only types stay closed whatever the grant.
+    grants[HR] = { 'audit.read': 'global' };
+    expect(e.scopeFilter(hr(), 'audit.read' as Action, 'audit_event', { alias: 'a', params: new SqlParams() })).toBe('FALSE');
     delete grants[HR];
   });
 
-  it.skip('v1-disabled: department data_scope on own-record types (custom roles are off; no grant is honoured)', () => {});
-
-  it('grantRefusal: matrix membership, nobody rows (custom-role management included) and unmarked admin rows', () => {
+  it('grantRefusal: matrix membership, nobody rows and unmarked admin rows', () => {
     expect(grantRefusal('business.read')).toBeUndefined();
+    expect(grantRefusal('attendance.overview.read')).toBeUndefined();
     expect(grantRefusal('nope.action')).toMatch(/not an action/);
-    for (const a of ['business.delete', 'audit.update', 'role.create', 'role.update', 'role.delete']) expect(grantRefusal(a), a).toMatch(/nobody/);
-    for (const a of ['employee.create', 'employee.update', 'settings.update', 'report.export', 'audit.read', 'business.archive', 'deal.finalize']) {
+    expect(grantRefusal('business.delete')).toMatch(/nobody/);
+    expect(grantRefusal('audit.update')).toMatch(/nobody/);
+    for (const a of ['employee.create', 'employee.update', 'role.create', 'settings.update', 'report.export', 'audit.read', 'business.archive', 'deal.finalize']) {
       expect(grantRefusal(a), a).toMatch(/Owner-only administrative/);
     }
   });
 
-  it('DynamicRoleCache still loads the kept role_permissions data (read-only; the engine never consults it in v1)', async () => {
+  it('DynamicRoleCache loads from the database, drops system-role and non-grantable rows, and is ready only after a load', async () => {
     const db = new FakeDb().on(/FROM role_permissions/, [
       { role_id: HR, action: 'business.read', data_scope: 'self' },
+      { role_id: HR, action: 'employee.create', data_scope: 'global' }, // not grantable: dropped
+      { role_id: HR, action: 'bogus.row', data_scope: 'global' }, // not in the matrix: dropped
       { role_id: 'data_entry', action: 'employee.list', data_scope: 'global' }, // system role: dropped
     ]);
     const cache = new DynamicRoleCache();
+    expect(cache.isLoaded()).toBe(false);
+    await expect(cache.ensureReady()).rejects.toThrow(/not attached/);
     cache.attach(db);
     await cache.ensureReady();
+    expect(cache.isLoaded()).toBe(true);
     expect(cache.grantFor(HR, 'business.read' as Action)).toBe('self');
+    expect(cache.grantFor(HR, 'employee.create' as Action)).toBeNull();
+    expect(cache.grantFor(HR, 'bogus.row' as Action)).toBeNull();
     expect(cache.grantFor('data_entry', 'employee.list' as Action)).toBeNull();
-    registerDynamicRoleChecker(cache);
-    expect(dynamicGrantFor(HR, 'business.read' as Action)).toBeNull();
+    expect(db.find(/FROM role_permissions/)).toHaveLength(1);
+  });
+
+  it('Owner decision 2026-10-29: a custom role never sees archived businesses and never bypasses the 15-day window', () => {
+    for (const ds of ['global', 'self', 'department', 'assigned_only'] as const) {
+      for (const action of ['business.read', 'business.list', 'deal.read', 'meeting.read'] as Action[]) {
+        const { fr, sql } = frag(HR, action, ds);
+        expect(fr.live, `${ds} ${action}`).toBe('af.archived_at IS NULL');
+        expect(sql.startsWith('(af.archived_at IS NULL AND TRUE AND ')).toBe(true);
+        // The grant opens only the base scope: access still needs the elapsed window; no exception row applies.
+        expect(fr.window).toContain('af.created_at + make_interval(days => 15)');
+        expect(Object.values(fr.rows).every((s) => s === 'FALSE')).toBe(true);
+      }
+    }
+    // assigned_only also gets the Call Center rule: the current assignment's elapsed window, nothing more.
+    expect(frag(HR, 'business.read', 'assigned_only').fr.window).toContain('af.assignment_started_at + make_interval(days => 15)');
+    // An unknown scope value is denied (deny by default).
+    expect(frag(HR, 'business.read', 'everything' as DataScope).sql).toBe('(af.archived_at IS NULL AND FALSE AND FALSE AND FALSE)');
+  });
+
+  it('Owner decision 2026-10-29: a custom role cannot be granted an Owner-only action (grant refused; route refused even if stored)', async () => {
+    for (const a of ['employee.create', 'role.create', 'role.delete', 'settings.update', 'business.archive', 'deal.finalize', 'attendance.days_off.manage']) {
+      expect(grantRefusal(a), a).toMatch(/Owner-only administrative/);
+    }
+    grants[HR] = { 'role.create': 'global', 'employee.create': 'global' };
+    try {
+      expect((await run('role.create', HR)).body?.code).toBe('FORBIDDEN_ROLE');
+      expect((await run('employee.create', HR)).body?.code).toBe('FORBIDDEN_ROLE');
+    } finally {
+      delete grants[HR];
+    }
   });
 });

@@ -45,7 +45,7 @@ export const NAV_SECTIONS: NavSectionDef[] = [
       { name: 'Reports & Exports', href: '/reports', icon: 'file-text', action: ACTIONS.reportRead },
       { name: 'Delivery Monitor', href: '/delivery-monitor', icon: 'list', action: ACTIONS.reminderMonitorRead, built: true },
       { name: 'Audit', href: '/audit', icon: 'shield', action: ACTIONS.auditRead },
-      // Fixed v1 scope (approved 2026-10-29): four roles, no custom-role management, so no Roles page in the menu.
+      { name: 'Roles & Permissions', href: '/settings/roles', icon: 'lock', action: ACTIONS.roleList },
       { name: 'Settings', href: '/settings', icon: 'settings', action: ACTIONS.settingsRead },
     ],
   },

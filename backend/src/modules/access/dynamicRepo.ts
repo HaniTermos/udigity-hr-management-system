@@ -38,6 +38,7 @@ export async function listRoles(db: Queryable): Promise<CustomRoleRecord[]> {
       COUNT(e.id)::int AS employee_count
     FROM custom_roles r
     LEFT JOIN employees e ON e.role = r.id AND e.is_active = true
+    WHERE r.deactivated_at IS NULL
     GROUP BY r.id, r.name, r.description, r.is_system, r.version, r.created_by, r.created_at, r.updated_at
     ORDER BY r.is_system DESC, r.name ASC
   `);
@@ -59,7 +60,7 @@ export async function findRoleById(db: Queryable, id: string): Promise<CustomRol
       COUNT(e.id)::int AS employee_count
     FROM custom_roles r
     LEFT JOIN employees e ON e.role = r.id AND e.is_active = true
-    WHERE r.id = $1
+    WHERE r.id = $1 AND r.deactivated_at IS NULL
     GROUP BY r.id, r.name, r.description, r.is_system, r.version, r.created_by, r.created_at, r.updated_at
   `,
     [id]
@@ -126,8 +127,16 @@ export async function updateRole(
   return rows[0] ?? null;
 }
 
-export async function deleteRole(db: Queryable, id: string): Promise<boolean> {
-  const { rowCount } = await db.query(`DELETE FROM custom_roles WHERE id = $1 AND is_system = false`, [id]);
+/**
+ * D20 (no hard deletes in the normal app): "delete" deactivates the role. The row and its permissions are kept for
+ * history; a deactivated role is not listed, not assignable and its grants are not loaded (migration 994).
+ */
+export async function deleteRole(db: Queryable, id: string, actorId: string | null = null): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE custom_roles SET deactivated_at = CURRENT_TIMESTAMP, deactivated_by = $2, version = version + 1, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1 AND is_system = false AND deactivated_at IS NULL`,
+    [id, actorId]
+  );
   return (rowCount ?? 0) > 0;
 }
 
@@ -186,6 +195,9 @@ export async function loadAllRolePermissions(
     role_id: string;
     action: string;
     data_scope: 'self' | 'department' | 'global' | 'assigned_only';
-  }>(`SELECT role_id, action, data_scope FROM role_permissions`);
+  }>(
+    `SELECT p.role_id, p.action, p.data_scope FROM role_permissions p
+       JOIN custom_roles r ON r.id = p.role_id WHERE r.deactivated_at IS NULL`
+  );
   return rows;
 }

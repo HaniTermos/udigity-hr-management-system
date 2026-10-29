@@ -115,6 +115,8 @@ Earlier text stays where it lived; this log records what the baseline changes. "
 
 | S-25 | "No break tracking" (DEC-033, Fixed v1 scope) | Baseline | Owner answer 2026-10-29: break tracking **on** — Start/End break on My Day while checked in; 60 minutes total, at most 3 breaks per session (Owner can change in Settings); breaks do not reduce the 9 h day | Fixed v1 scope |
 
+| S-26 | "Four roles; no custom-role management" (DEC-032, Fixed v1 scope) | Baseline | Owner answer 2026-10-29: custom roles **back on** — the Owner creates roles with chosen permissions (Owner-only, 2FA) and assigns them; custom roles follow the same visibility rules and can never hold Owner-only actions; roles are deactivated, not hard-deleted | Fixed v1 scope |
+
 **Approved as built (Owner, 2026-10-29: "I have approved every Figma file, step, work and question").** Every item the UI still marked as pending, a demonstration alternative or "No DEC ID" is approved with its current behaviour, and those markers are removed from the app:
 
 | ID shown in the UI | Item | Approved behaviour (as built) |

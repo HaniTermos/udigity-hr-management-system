@@ -198,20 +198,20 @@ export type CommandOutcome =
   | { kind: 'last_owner' };
 
 /**
- * Fixed v1 scope (approved 2026-10-29): exactly four roles. Any other role id (custom roles included) is refused
- * on create and update; existing custom-role rows are kept but cannot be assigned.
+ * Owner decision 2026-10-29 (custom roles on): a role is assignable when it is one of the four system roles or an
+ * existing custom role that has not been deactivated (migration 994). Anything else is a 400 on `role`.
  */
-function assertV1Role(role: string): void {
-  if (!(ROLES as readonly string[]).includes(role)) {
-    throw new HttpError(400, 'VALIDATION_ERROR', `Role "${role}" is not available: v1 has the Owner, Data Entry, Call Center and Developer roles only.`, {
-      role: ['Choose Owner, Data Entry, Call Center or Developer'],
-    });
+async function assertAssignableRole(db: Queryable, role: string): Promise<void> {
+  if ((ROLES as readonly string[]).includes(role)) return;
+  const { rows } = await db.query('SELECT 1 FROM custom_roles WHERE id = $1 AND deactivated_at IS NULL', [role]);
+  if (!rows[0]) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'That role does not exist or is no longer in use.', { role: ['Choose an existing role'] });
   }
 }
 
 /** POST /api/employees → E-01. */
 export async function createEmployee(ctx: CommandContext, input: CreateEmployeeInput): Promise<CommandOutcome> {
-  assertV1Role(input.role);
+  await assertAssignableRole(ctx.tx, input.role);
   if (await repo.emailTaken(ctx.tx, input.email)) return { kind: 'email_taken' };
   const created = await repo.insert(ctx.tx, {
     email: input.email,
@@ -249,7 +249,7 @@ export async function updateEmployee(
   if (!target) return { kind: 'not_found' };
   if (target.version !== input.version) return { kind: 'conflict', currentVersion: target.version, current: repo.toDto(target) }; // BL-09
 
-  if (input.role) assertV1Role(input.role);
+  if (input.role && input.role !== target.role) await assertAssignableRole(ctx.tx, input.role);
 
   const next = {
     email: input.email ?? target.email,
