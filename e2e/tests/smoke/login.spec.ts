@@ -60,8 +60,8 @@ test.describe('SCR-AUTH-001 Login — smoke', () => {
     await expectNoA11yViolations(page, testInfo);
   });
 
+  // Runs in every project: it switches the page to dark itself, so CI (desktop-light) covers it too.
   test('dark mode is navy and readable [AC-UI-002]', async ({ loginPage, page }, testInfo) => {
-    test.skip(testInfo.project.name !== 'desktop-dark', 'navy check runs in the desktop-dark project');
     await forceTheme(page, 'dark');
     await loginPage.goto();
     await expectNavySurfaces(page, ['body']);
