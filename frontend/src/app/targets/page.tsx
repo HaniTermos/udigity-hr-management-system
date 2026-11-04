@@ -46,7 +46,10 @@ const dashboardPeriodLabel = { today: 'Today', '7d': 'Last 7 days', '30d': 'Last
 
 function errText(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
-    const first = Object.values(err.fieldErrors)[0]?.[0];
+    if (err.code === 'CONFLICT_DUPLICATE') return 'This employee already has a target that covers these dates. Edit that target or choose different dates.';
+    if (err.code === 'BUSY_TRY_AGAIN') return 'The system is busy. Your entries are kept; try again in a few seconds.';
+    const fe = err.fieldErrors;
+    const first = fe.targetValue?.[0] ?? fe._form?.[0] ?? Object.values(fe)[0]?.[0];
     return first ?? err.message;
   }
   return fallback;
@@ -116,7 +119,8 @@ export default function TargetsPage() {
   };
 
   const parsedTarget = Number(targetValue);
-  const targetValid = Number.isFinite(parsedTarget) && parsedTarget > 0;
+  // The server accepts whole numbers from 1 to 100000.
+  const targetValid = Number.isInteger(parsedTarget) && parsedTarget >= 1 && parsedTarget <= 100000;
   const canSaveTarget = targetValid && (editing !== null || Boolean(employeeId)) && !saving;
 
   async function saveTarget(e: React.FormEvent) {

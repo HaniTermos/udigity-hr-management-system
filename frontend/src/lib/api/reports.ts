@@ -3,6 +3,7 @@
  * Screens: SCR-OWN-001 dashboard, SCR-OWN-009 reports & exports (synchronous download).
  */
 import { api, ApiError } from './client';
+import { parseRetryAfter } from './rateLimit';
 import { getCsrfToken, CSRF_HEADER } from './http';
 
 export const reportsPaths = {
@@ -115,6 +116,8 @@ export interface ExportResult {
   blob: Blob;
   filename: string | null;
   rowCount: number | null;
+  /** `X-Export-Row-Cap`: the most rows one export can hold. */
+  rowCap: number | null;
   truncated: boolean;
 }
 
@@ -153,7 +156,8 @@ export async function exportReport(params: {
   }
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string; code?: string; details?: unknown } | null;
-    throw new ApiError(res.status, body);
+    const wait = parseRetryAfter(res.headers.get('Retry-After'));
+    throw new ApiError(res.status, body ? { ...body, ...(wait !== undefined ? { retryAfterSeconds: wait } : {}) } : res.status === 429 ? { code: 'RATE_LIMITED', retryAfterSeconds: wait } : null);
   }
   const disposition = res.headers.get('Content-Disposition') ?? '';
   const match = /filename="?([^";]+)"?/i.exec(disposition);
@@ -162,6 +166,7 @@ export async function exportReport(params: {
     blob: await res.blob(),
     filename: match ? match[1] : null,
     rowCount: Number.isFinite(rows) && res.headers.has('X-Export-Row-Count') ? rows : null,
-    truncated: res.headers.get('X-Export-Truncated') === 'true',
+    rowCap: Number.isFinite(Number(res.headers.get('X-Export-Row-Cap'))) && res.headers.has('X-Export-Row-Cap') ? Number(res.headers.get('X-Export-Row-Cap')) : null,
+    truncated: ['true', '1', 'yes'].includes((res.headers.get('X-Export-Truncated') ?? '').toLowerCase()),
   };
 }

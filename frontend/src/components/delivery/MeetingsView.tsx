@@ -9,6 +9,7 @@ import { Select } from '@/components/ui/Input';
 import { Skeleton, StateView } from '@/components/ui/State';
 import { useApi } from '@/lib/hooks/useApi';
 import { cn } from '@/lib/utils';
+import { addDaysKey, useCallingFormat, weekStartKey, type CallingFormat } from '@/components/calling/format';
 import { meetingListPath, type Meeting, type MeetingStatus } from '@/lib/api/meetings';
 import { describeMeeting, MeetingDrawer, MEETING_CONFLICT_LABELS } from './MeetingDrawer';
 import { ScheduleMeetingDrawer } from './ScheduleMeetingDrawer';
@@ -22,17 +23,18 @@ import {
   MEETING_TONE,
   PageTitle } from './shared';
 
-const DAY_MS = 86_400_000;
 const FIRST_HOUR = 9;
 const LAST_HOUR = 17;
 const HOUR_PX = 60;
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-function mondayOf(d: Date): Date {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
-  return x;
+/** `15` -> 15:00, `9.5` -> 09:30, read from the company-zone local time `YYYY-MM-DDTHH:mm`. */
+function hourOfLocal(local: string): number {
+  return Number(local.slice(11, 13)) + Number(local.slice(14, 16)) / 60;
+}
+
+function dayNumber(key: string): number {
+  return Number(key.slice(8, 10));
 }
 
 /** The end of a meeting; the API allows a meeting without one (drawn as one hour). */
@@ -47,7 +49,10 @@ const STATUS_OPTIONS = [
 
 export function MeetingsView() {
   const [view, setView] = useState<'week' | 'list'>('week');
-  const [weekStart, setWeekStart] = useState(() => mondayOf(new Date()));
+  const fmt = useCallingFormat();
+  // The week is a company-zone calendar date (Monday), moved by date arithmetic, so a DST change never shifts it (B-10).
+  const [weekPick, setWeekPick] = useState<string | null>(null);
+  const weekStart = weekPick ?? weekStartKey(fmt.todayKey());
   const [mine, setMine] = useState(true);
   const [status, setStatus] = useState<MeetingStatus | 'any'>('any');
   const [open, setOpen] = useState<Meeting | null>(null);
@@ -57,19 +62,19 @@ export function MeetingsView() {
   const path = useMemo(
     () =>
       meetingListPath({
-        from: weekStart.toISOString(),
-        to: new Date(weekStart.getTime() + 7 * DAY_MS).toISOString(),
+        from: fmt.toIso(`${weekStart}T00:00`),
+        to: fmt.toIso(`${addDaysKey(weekStart, 7)}T00:00`),
         mine,
         status,
       }),
-    [weekStart, mine, status]
+    [fmt, weekStart, mine, status]
   );
   const { data, error, isLoading, retry } = useApi<{ items: Meeting[] }>(path);
   const meetings = data?.items;
 
-  const weekEnd = new Date(weekStart.getTime() + 6 * DAY_MS);
-  const rangeLabel = `${weekStart.getDate()} – ${fmtDayMonth(weekEnd.toISOString())} ${weekEnd.getFullYear()}`;
-  const shift = (days: number) => setWeekStart((w) => new Date(w.getTime() + days * DAY_MS));
+  const weekEnd = addDaysKey(weekStart, 6);
+  const rangeLabel = `${dayNumber(weekStart)} – ${fmtDayMonth(fmt.toIso(`${weekEnd}T12:00`))} ${weekEnd.slice(0, 4)}`;
+  const shift = (days: number) => setWeekPick(addDaysKey(weekStart, days));
 
   const latest = conflict ? meetings?.find((m) => m.id === conflict.meetingId) : undefined;
 
@@ -121,7 +126,7 @@ export function MeetingsView() {
         </div>
         <IconButton icon="chevron-left" label="Previous week" variant="secondary" onClick={() => shift(-7)} />
         <IconButton icon="chevron-right" label="Next week" variant="secondary" onClick={() => shift(7)} />
-        <Button variant="ghost" size="sm" onClick={() => setWeekStart(mondayOf(new Date()))}>
+        <Button variant="ghost" size="sm" onClick={() => setWeekPick(null)}>
           Today
         </Button>
         <span className="text-sm font-semibold text-text-primary tabular-nums">{rangeLabel}</span>
@@ -160,7 +165,7 @@ export function MeetingsView() {
         <>
           {/* Phones get the list: the week grid needs a wide screen. */}
           <div className="hidden md:block">
-            <WeekGrid weekStart={weekStart} meetings={meetings} onOpen={setOpen} />
+            <WeekGrid weekStart={weekStart} meetings={meetings} onOpen={setOpen} fmt={fmt} />
           </div>
           <div className="md:hidden">
             <MeetingList meetings={meetings} onOpen={setOpen} />
@@ -215,20 +220,20 @@ function eventStyle(m: Meeting): { box: string; label: string; icon: 'users' | '
   return { box: 'bg-status-info-bg border-status-info-solid text-status-info-fg', label: '', icon: 'users' };
 }
 
-function WeekGrid({ weekStart, meetings, onOpen }: { weekStart: Date; meetings: Meeting[]; onOpen: (m: Meeting) => void }) {
-  const days = DAY_NAMES.map((n, i) => ({ name: n, date: new Date(weekStart.getTime() + i * DAY_MS) }));
-  const todayKey = new Date().toDateString();
+function WeekGrid({ weekStart, meetings, onOpen, fmt }: { weekStart: string; meetings: Meeting[]; onOpen: (m: Meeting) => void; fmt: CallingFormat }) {
+  const days = DAY_NAMES.map((n, i) => ({ name: n, key: addDaysKey(weekStart, i) }));
+  const todayKey = fmt.todayKey();
   const hours = Array.from({ length: LAST_HOUR - FIRST_HOUR + 1 }, (_, i) => FIRST_HOUR + i);
   return (
     <div className="rounded-xl border border-border-default bg-surface-default overflow-x-auto">
       <div className="min-w-[860px] grid grid-cols-[56px_repeat(7,1fr)]">
         <div className="border-b border-border-subtle" />
         {days.map((d) => {
-          const today = d.date.toDateString() === todayKey;
+          const today = d.key === todayKey;
           return (
             <div key={d.name} className="h-10 flex items-center justify-center gap-2 text-[13px] border-b border-l border-border-subtle text-text-secondary">
               <span className={cn(today && 'px-2 py-0.5 rounded-full bg-surface-inverse text-text-inverse font-medium')}>
-                {d.name} {d.date.getDate()}
+                {d.name} {dayNumber(d.key)}
               </span>
               {today && <span className="text-text-link">Today</span>}
             </div>
@@ -247,11 +252,11 @@ function WeekGrid({ weekStart, meetings, onOpen }: { weekStart: Date; meetings: 
               <div key={h} className="absolute inset-x-0 border-t border-border-subtle" style={{ top: i * HOUR_PX }} />
             ))}
             {meetings
-              .filter((m) => m.status !== 'cancelled' && m.status !== 'missed' && new Date(m.startsAt).toDateString() === d.date.toDateString())
+              .filter((m) => m.status !== 'cancelled' && m.status !== 'missed' && fmt.dayKey(m.startsAt) === d.key)
               .map((m) => {
                 const s = new Date(m.startsAt);
                 const e = new Date(endOf(m));
-                const top = Math.max(0, (s.getHours() + s.getMinutes() / 60 - FIRST_HOUR) * HOUR_PX);
+                const top = Math.max(0, (hourOfLocal(fmt.toLocal(m.startsAt)) - FIRST_HOUR) * HOUR_PX);
                 const height = Math.max(36, ((e.getTime() - s.getTime()) / 3_600_000) * HOUR_PX - 2);
                 const st = eventStyle(m);
                 return (

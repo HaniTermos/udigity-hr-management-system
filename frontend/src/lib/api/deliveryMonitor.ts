@@ -28,12 +28,15 @@ export interface DeliveryMonitorItem {
 
 export async function listDeliveryMonitor(options: {
   kind?: 'reminder' | 'notification' | 'provisioning';
+  /** Server state filter, e.g. `failed` or `pending` (unknown values are ignored by the server). */
+  state?: string;
   page?: number;
   pageSize?: number;
 } = {}): Promise<Page<DeliveryMonitorItem>> {
   return api.get<Page<DeliveryMonitorItem>>(deliveryMonitorPaths.list, {
     query: {
       kind: options.kind,
+      state: options.state,
       page: options.page,
       pageSize: options.pageSize,
     },

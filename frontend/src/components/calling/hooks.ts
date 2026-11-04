@@ -28,7 +28,7 @@ import {
 
 /** The queue is grouped client-side from one page (max 100); `total` tells the page when the rest is not shown. */
 export const useQueue = (q: QueueQuery = { pageSize: 100 }) =>
-  useApi<QueueDto>(`${callingPaths.queue}${buildQuery({ ...q })}`, { revalidateOnFocus: true });
+  useApi<QueueDto>(`${callingPaths.queue}${buildQuery({ ...q })}`, { revalidateOnFocus: true, refreshInterval: 15_000 });
 
 export const useWorkspace = (businessId: string) => useApi<WorkspaceDto>(callingPaths.workspace(businessId), { revalidateOnFocus: false });
 

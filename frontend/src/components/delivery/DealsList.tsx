@@ -9,7 +9,8 @@ import { SkeletonTableRow, StateView } from '@/components/ui/State';
 import { Table, TableContainer, TBody, TD, TH, THead, TR } from '@/components/ui/Table';
 import { useAuth } from '@/lib/auth';
 import { usePage } from '@/lib/hooks/useApi';
-import { dealsPaths, type DealListItem } from '@/lib/api/deals';
+import { dealSearchTerm, dealsPaths, type DealListItem } from '@/lib/api/deals';
+import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import type { ProjectStatus } from '@/lib/api/projects';
 import {
   AssignedChip,
@@ -45,25 +46,23 @@ export function DealsList() {
   const [status, setStatus] = useState<ProjectStatus | 'any'>('any');
   const [page, setPage] = useState(1);
 
-  // The deal list filters by scope, closed-within and paging on the server. Search and project status are applied
-  // to the loaded page (BE4-C1 item 6: the list has no `q` or `projectStatus`).
+  // Search, project status, scope, closed-within and paging are all applied on the server (review B-04), so a match
+  // on page 2 is found and the count badge is the count of what is shown.
+  const search = dealSearchTerm(useDebouncedValue(q));
   const { items, total, pageCount, error, isLoading, retry } = usePage<DealListItem>(dealsPaths.list, {
     tab: 'closed',
     scope,
     closedWithinDays: closed === 'all' ? undefined : Number(closed),
+    q: search,
+    projectStatus: status === 'any' ? undefined : status,
     page,
     pageSize: PAGE_SIZE,
     sort: 'closedAt',
     order: 'desc',
   });
 
-  const needle = q.trim().toLowerCase();
-  const rows = items.filter(
-    (d) =>
-      (!needle || `${d.businessName ?? ''} ${d.code}`.toLowerCase().includes(needle)) &&
-      (status === 'any' || d.projectStatus === status)
-  );
-  const filtered = Boolean(needle || scope !== 'all' || closed !== 'all' || status !== 'any');
+  const rows = items;
+  const filtered = Boolean(search || scope !== 'all' || closed !== 'all' || status !== 'any');
 
   return (
     <div className="space-y-5 max-w-6xl mx-auto">
@@ -99,7 +98,10 @@ export function DealsList() {
             label="Search deals or businesses"
             placeholder="Search deals or businesses…"
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => {
+              setQ(e.target.value);
+              setPage(1);
+            }}
             wrapperClassName="w-full min-w-0"
           />
           <Select
@@ -126,7 +128,10 @@ export function DealsList() {
             aria-label="Project status"
             options={STATUS_OPTIONS}
             value={status}
-            onChange={(e) => setStatus(e.target.value as ProjectStatus | 'any')}
+            onChange={(e) => {
+              setStatus(e.target.value as ProjectStatus | 'any');
+              setPage(1);
+            }}
             wrapperClassName="w-full min-w-0"
           />
         </div>

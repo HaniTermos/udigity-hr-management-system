@@ -24,6 +24,7 @@ import type { Punctuality } from '@/lib/api/attendance';
 import { ApiError } from '@/lib/api/client';
 import { employeesListKey, listEmployees } from '@/lib/api/employees';
 import { AttendanceDaysOff } from './AttendanceDaysOff';
+import { AttendanceRemoteExceptions } from './AttendanceRemoteExceptions';
 import { formatClock, formatWeekdayDay, useCompanyTimezone } from './format';
 
 const STATUS: Record<MonitorStatus, { label: string; tone: BadgeTone }> = {
@@ -206,6 +207,7 @@ function Loaded({
         <div className="space-y-6">
           <ExceptionsPanel exceptions={data.exceptions} />
           <AttendanceDaysOff fromDate={data.date} employees={employees} onChanged={onChanged} />
+          <AttendanceRemoteExceptions employees={employees} onChanged={onChanged} />
         </div>
       </div>
     </>

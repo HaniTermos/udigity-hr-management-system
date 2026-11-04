@@ -8,14 +8,15 @@ import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Input } from '@/components/ui/Input';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, isRateLimited, rateLimitMessage } from '@/lib/api';
+import { PASSWORD_MIN_LENGTH } from '@/lib/passwordPolicy';
 
 /** SHR-015: status 0 means the request was not sent (offline) or the connection dropped. */
 const OFFLINE_TEXT = 'You’re offline or the connection dropped. Try again when your connection returns.';
 
 // IMPL-PASSWORD working default mirrored from the backend (PASSWORD_MIN_LENGTH, default 12).
 // Demonstration alternative, not approved (docs/policy-defaults.md). The backend is the authority.
-const PASSWORD_MIN_LENGTH = Number(process.env.NEXT_PUBLIC_PASSWORD_MIN_LENGTH || 12);
+// Shared with the profile form: lib/passwordPolicy.ts.
 
 function ShowToggle({ shown, onToggle, label }: { shown: boolean; onToggle: () => void; label: string }) {
   return (
@@ -67,7 +68,7 @@ function ResetPasswordContent() {
       setIsQueued(true);
       return;
     }
-    setRequestError(res.status === 429 ? 'Too many requests. Please wait and try again.' : res.status === 0 ? OFFLINE_TEXT : 'Something went wrong. Please try again.');
+    setRequestError(isRateLimited(res.status, res.error?.code) ? rateLimitMessage(res.error?.retryAfterSeconds, 'requests') : res.status === 0 ? OFFLINE_TEXT : 'Something went wrong. Please try again.');
   };
 
   const handleSavePassword = async (e: React.FormEvent) => {
@@ -99,7 +100,7 @@ function ResetPasswordContent() {
       setRuleError('Does not meet the password rules.');
       return;
     }
-    setRuleError(res.status === 429 ? 'Too many attempts. Please wait and try again.' : res.status === 0 ? OFFLINE_TEXT : 'Something went wrong. Please try again.');
+    setRuleError(isRateLimited(res.status, res.error?.code) ? rateLimitMessage(res.error?.retryAfterSeconds) : res.status === 0 ? OFFLINE_TEXT : 'Something went wrong. Please try again.');
   };
 
   const choosing = token !== null && !isTokenExpired;

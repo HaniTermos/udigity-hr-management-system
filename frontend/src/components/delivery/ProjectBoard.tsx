@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { Alert } from '@/components/ui/Alert';
 import { Avatar } from '@/components/ui/Avatar';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -12,8 +13,8 @@ import { Checkbox, DateInput, Input, Textarea } from '@/components/ui/Input';
 import { Skeleton } from '@/components/ui/State';
 import { useToast } from '@/components/ui/Toast';
 import { useApi } from '@/lib/hooks/useApi';
-import { useVersionedSave } from '@/lib/hooks/useVersionedSave';
-import { dealsPaths, type DealResponse } from '@/lib/api/deals';
+import { useVersionedSave, type UseVersionedSaveResult } from '@/lib/hooks/useVersionedSave';
+import { dealsPaths, type AssignableDeveloper, type DealResponse } from '@/lib/api/deals';
 import {
   asOpenTasksWarning,
   changeProjectStatus,
@@ -21,6 +22,7 @@ import {
   projectsPaths,
   reopenProject,
   cancelProject,
+  assignProjectDevelopers,
   updateTask,
   type OpenTasksWarning,
   type Project,
@@ -92,6 +94,7 @@ type Pending =
   | { kind: 'task-cancel'; task: Task }
   | { kind: 'reopen' }
   | { kind: 'cancel' }
+  | { kind: 'assign-devs' }
   | { kind: 'add-task' };
 
 interface StatusInput {
@@ -120,7 +123,7 @@ export function ProjectBoard({ id }: { id: string }) {
         to: input.to,
         note: input.note,
         acknowledgeOpenTasks: input.acknowledge ? true : undefined,
-      });
+      }, ctx.idempotencyKey);
       return { project };
     } catch (e) {
       const w = asOpenTasksWarning(e);
@@ -132,17 +135,21 @@ export function ProjectBoard({ id }: { id: string }) {
     updateTask(input.task.id, { version: ctx.version, status: input.to, cancelReason: input.cancelReason }, ctx.idempotencyKey)
   );
   const reopenSave = useVersionedSave<{ reason: string; mine: Record<string, string> }, Project>((input, ctx) =>
-    reopenProject(id, { version: ctx.version, reason: input.reason })
+    reopenProject(id, { version: ctx.version, reason: input.reason }, ctx.idempotencyKey)
   );
   const cancelSave = useVersionedSave<{ reason: string; mine: Record<string, string> }, Project>((input, ctx) =>
-    cancelProject(id, { version: ctx.version, reason: input.reason })
+    cancelProject(id, { version: ctx.version, reason: input.reason }, ctx.idempotencyKey)
+  );
+
+  const assignSave = useVersionedSave<{ ids: string[]; mine: Record<string, string> }, Project>((input, ctx) =>
+    assignProjectDevelopers(id, { version: ctx.version, developerIds: input.ids }, ctx.idempotencyKey)
   );
 
   const p: ProjectDetail | undefined = data?.project;
 
   const reported = useRef<unknown>(null);
   useEffect(() => {
-    const c = statusSave.conflict ?? taskSave.conflict ?? reopenSave.conflict ?? cancelSave.conflict;
+    const c = statusSave.conflict ?? taskSave.conflict ?? reopenSave.conflict ?? cancelSave.conflict ?? assignSave.conflict;
     if (!c || reported.current === c || !p) return;
     reported.current = c;
     const attempted = c.attempted as { mine: Record<string, string> };
@@ -154,14 +161,14 @@ export function ProjectBoard({ id }: { id: string }) {
       baseUpdatedAt: p.updatedAt,
     });
     void retry();
-  }, [statusSave.conflict, taskSave.conflict, reopenSave.conflict, cancelSave.conflict, p, retry]);
+  }, [statusSave.conflict, taskSave.conflict, reopenSave.conflict, cancelSave.conflict, assignSave.conflict, p, retry]);
 
   if (error) return <LoadError error={error} onRetry={() => void retry()} backHref="/projects" backLabel="Back to Projects" what="this project" />;
   if (isLoading || !p) return <BoardSkeleton />;
 
   const readOnly = p.readOnly;
   const canChange = p.allowed.changeStatus && !readOnly;
-  const busy = statusSave.status === 'saving' || taskSave.status === 'saving' || reopenSave.status === 'saving' || cancelSave.status === 'saving';
+  const busy = statusSave.status === 'saving' || taskSave.status === 'saving' || reopenSave.status === 'saving' || cancelSave.status === 'saving' || assignSave.status === 'saving';
   const lastStatusChange = [...p.history].filter((h) => h.type === 'status_changed').sort((x, y) => y.at.localeCompare(x.at))[0];
   const milestones = p.tasks.filter((t) => t.isMilestone);
 
@@ -265,6 +272,16 @@ export function ProjectBoard({ id }: { id: string }) {
         </div>
         {!readOnly && (
           <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {p.allowed.assignDevelopers && (
+              <Button
+                variant="secondary"
+                leadingIcon={<Icon name="user" size={16} />}
+                disabled={busy}
+                onClick={() => setPending({ kind: 'assign-devs' })}
+              >
+                {p.developers.length === 0 ? 'Assign developer' : 'Manage developers'}
+              </Button>
+            )}
             <Button variant="secondary" leadingIcon={<Icon name="calendar" size={16} />} disabled title="Edit schedule is not designed yet (deferred)">
               Edit schedule
             </Button>
@@ -568,6 +585,22 @@ export function ProjectBoard({ id }: { id: string }) {
         </div>
       </Dialog>
 
+      {p.allowed.assignDevelopers && pending?.kind === 'assign-devs' && !conflict && (
+        <AssignDevelopersDialog
+          project={p}
+          save={assignSave}
+          onClose={() => {
+            assignSave.reset();
+            setPending(null);
+          }}
+          onSaved={() => {
+            toast.show({ tone: 'success', title: 'Project developers updated', body: p.name });
+            closeAll();
+            void retry();
+          }}
+        />
+      )}
+
       {openTaskId && p.tasks.some((t) => t.id === openTaskId) && !(pending?.kind === 'task-cancel') && (
         <TaskDrawer
           key={openTaskId}
@@ -741,5 +774,116 @@ function BoardSkeleton() {
       <Skeleton className="h-24 w-full" />
       <Skeleton className="h-64 w-full" />
     </div>
+  );
+}
+
+
+interface DeveloperRow {
+  id: string;
+  name: string;
+  inactive: boolean;
+}
+
+/** Active developers from the picker plus anyone already assigned who is no longer in it (inactive). */
+export function mergeDeveloperRows(active: AssignableDeveloper[], assigned: { id: string; fullName: string }[]): DeveloperRow[] {
+  const rows: DeveloperRow[] = active.map((d) => ({ id: d.id, name: d.name, inactive: false }));
+  const seen = new Set(rows.map((r) => r.id));
+  for (const a of assigned) if (!seen.has(a.id)) rows.unshift({ id: a.id, name: a.fullName, inactive: true });
+  return rows;
+}
+
+function AssignDevelopersDialog({
+  project,
+  save,
+  onClose,
+  onSaved,
+}: {
+  project: ProjectDetail;
+  save: UseVersionedSaveResult<{ ids: string[]; mine: Record<string, string> }, Project>;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const devs = useApi<{ items: AssignableDeveloper[] }>(dealsPaths.developers, { refreshInterval: 0 });
+  // Snapshot when the dialog opens: polling must not reset the ticks or move the version under the user (B-19).
+  const [baseVersion] = useState(project.version);
+  const [assigned] = useState(project.developers);
+  const [selectedIds, setSelectedIds] = useState<string[]>(() => project.developers.map((d) => d.id));
+  const [confirmRemoveAll, setConfirmRemoveAll] = useState(false);
+
+  function toggle(id: string) {
+    setConfirmRemoveAll(false);
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  const rows = useMemo(() => mergeDeveloperRows(devs.data?.items ?? [], assigned), [devs.data, assigned]);
+  const removingAll = selectedIds.length === 0 && assigned.length > 0;
+
+  async function handleSave() {
+    if (removingAll && !confirmRemoveAll) {
+      setConfirmRemoveAll(true);
+      return;
+    }
+    const names = rows.filter((r) => selectedIds.includes(r.id)).map((r) => r.name);
+    const r = await save.save({ ids: selectedIds, mine: { developers: names.length ? names.join(', ') : 'None' } }, baseVersion);
+    if (r) onSaved();
+  }
+
+  const busy = save.status === 'saving';
+
+  return (
+    <Dialog
+      isOpen
+      onClose={onClose}
+      title="Assign developers"
+      description={`${project.name} · ${project.code}`}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={() => void handleSave()} isLoading={busy} disabled={busy || devs.isLoading}>
+            {removingAll && confirmRemoveAll ? 'Yes, remove all developers' : 'Save assignments'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-sm text-text-secondary">
+          Select one or more active developers to assign to this project. Developers assigned here will have access to the project board and can be assigned to tasks.
+        </p>
+
+        {devs.isLoading && <p className="text-sm text-text-muted">Loading active developers…</p>}
+        {devs.error && <Alert tone="danger" title="Could not load developers" body={devs.error.message} />}
+
+        {!devs.isLoading && rows.length === 0 && <p className="text-sm text-text-muted">No active developers found in the company.</p>}
+
+        {rows.length > 0 && (
+          <div className="space-y-1 max-h-60 overflow-y-auto divide-y divide-border-subtle border border-border-default rounded-lg p-2">
+            {rows.map((dev) => (
+              <label key={dev.id} className="flex items-center gap-3 py-2 px-2 cursor-pointer hover:bg-surface-subtle rounded transition-colors">
+                <input
+                  type="checkbox"
+                  className="rounded border-border-strong text-brand-accent focus:ring-brand-accent h-4 w-4"
+                  checked={selectedIds.includes(dev.id)}
+                  onChange={() => toggle(dev.id)}
+                />
+                <Avatar name={dev.name} size="sm" tone="neutral" />
+                <span className="text-sm font-medium text-text-primary">{dev.name}</span>
+                {dev.inactive && <Badge tone="warning">Inactive</Badge>}
+              </label>
+            ))}
+          </div>
+        )}
+
+        {removingAll && confirmRemoveAll && (
+          <Alert
+            tone="warning"
+            title="Remove every developer?"
+            body="No developer will be assigned to this project afterwards. Press the button again to confirm."
+          />
+        )}
+        <ActionError route={save.route} error={save.error} onRetry={() => void save.retry()} />
+      </div>
+    </Dialog>
   );
 }

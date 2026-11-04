@@ -191,18 +191,27 @@ export function asOpenTasksWarning(error: unknown): OpenTasksWarning | null {
   return d && d.code === 'OPEN_TASKS_WARNING' && Array.isArray(d.openTasks) ? (d as OpenTasksWarning) : null;
 }
 
-export async function changeProjectStatus(id: string, body: ProjectStatusChange): Promise<Project> {
-  return (await api.post<{ project: Project }>(projectsPaths.status(id), body)).project;
+export async function changeProjectStatus(id: string, body: ProjectStatusChange, idempotencyKey?: string): Promise<Project> {
+  return (await api.post<{ project: Project }>(projectsPaths.status(id), body, { idempotencyKey })).project;
 }
 
 /** Owner only: Completed -> In progress. */
-export async function reopenProject(id: string, body: { version: number; reason: string }): Promise<Project> {
-  return (await api.post<{ project: Project }>(projectsPaths.reopen(id), body)).project;
+export async function reopenProject(id: string, body: { version: number; reason: string }, idempotencyKey?: string): Promise<Project> {
+  return (await api.post<{ project: Project }>(projectsPaths.reopen(id), body, { idempotencyKey })).project;
 }
 
 /** Owner only, reason required (D17): any active status -> Cancelled (final; history kept). */
-export async function cancelProject(id: string, body: { version: number; reason: string }): Promise<Project> {
-  return (await api.post<{ project: Project }>(projectsPaths.cancel(id), body)).project;
+export async function cancelProject(id: string, body: { version: number; reason: string }, idempotencyKey?: string): Promise<Project> {
+  return (await api.post<{ project: Project }>(projectsPaths.cancel(id), body, { idempotencyKey })).project;
+}
+
+/** Owner only (OQ-07/OQ-08): Assign or reassign developers on an active project. */
+export async function assignProjectDevelopers(
+  id: string,
+  body: { version: number; developerIds: string[] },
+  idempotencyKey?: string
+): Promise<Project> {
+  return (await api.post<{ project: Project }>(projectsPaths.developers(id), body, { idempotencyKey })).project;
 }
 
 /** Manual F2 only (auto mode answers 409 STATE_CONFLICT; an existing project answers 409 CONFLICT_DUPLICATE). */

@@ -17,7 +17,7 @@ export const OFFLINE_NOT_SENT_MESSAGE =
 
 /** Sent, but the connection dropped before an answer arrived. */
 export const CONNECTION_LOST_MESSAGE =
-  'Not saved: the connection dropped. Your input is kept on this page. Try again when your connection returns.';
+  'We could not confirm this was saved: the connection dropped. Your input is kept on this page. Check whether the change went through before you try again.';
 
 export const OFFLINE_CODE = 'OFFLINE';
 export const NETWORK_ERROR_CODE = 'NETWORK_ERROR';

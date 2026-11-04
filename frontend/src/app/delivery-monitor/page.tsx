@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import useSWR from 'swr';
+import { useCompanyTime } from '@/lib/hooks/useCompanyTime';
 import { AppShell } from '@/components/layout/AppShell';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -64,13 +65,18 @@ export default function DeliveryMonitorPage() {
   const [kindFilter, setKindFilter] = useState<'all' | 'reminder' | 'notification'>('all');
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  const [stateFilter, setStateFilter] = useState<'all' | 'failed' | 'pending'>('all');
+  const [page, setPage] = useState(1);
+  const time = useCompanyTime();
 
   const queryKind = kindFilter === 'all' ? undefined : kindFilter;
-  const listKey = `/api/delivery-monitor?kind=${queryKind ?? 'all'}`;
+  const queryState = stateFilter === 'all' ? undefined : stateFilter;
+  const listKey = `/api/delivery-monitor?kind=${queryKind ?? 'all'}&state=${queryState ?? 'all'}&page=${page}`;
 
   const { data, error, isLoading, mutate } = useSWR(
     listKey,
-    () => listDeliveryMonitor({ kind: queryKind, pageSize: 50 }),
+    () => listDeliveryMonitor({ kind: queryKind, state: queryState, page, pageSize: 50 }),
     { refreshInterval: 10000, keepPreviousData: true }
   );
 
@@ -80,11 +86,12 @@ export default function DeliveryMonitorPage() {
     try {
       setRetryingId(id);
       setRetryMessage(null);
+      setRetryError(null);
       const res = await retryReminder(id);
       setRetryMessage(res.message);
       await mutate();
     } catch (err) {
-      console.error('Failed to retry item:', err);
+      setRetryError(err instanceof Error && err.message ? err.message : 'Could not queue this message again. Try again.');
     } finally {
       setRetryingId(null);
     }
@@ -156,16 +163,41 @@ export default function DeliveryMonitorPage() {
           </div>
         )}
 
+        {retryError && (
+          <div role="alert" className="p-3 bg-status-danger-bg border border-status-danger-border rounded-lg text-status-danger-fg text-xs flex items-center justify-between">
+            <span>{retryError}</span>
+            <button type="button" onClick={() => setRetryError(null)} className="text-xs hover:underline cursor-pointer">
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {/* Filters */}
         <div className="flex items-center justify-between gap-4">
           <Tabs
             style="segmented"
             activeId={kindFilter}
-            onChange={(id) => setKindFilter(id as 'all' | 'reminder' | 'notification')}
+            onChange={(id) => {
+              setKindFilter(id as 'all' | 'reminder' | 'notification');
+              setPage(1);
+            }}
             items={[
               { id: 'all', label: 'All Items', count: data?.total },
               { id: 'notification', label: 'Notifications' },
               { id: 'reminder', label: 'Reminders' },
+            ]}
+          />
+          <Tabs
+            style="segmented"
+            activeId={stateFilter}
+            onChange={(id) => {
+              setStateFilter(id as 'all' | 'failed' | 'pending');
+              setPage(1);
+            }}
+            items={[
+              { id: 'all', label: 'Any state' },
+              { id: 'failed', label: 'Failed' },
+              { id: 'pending', label: 'Pending' },
             ]}
           />
         </div>
@@ -235,12 +267,7 @@ export default function DeliveryMonitorPage() {
                         {item.lastError || <span className="text-text-muted">—</span>}
                       </td>
                       <td className="px-4 py-3.5 text-text-muted tabular-nums text-[11px]">
-                        {new Date(item.sentAt || item.createdAt).toLocaleString(undefined, {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
+                        {time.format(item.sentAt || item.createdAt, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                       </td>
                       <td className="px-4 py-3.5 text-right">
                         {(item.state === 'failed' || item.state === 'pending') && (
@@ -262,6 +289,22 @@ export default function DeliveryMonitorPage() {
             </div>
           )}
         </Card>
+
+        {data && data.total > data.pageSize && (
+          <div className="flex items-center justify-between text-xs text-text-muted">
+            <span>
+              Showing {(page - 1) * data.pageSize + 1}–{Math.min(page * data.pageSize, data.total)} of {data.total}
+            </span>
+            <div className="flex gap-2">
+              <Button variant="secondary" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+                Previous
+              </Button>
+              <Button variant="secondary" size="sm" disabled={page * data.pageSize >= data.total} onClick={() => setPage((p) => p + 1)}>
+                Next
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Policy note */}
       </div>

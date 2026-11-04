@@ -74,13 +74,22 @@ export interface DealListQuery {
   developerId?: string;
   needsAttention?: 'developer_not_assigned' | 'closure_verification_requested';
   closedWithinDays?: number;
+  /** Business name or deal code; the server needs 2 to 80 characters (shorter is ignored by `dealSearchTerm`). */
+  q?: string;
+  projectStatus?: string;
   page?: number;
   pageSize?: number;
   sort?: 'createdAt' | 'updatedAt' | 'closedAt' | 'code' | 'stage';
   order?: 'asc' | 'desc';
 }
 
-/** Path with query for `usePage` / `useApi`. The deal list has no `q` or `projectStatus` filter (BE4-C1 item 6). */
+/** Server-side search term: 2 to 80 characters after trimming, otherwise no search (review B-04). */
+export function dealSearchTerm(raw: string): string | undefined {
+  const t = raw.trim();
+  return t.length >= 2 ? t.slice(0, 80) : undefined;
+}
+
+/** Path with query for `usePage` / `useApi`. The list filters `q`, `projectStatus`, scope and paging on the server. */
 export function dealListPath(q: DealListQuery = {}): string {
   return `${dealsPaths.list}${buildQuery(q as Record<string, QueryValue>)}`;
 }

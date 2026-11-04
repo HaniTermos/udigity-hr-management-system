@@ -12,7 +12,7 @@ import { SearchInput } from '@/components/ui/Input';
 import { StateView } from '@/components/ui/State';
 import { Table, TableContainer, TBody, TD, TH, THead, TR } from '@/components/ui/Table';
 import { ApiErrorView } from '@/components/states';
-import { useAuth } from '@/lib/auth';
+import { useCapability } from '@/lib/hooks/useCapability';
 import { ACTIONS } from '@/lib/actions';
 import { CallingPageHeader, HeaderLink, LoadingBlock } from '@/components/calling/CallingPageHeader';
 import { ReopenDialog } from '@/components/calling/ContactWorkspace';
@@ -26,8 +26,8 @@ import { SubmitCorrectionDrawer } from '@/components/businesses/SubmitCorrection
  * (DEC-016, Demonstration alternative — not approved); other roles see it disabled.
  */
 export default function DoNotCallPage() {
-  const { user } = useAuth();
-  const isOwner = user?.role === 'owner';
+  // Capability, not role name: a custom role granted the action can reopen too (S-26, B-11).
+  const isOwner = useCapability(ACTIONS.businessReopenRejected);
   const access = useBusinessAccess();
   const f = useCallingFormat();
   const [q, setQ] = useState('');

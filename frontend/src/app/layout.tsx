@@ -23,7 +23,7 @@ export default async function RootLayout({
 
   return (
     <html lang="en" suppressHydrationWarning>
-      <body suppressHydrationWarning>
+      <body>
         <ThemeProvider nonce={nonce}>
           <ToastProvider>
             <AuthProvider>

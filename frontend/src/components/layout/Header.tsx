@@ -33,7 +33,7 @@ export function Header() {
   const { data: notifData } = useSWR(
     user ? notificationsPaths.unreadCount : null,
     getUnreadCount,
-    { refreshInterval: 20000 }
+    { refreshInterval: 30_000 }
   );
   const unreadCount = notifData?.unreadCount ?? 0;
   const unreadCountLabel = unreadCount > 99 ? '99+' : String(unreadCount);

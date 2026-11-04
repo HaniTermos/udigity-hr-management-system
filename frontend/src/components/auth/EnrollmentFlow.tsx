@@ -104,6 +104,8 @@ export function EnrollmentFlow({
       setTokenError("This token isn't valid, was already used, or has expired. Ask the operator or another Owner for a new one.");
     } else if (res.code === 'REAUTH_FAILED') {
       setPasswordError('That password is not correct.');
+    } else if (res.code === 'RATE_LIMITED' || res.code === 'NETWORK_ERROR') {
+      setAlert({ title: res.code === 'RATE_LIMITED' ? 'Too many attempts' : 'Could not reach the server', body: res.error ?? 'Try again in a moment.' });
     } else if (res.code === 'TOO_MANY_ATTEMPTS') {
       setAlert({ title: 'Too many attempts', body: 'Wait a few minutes, then try again.' });
     } else if (sessionGone(res.code)) {
@@ -129,6 +131,10 @@ export function EnrollmentFlow({
       setToken('');
       setCode('');
       setPhase('codes');
+      return;
+    }
+    if (res.code === 'RATE_LIMITED' || res.code === 'NETWORK_ERROR') {
+      setAlert({ title: res.code === 'RATE_LIMITED' ? 'Too many attempts' : 'Could not reach the server', body: res.error ?? 'Try again in a moment.' });
       return;
     }
     if (res.code === 'TOO_MANY_ATTEMPTS' || sessionGone(res.code)) {

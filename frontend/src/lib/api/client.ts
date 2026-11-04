@@ -17,6 +17,8 @@ export class ApiError extends Error {
   readonly code: ErrorCode | string;
   readonly details?: unknown;
   readonly requestId?: string;
+  /** 429 only: seconds to wait (`Retry-After`), when the server said. */
+  readonly retryAfterSeconds?: number;
 
   constructor(status: number, body: Partial<ErrorBody> | null) {
     super(body?.error || `Request failed (${status})`);
@@ -25,6 +27,7 @@ export class ApiError extends Error {
     this.code = body?.code || (status === 0 ? 'NETWORK_ERROR' : `HTTP_${status}`);
     this.details = body?.details;
     this.requestId = body?.requestId;
+    this.retryAfterSeconds = body?.retryAfterSeconds;
   }
 
   /** 401: the session is gone (expired, revoked, deactivated) → SCR-SHR-013. */

@@ -98,7 +98,7 @@ export function useCheckInFlow({ autoStart, onChanged }: { autoStart: boolean; o
         const err = e instanceof ApiError ? e : null;
         setRemoteError(
           err?.status === 403
-            ? 'Remote requests are not available. The Owner records remote work.'
+            ? 'Remote requests are switched off. Ask the Owner to grant you a remote exception for today, then check in again.'
             : err?.fieldErrors.reason?.[0] ?? offlineSaveMessage(e) ?? 'Your request was not sent. Nothing was changed. Try again.'
         );
       })

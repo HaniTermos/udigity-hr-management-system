@@ -14,6 +14,7 @@ import { Skeleton, StateView } from '@/components/ui/State';
 import { PermissionDenied } from '@/components/states/PermissionDenied';
 import { ACTIONS } from '@/lib/actions';
 import { ApiError } from '@/lib/api/client';
+import { rateLimitMessage } from '@/lib/api/rateLimit';
 import { useCapability } from '@/lib/hooks/useCapability';
 import { exportReport, reportsPaths, type ReportItem } from '@/lib/api/reports';
 import { useApi } from '@/lib/hooks/useApi';
@@ -24,7 +25,7 @@ type ListResponse = { items: ReportItem[]; total: number };
 function stepUpMessage(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.code === 'INVALID_2FA_TOKEN') return 'That code is not valid. Check your authenticator app and try again.';
-    if (err.code === 'TOO_MANY_ATTEMPTS') return 'Too many attempts. Wait a few minutes and try again.';
+    if (err.code === 'TOO_MANY_ATTEMPTS' || err.code === 'RATE_LIMITED') return rateLimitMessage(err.retryAfterSeconds);
     if (err.code === '2FA_NOT_CONFIGURED') return 'Two-factor authentication is not set up for your account.';
     return err.message;
   }
@@ -38,7 +39,7 @@ export default function ReportsPage() {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [notice, setNotice] = useState<{ tone: 'danger' | 'info'; text: string } | null>(null);
+  const [notice, setNotice] = useState<{ tone: 'danger' | 'warning' | 'info'; text: string } | null>(null);
   const [stepUp, setStepUp] = useState<{ id: string; error: string | null } | null>(null);
 
   const rangeInvalid = Boolean(from && to && from > to);
@@ -60,7 +61,7 @@ export default function ReportsPage() {
       window.URL.revokeObjectURL(url);
       setStepUp(null);
       if (res.truncated) {
-        setNotice({ tone: 'info', text: `The export was limited to the first ${res.rowCount ?? 'available'} rows. Narrow the date range to get the rest.` });
+        setNotice({ tone: 'warning', text: `This export is incomplete: it was cut off at ${res.rowCap ?? res.rowCount ?? 'the maximum number of'} rows. Narrow the date range and export again to get the rest.` });
       }
     } catch (err) {
       if (err instanceof ApiError && err.code === 'STEP_UP_REQUIRED') {
@@ -130,7 +131,7 @@ export default function ReportsPage() {
         {notice && (
           <Alert
             tone={notice.tone}
-            title={notice.tone === 'danger' ? 'Export failed' : 'Export complete'}
+            title={notice.tone === 'danger' ? 'Export failed' : notice.tone === 'warning' ? 'Export is incomplete' : 'Export complete'}
             body={notice.text}
             role={notice.tone === 'danger' ? 'alert' : 'status'}
           />

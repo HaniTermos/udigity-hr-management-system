@@ -19,7 +19,7 @@ const PAGE_SIZE = 8;
 /** SCR-DE-001 Business directory. Data comes from `lib/api/businesses.ts` through SWR (plan §9). */
 function DirectoryContent() {
   const params = useSearchParams();
-  const { role, allowed } = useBusinessAccess();
+  const { allowed } = useBusinessAccess();
   const [filters, setFilters] = useState<DirectoryFilterState>({ ...EMPTY_FILTERS, q: params.get('q') ?? '' });
   const [page, setPage] = useState(1);
   const [order, setOrder] = useState<'asc' | 'desc'>('asc');
@@ -37,7 +37,8 @@ function DirectoryContent() {
     setFilters(next);
     setPage(1);
   };
-  const isOwner = role === 'owner';
+  // Hidden/archived records are shown to whoever may restore them (capability, not role name; B-11).
+  const isOwner = allowed(ACTIONS.businessRestore);
 
   return (
     <div className="space-y-4 max-w-[1200px] mx-auto">

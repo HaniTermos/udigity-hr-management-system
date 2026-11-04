@@ -9,6 +9,7 @@ export const meetingsPaths = {
   list: '/api/meetings',
   create: '/api/meetings',
   detail: (id: string) => `/api/meetings/${id}`,
+  attendeeOptions: '/api/meetings/attendee-options',
   command: (id: string, verb: 'held' | 'missed' | 'cancel') => `/api/meetings/${id}/${verb}`,
 } as const;
 
@@ -78,20 +79,21 @@ export interface RescheduleMeetingInput {
   reason?: string;
 }
 
-export async function rescheduleMeeting(id: string, body: RescheduleMeetingInput): Promise<Meeting> {
-  return (await api.patch<{ meeting: Meeting }>(meetingsPaths.detail(id), body)).meeting;
+export async function rescheduleMeeting(id: string, body: RescheduleMeetingInput, idempotencyKey?: string): Promise<Meeting> {
+  return (await api.patch<{ meeting: Meeting }>(meetingsPaths.detail(id), body, { idempotencyKey })).meeting;
 }
 
 /** Held: `discoveryNotes` required. Missed: optional `note`. There is no `held` flag in the body. */
 export async function recordMeetingOutcome(
   id: string,
-  body: { version: number } & ({ outcome: 'held'; discoveryNotes: string } | { outcome: 'missed'; note?: string })
+  body: { version: number } & ({ outcome: 'held'; discoveryNotes: string } | { outcome: 'missed'; note?: string }),
+  idempotencyKey?: string
 ): Promise<Meeting> {
   const { outcome, ...rest } = body;
-  return (await api.post<{ meeting: Meeting }>(meetingsPaths.command(id, outcome), rest)).meeting;
+  return (await api.post<{ meeting: Meeting }>(meetingsPaths.command(id, outcome), rest, { idempotencyKey })).meeting;
 }
 
 /** Final: a cancelled meeting cannot be reopened. */
-export async function cancelMeeting(id: string, body: { version: number; reason: string }): Promise<Meeting> {
-  return (await api.post<{ meeting: Meeting }>(meetingsPaths.command(id, 'cancel'), body)).meeting;
+export async function cancelMeeting(id: string, body: { version: number; reason: string }, idempotencyKey?: string): Promise<Meeting> {
+  return (await api.post<{ meeting: Meeting }>(meetingsPaths.command(id, 'cancel'), body, { idempotencyKey })).meeting;
 }

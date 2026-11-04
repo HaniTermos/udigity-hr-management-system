@@ -118,7 +118,7 @@ export function TaskDrawer({
     if (!draft.title.trim()) next.title = 'Add a task title.';
     if (draft.description.length > DESCRIPTION_MAX) next.description = `Keep the description under ${DESCRIPTION_MAX} characters.`;
     setLocal(next);
-    if (Object.keys(next).length === 0) void save(draft, task.version);
+    if (Object.keys(next).length === 0) void save(draft, baseTask.version); // the version the user started from (B-05), not the live polled one
   }
 
   return (

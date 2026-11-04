@@ -44,6 +44,10 @@ export const ACTIONS = {
   // calling
   callingQueueRead: 'calling.queue.read',
   callingAssign: 'calling.assign',
+  /** Owner override of a reservation held by another agent. */
+  reservationOverride: 'reservation.override',
+  /** Reopen a business rejected by the do-not-call rule. */
+  businessReopenRejected: 'business.reopen_rejected',
   followUpRead: 'follow_up.read',
   // D15 (approved): accepted opportunities are the assigned Developer's and the Owner's; CC is refused.
   opportunitiesList: 'call_attempt.list_opportunities',
@@ -99,6 +103,8 @@ export const ROLE_DEFAULTS: Partial<Record<ActionName, readonly Role[]>> = {
   [ACTIONS.correctionReview]: ['owner', 'data_entry'],
   [ACTIONS.correctionWithdraw]: ['owner', 'call_center', 'developer'],
   [ACTIONS.callingQueueRead]: ['owner', 'call_center'],
+  [ACTIONS.reservationOverride]: ['owner'],
+  [ACTIONS.businessReopenRejected]: ['owner'],
   [ACTIONS.followUpRead]: ['owner', 'call_center'],
   [ACTIONS.dealRead]: ['owner', 'developer'],
   [ACTIONS.opportunitiesList]: ['owner'],

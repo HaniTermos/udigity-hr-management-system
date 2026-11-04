@@ -6,7 +6,14 @@ import { useRouter } from 'next/navigation';
 import { AppShell } from '@/components/layout/AppShell';
 import { ApiErrorView } from '@/components/states/ApiErrorView';
 import { Icon } from '@/components/ui/Icon';
-import { AttendanceTodayBar, BusinessStatusChart, CallingDailyChart, DeveloperWorkloadChart, PipelineStageChart } from '@/components/dashboard/DashboardCharts';
+import dynamic from 'next/dynamic';
+
+// The charts (recharts) are only needed by the Owner dashboard: other roles are redirected and must not download them (B-24).
+const AttendanceTodayBar = dynamic(() => import('@/components/dashboard/DashboardCharts').then((m) => m.AttendanceTodayBar), { ssr: false });
+const BusinessStatusChart = dynamic(() => import('@/components/dashboard/DashboardCharts').then((m) => m.BusinessStatusChart), { ssr: false });
+const CallingDailyChart = dynamic(() => import('@/components/dashboard/DashboardCharts').then((m) => m.CallingDailyChart), { ssr: false });
+const DeveloperWorkloadChart = dynamic(() => import('@/components/dashboard/DashboardCharts').then((m) => m.DeveloperWorkloadChart), { ssr: false });
+const PipelineStageChart = dynamic(() => import('@/components/dashboard/DashboardCharts').then((m) => m.PipelineStageChart), { ssr: false });
 import { Skeleton } from '@/components/ui/State';
 import { ACTIONS } from '@/lib/actions';
 import { useApi } from '@/lib/hooks/useApi';

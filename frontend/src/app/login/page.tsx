@@ -71,9 +71,7 @@ function LoginContent() {
     try {
       const result = await login(email, password);
       if (result.error) {
-        setSignInError(
-          result.code === 'TOO_MANY_ATTEMPTS' ? 'Too many attempts. Please wait and try again.' : 'Email or password is incorrect.'
-        );
+        setSignInError(result.error);
         return;
       }
       if (result.requires2FA) {
@@ -94,6 +92,10 @@ function LoginContent() {
     const result = await verify2FA(code);
     setIsSubmitting(false);
     if (!result.success) {
+      if (result.code === 'RATE_LIMITED' || result.code === 'NETWORK_ERROR') {
+        setChallengeError(result.error ?? 'Try again in a moment.');
+        return;
+      }
       if (result.code === 'TOO_MANY_ATTEMPTS' || result.code === 'SESSION_ENDED' || result.code === 'UNAUTHENTICATED') {
         setLockedOut(true);
         return;
@@ -110,6 +112,10 @@ function LoginContent() {
     const result = await recoverWithCode(code);
     setIsSubmitting(false);
     if (!result.success) {
+      if (result.code === 'RATE_LIMITED' || result.code === 'NETWORK_ERROR') {
+        setRecoverError(result.error ?? 'Try again in a moment.');
+        return;
+      }
       if (result.code === 'TOO_MANY_ATTEMPTS' || result.code === 'SESSION_ENDED' || result.code === 'UNAUTHENTICATED') {
         setRecoverFailed(true);
         return;

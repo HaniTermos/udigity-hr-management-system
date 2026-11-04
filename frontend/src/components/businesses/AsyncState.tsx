@@ -1,5 +1,6 @@
 import React from 'react';
 import { ApiError } from '@/lib/api/client';
+import { rateLimitMessage } from '@/lib/api/rateLimit';
 import { Button } from '@/components/ui/Button';
 import { HiddenByPolicy } from '@/components/states/HiddenByPolicy';
 import { PermissionDenied } from '@/components/states/PermissionDenied';
@@ -28,7 +29,7 @@ export function ErrorState({
       return <HiddenByPolicy backHref={backHref} backLabel={backLabel} showPolicyChips className={className} />;
     }
     if (error.code === 'RATE_LIMITED') {
-      return <StateView type="error" title="Too many requests" body="Wait a moment, then try again." className={className} />;
+      return <StateView type="error" title="Too many requests" body={error.retryAfterSeconds ? rateLimitMessage(error.retryAfterSeconds, 'requests') : 'Wait a moment, then try again.'} className={className} />;
     }
     if (error.isPermissionDenied) return <PermissionDenied area={area} className={className} />;
     if (error.isNotFound) {

@@ -394,3 +394,54 @@ export async function getSessionBreaks(sessionId: string): Promise<{ breaks: Bre
   return api.get<{ breaks: BreakDto[] }>(attendancePaths.sessionBreaks(sessionId));
 }
 
+
+/* ------------------------------------------------------------------ remote exceptions (D3, Owner) */
+
+export type RemoteExceptionStatus = 'requested' | 'granted' | 'rejected' | 'revoked';
+
+export interface RemoteExceptionDto {
+  id: Id;
+  employeeId: Id;
+  employeeName: string;
+  startDate: IsoDate;
+  endDate: IsoDate;
+  status: RemoteExceptionStatus;
+  reason: string;
+  requestedBy: Id;
+  decidedBy: Id | null;
+  decidedAt: string | null;
+  decisionReason: string | null;
+  createdAt: string;
+  version: number;
+}
+
+export interface RemoteExceptionQuery {
+  employeeId?: string;
+  status?: RemoteExceptionStatus;
+  page?: number;
+  pageSize?: number;
+}
+
+export const remoteExceptionsKey = (q: RemoteExceptionQuery) =>
+  ['attendance.remoteExceptions', q.employeeId ?? '', q.status ?? '', q.page ?? 1, q.pageSize ?? 0] as const;
+
+export async function listRemoteExceptions(q: RemoteExceptionQuery = {}): Promise<Page<RemoteExceptionDto>> {
+  return api.get<Page<RemoteExceptionDto>>(attendancePaths.remoteExceptions, { query: { ...q } });
+}
+
+/** Owner grants a remote exception for one employee and a date or date range (reason required, audited). */
+export async function grantRemoteException(
+  input: { employeeId: string; startDate: IsoDate; endDate?: IsoDate; reason: string },
+  idempotencyKey?: string
+): Promise<RemoteExceptionDto> {
+  return api.post<RemoteExceptionDto>(attendancePaths.remoteExceptions, input, { idempotencyKey });
+}
+
+export async function decideRemoteException(
+  d: Pick<RemoteExceptionDto, 'id' | 'version'>,
+  verb: 'approve' | 'reject' | 'revoke',
+  reason?: string,
+  idempotencyKey?: string
+): Promise<RemoteExceptionDto> {
+  return api.post<RemoteExceptionDto>(`${attendancePaths.remoteExceptions}/${d.id}/${verb}`, { version: d.version, reason }, { idempotencyKey });
+}

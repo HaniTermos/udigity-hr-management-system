@@ -10,8 +10,8 @@ import { useApi, usePage } from '@/lib/hooks/useApi';
 import { buildQuery } from '@/lib/api/client';
 import { useVersionedSave } from '@/lib/hooks/useVersionedSave';
 import { dealsPaths, type DealListItem } from '@/lib/api/deals';
-import { scheduleMeeting, type Meeting, type ScheduleMeetingInput } from '@/lib/api/meetings';
-import { type EmployeeRow } from '@/lib/api/employees';
+import { meetingsPaths, scheduleMeeting, type Meeting, type ScheduleMeetingInput } from '@/lib/api/meetings';
+import { useCallingFormat } from '@/components/calling/format';
 import { ActionError, fieldMessage, toLocalInput } from './shared';
 
 export interface ScheduleDeal {
@@ -44,6 +44,7 @@ export function ScheduleMeetingDrawer({
   onScheduled: (m: Meeting) => void;
 }) {
   const toast = useToast();
+  const fmt = useCallingFormat();
   const { user } = useAuth();
 
   const [selectedTarget, setSelectedTarget] = useState(deal?.id ? `deal:${deal.id}` : '');
@@ -66,13 +67,15 @@ export function ScheduleMeetingDrawer({
     [choices.items]
   );
 
-  // 2. Staff picker. The employee list is Owner-only today, so for other roles the picker is optional: the host
-  //    defaults to the signed-in user and the form never depends on the list.
-  const employeesRes = useApi<{ items: EmployeeRow[] }>(`/api/employees${buildQuery({ pageSize: 100, status: 'active' })}`, {
-    shouldRetryOnError: false,
-  });
+  // 2. Staff picker: the purpose-built attendee list (`meeting.create`), which every role that can schedule may call.
+  //    The server narrows it for non-owners; the form still works if the list is unavailable (host = you).
+  //    It accepts `fullName` (current) or `name` (minimal list) so either backend shape works.
+  const employeesRes = useApi<{ items: { id: string; fullName?: string; name?: string; role: string }[] }>(
+    `${meetingsPaths.attendeeOptions}${buildQuery({ dealId: deal?.id ?? (selectedTarget.startsWith('deal:') ? selectedTarget.slice(5) : undefined) })}`,
+    { shouldRetryOnError: false }
+  );
   const activeEmployees = useMemo(
-    () => (employeesRes.data?.items ?? []).filter((e) => e.isActive),
+    () => (employeesRes.data?.items ?? []).map((e) => ({ id: e.id, fullName: e.fullName ?? e.name ?? '', role: e.role })),
     [employeesRes.data?.items]
   );
   const staffAvailable = Boolean(employeesRes.data) && !employeesRes.error;
@@ -106,8 +109,8 @@ export function ScheduleMeetingDrawer({
     if (!selectedTarget) next.target = 'Choose a business.';
     if (!hostId) next.hostId = 'Select the employee responsible for this meeting.';
     if (!start) next.startsAt = 'Choose a start time.';
-    else if (new Date(start).getTime() < Date.now()) next.startsAt = 'The start time cannot be in the past.';
-    if (end && start && new Date(end) <= new Date(start)) next.endsAt = 'End must be after start.';
+    else if (new Date(fmt.toIso(start)).getTime() < Date.now()) next.startsAt = 'The start time cannot be in the past.';
+    if (end && start && new Date(fmt.toIso(end)) <= new Date(fmt.toIso(start))) next.endsAt = 'End must be after start.';
     if (!user) next.target = 'Your session is not ready. Reload and try again.';
     setLocal(next);
     if (Object.keys(next).length > 0 || !user) return;
@@ -121,8 +124,8 @@ export function ScheduleMeetingDrawer({
       {
         dealId: targetDealId,
         title: title.trim() || undefined,
-        startsAt: new Date(start).toISOString(),
-        endsAt: end ? new Date(end).toISOString() : undefined,
+        startsAt: fmt.toIso(start),
+        endsAt: end ? fmt.toIso(end) : undefined,
         location: location.trim() || undefined,
         agenda: agenda.trim() || undefined,
         attendeeIds,
@@ -186,7 +189,7 @@ export function ScheduleMeetingDrawer({
             label="Host"
             value={user ? `${user.fullName} (you)` : ''}
             readOnly
-            helperText={employeesRes.isLoading ? 'Loading staff…' : 'You host this meeting. Your role cannot browse the staff list.'}
+            helperText={employeesRes.isLoading ? 'Loading staff…' : 'You host this meeting. The staff list is not available.'}
             error={err('hostId')}
           />
         )}

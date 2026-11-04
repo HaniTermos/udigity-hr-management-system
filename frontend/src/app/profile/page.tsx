@@ -15,6 +15,7 @@ import { api, ApiError } from '@/lib/api';
 import type { EmployeeRow } from '@/lib/api/employees';
 import { identityAvailability, ownProfilePath, selfServicePaths } from '@/lib/api/identity';
 import { useAuth } from '@/lib/auth';
+import { PASSWORD_MIN_LENGTH } from '@/lib/passwordPolicy';
 import { useApi } from '@/lib/hooks/useApi';
 import { useTheme, type ThemePreference } from '@/lib/theme';
 
@@ -130,7 +131,7 @@ function ProfileContent() {
     e.preventDefault();
     if (!canChangePassword) return;
     if (!currentPassword) return setPasswordError('Enter your current password.');
-    if (newPassword.length < 8) return setPasswordError('The new password is too short.');
+    if (newPassword.length < PASSWORD_MIN_LENGTH) return setPasswordError(`The new password must be at least ${PASSWORD_MIN_LENGTH} characters.`);
     if (newPassword !== confirmPassword) return setPasswordError('The new passwords do not match.');
     setPasswordError(undefined);
     setChanging(true);
@@ -144,7 +145,7 @@ function ProfileContent() {
       if (err instanceof ApiError && (err.code === 'REAUTH_FAILED' || err.code === 'INVALID_CREDENTIALS')) {
         setPasswordError('The current password is not correct.');
       } else if (err instanceof ApiError && err.code === 'VALIDATION_ERROR') {
-        setPasswordError('The new password does not meet the rules.');
+        setPasswordError('The new password does not meet the rules (at least ' + PASSWORD_MIN_LENGTH + ' characters).');
       } else {
         toast.show({ tone: 'error', title: 'Password not changed', body: 'Nothing was changed. Try again.' });
       }

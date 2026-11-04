@@ -8,6 +8,7 @@ import { Icon } from '@/components/ui/Icon';
 import { Input, Select } from '@/components/ui/Input';
 import { StateView } from '@/components/ui/State';
 import { ApiError } from '@/lib/api/client';
+import { rateLimitMessage } from '@/lib/api/rateLimit';
 import { employeesListKey, type EmployeeRow } from '@/lib/api/employees';
 import { issueEnrollmentToken, type IssuedEnrollmentToken } from '@/lib/api/identity';
 import type { Page } from '@/lib/api/types';
@@ -18,7 +19,7 @@ import { useCompanyTime } from '@/lib/hooks/useCompanyTime';
 function issueError(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.code === 'REAUTH_FAILED') return 'Your password or verification code is incorrect.';
-    if (err.code === 'TOO_MANY_ATTEMPTS') return 'Too many attempts. Wait a few minutes and try again.';
+    if (err.code === 'TOO_MANY_ATTEMPTS' || err.code === 'RATE_LIMITED') return rateLimitMessage(err.retryAfterSeconds);
     if (err.code === 'STATE_CONFLICT') return 'This employee cannot receive an enrollment token (already enrolled, inactive or not an Owner).';
     if (err.status === 403) return 'You are not allowed to issue enrollment tokens.';
     return err.message;

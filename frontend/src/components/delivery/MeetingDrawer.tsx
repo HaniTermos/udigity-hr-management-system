@@ -9,6 +9,7 @@ import { Tabs } from '@/components/ui/Tabs';
 import { useToast } from '@/components/ui/Toast';
 import { useVersionedSave } from '@/lib/hooks/useVersionedSave';
 import { cancelMeeting, recordMeetingOutcome, rescheduleMeeting, type Meeting } from '@/lib/api/meetings';
+import { useCallingFormat } from '@/components/calling/format';
 import { ActionError, fieldMessage, fmtDayMonth, fmtTime, MEETING_STATUS_LABEL, MEETING_TONE, toLocalInput } from './shared';
 
 type Mode = 'outcome' | 'reschedule' | 'cancel';
@@ -63,6 +64,7 @@ function MeetingDrawerBody({
   onConflict: (meeting: Meeting, mine: Record<string, string>) => void;
 }) {
   const toast = useToast();
+  const fmt = useCallingFormat();
   const modes: { id: Mode; label: string }[] = [
     ...(m.allowed.recordOutcome ? [{ id: 'outcome' as const, label: 'Record outcome' }] : []),
     ...(m.allowed.reschedule ? [{ id: 'reschedule' as const, label: 'Reschedule' }] : []),
@@ -84,11 +86,12 @@ function MeetingDrawerBody({
           m.id,
           s.outcome === 'held'
             ? { version: ctx.version, outcome: 'held', discoveryNotes: s.discoveryNotes }
-            : { version: ctx.version, outcome: 'missed', note: s.note }
+            : { version: ctx.version, outcome: 'missed', note: s.note },
+          ctx.idempotencyKey
         );
       }
-      if (s.mode === 'cancel') return cancelMeeting(m.id, { version: ctx.version, reason: s.reason });
-      return rescheduleMeeting(m.id, { version: ctx.version, startsAt: s.startsAt, endsAt: s.endsAt, reason: s.reason });
+      if (s.mode === 'cancel') return cancelMeeting(m.id, { version: ctx.version, reason: s.reason }, ctx.idempotencyKey);
+      return rescheduleMeeting(m.id, { version: ctx.version, startsAt: s.startsAt, endsAt: s.endsAt, reason: s.reason }, ctx.idempotencyKey);
     }
   );
 
@@ -117,12 +120,12 @@ function MeetingDrawerBody({
       send = { mode, reason: reason.trim(), mine: { status: MEETING_STATUS_LABEL.cancelled, notes: reason.trim() } };
     } else {
       if (!start) next.startsAt = 'Choose a start time.';
-      else if (new Date(start).getTime() < Date.now()) next.startsAt = 'The new time cannot be in the past.';
-      if (end && start && new Date(end) <= new Date(start)) next.endsAt = 'End must be after start.';
+      else if (new Date(fmt.toIso(start)).getTime() < Date.now()) next.startsAt = 'The new time cannot be in the past.';
+      if (end && start && new Date(fmt.toIso(end)) <= new Date(fmt.toIso(start))) next.endsAt = 'End must be after start.';
       send = {
         mode,
-        startsAt: start ? new Date(start).toISOString() : '',
-        endsAt: end ? new Date(end).toISOString() : undefined,
+        startsAt: start ? fmt.toIso(start) : '',
+        endsAt: end ? fmt.toIso(end) : undefined,
         reason: reason.trim() || undefined,
         mine: { time: `${fmtDayMonth(start)} ${fmtTime(start)}${end ? `–${fmtTime(end)}` : ''}` },
       };

@@ -10,6 +10,7 @@
  */
 
 import { browserIsOffline, networkFailure, offlineBlock } from './offline';
+import { isRateLimited, parseRetryAfter } from './rateLimit';
 
 export const CSRF_HEADER = 'X-CSRF-Token';
 
@@ -51,6 +52,8 @@ const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 export interface ApiErrorPayload {
   error?: string;
   code?: string;
+  /** Seconds from the `Retry-After` header of a 429 (review F-02). */
+  retryAfterSeconds?: number;
   [key: string]: unknown;
 }
 
@@ -89,7 +92,9 @@ export async function apiFetch<T = unknown>(
 
   let res: Response;
   try {
-    res = await fetch(path, { ...init, method, headers, body, credentials: 'same-origin' });
+    // A stalled backend must not leave "Saving..." forever (B-32): give up after 60 s unless the caller brought its own signal.
+    const signal = init.signal ?? (typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(60_000) : undefined);
+    res = await fetch(path, { ...init, method, headers, body, credentials: 'same-origin', signal });
   } catch {
     return { ok: false, status: 0, data: null, error: networkFailure(method) };
   }
@@ -106,7 +111,18 @@ export async function apiFetch<T = unknown>(
   }
 
   if (!res.ok) {
-    return { ok: false, status: res.status, data: null, error: (json as ApiErrorPayload) || { code: `HTTP_${res.status}` } };
+    const payload: ApiErrorPayload = json && typeof json === 'object' ? { ...(json as ApiErrorPayload) } : { code: `HTTP_${res.status}` };
+    // An nginx 429 is an HTML page: no JSON, no code. Treat it like the backend limiter.
+    if (res.status === 429) {
+      if (!payload.code || payload.code.startsWith('HTTP_')) payload.code = 'RATE_LIMITED';
+      const wait = parseRetryAfter(res.headers.get('Retry-After'));
+      if (wait !== undefined) payload.retryAfterSeconds = wait;
+    }
+    if ((isRateLimited(res.status, payload.code) || res.status === 503) && payload.retryAfterSeconds === undefined) {
+      const wait = parseRetryAfter(res.headers.get('Retry-After'));
+      if (wait !== undefined) payload.retryAfterSeconds = wait;
+    }
+    return { ok: false, status: res.status, data: null, error: payload };
   }
   return { ok: true, status: res.status, data: json as T, error: null };
 }

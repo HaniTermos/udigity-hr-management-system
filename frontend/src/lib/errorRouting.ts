@@ -21,7 +21,8 @@ export type ErrorRoute =
   | { kind: 'not-found' }
   | { kind: 'conflict'; currentVersion?: number }
   | { kind: 'offline' }
-  | { kind: 'rate-limited' }
+  | { kind: 'rate-limited'; retryAfterSeconds?: number }
+  | { kind: 'busy'; retryAfterSeconds?: number }
   | { kind: 'validation'; fieldErrors: Record<string, string[]> }
   | { kind: 'error'; requestId?: string };
 
@@ -68,7 +69,8 @@ export function classifyError(error: unknown): ErrorRoute {
     return { kind: 'conflict', currentVersion: typeof d?.currentVersion === 'number' ? d.currentVersion : undefined };
   }
   if (error.isNotFound) return { kind: 'not-found' };
-  if (error.status === 429 || error.code === 'RATE_LIMITED') return { kind: 'rate-limited' };
+  if (error.code === 'BUSY_TRY_AGAIN' || error.status === 503) return { kind: 'busy', retryAfterSeconds: error.retryAfterSeconds };
+  if (error.status === 429 || error.code === 'RATE_LIMITED') return { kind: 'rate-limited', retryAfterSeconds: error.retryAfterSeconds };
   if (error.code === 'VALIDATION_ERROR') return { kind: 'validation', fieldErrors: error.fieldErrors };
   return { kind: 'error', requestId: error.requestId };
 }
@@ -76,7 +78,7 @@ export function classifyError(error: unknown): ErrorRoute {
 /** Errors a retry might fix. Everything else is final: SWR must not hammer the API with it. */
 export function isRetryable(error: unknown): boolean {
   const r = classifyError(error);
-  return r.kind === 'offline' || r.kind === 'error' || r.kind === 'rate-limited';
+  return r.kind === 'offline' || r.kind === 'error' || r.kind === 'rate-limited' || r.kind === 'busy';
 }
 
 /**

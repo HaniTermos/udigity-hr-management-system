@@ -317,7 +317,7 @@ export function BusinessDetailView({
   const { allowed } = useBusinessAccess();
   const [tab, setTab] = useState<'overview' | 'history' | 'related'>(initialTab);
   const limited = b.access === 'context_limited';
-  const canEdit = (role === 'data_entry' || role === 'owner') && !limited && !b.archived;
+  const canEdit = allowed(ACTIONS.businessUpdate) && !limited && !b.archived;
   const canArchive = (allowed(ACTIONS.businessArchive) && !b.archived) || (allowed(ACTIONS.businessRestore) && b.archived);
   const canFlag = allowed(ACTIONS.correctionSubmit) && !b.archived;
   const openCount = b.corrections.length;
@@ -444,7 +444,7 @@ export function BusinessDetailView({
           </div>
 
           <div className="flex flex-col gap-4">
-            <CorrectionsCard business={b} canOpenQueue={role === 'data_entry' || role === 'owner'} onChanged={onChanged} />
+            <CorrectionsCard business={b} canOpenQueue={allowed(ACTIONS.correctionRead)} onChanged={onChanged} />
             <CardSection title="Record">
               <KeyValueList
                 rows={[
@@ -493,7 +493,7 @@ export function BusinessDetailView({
             <HistoryPanel id={b.id} active={tab === 'history'} />
           </CardSection>
           <div className="flex flex-col gap-4">
-            <CorrectionsCard business={b} canOpenQueue={role === 'data_entry' || role === 'owner'} onChanged={onChanged} />
+            <CorrectionsCard business={b} canOpenQueue={allowed(ACTIONS.correctionRead)} onChanged={onChanged} />
           </div>
         </div>
       )}

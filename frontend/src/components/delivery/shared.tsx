@@ -22,21 +22,43 @@ export function fmtDate(iso: string | null | undefined, withYear = true): string
   return `${d} ${MONTHS[m - 1]}${withYear ? ` ${y}` : ''}`;
 }
 
+/**
+ * The company timezone for every Delivery screen (review B-10). `DeliveryFrame` sets it from the company
+ * settings; until it is configured the browser zone is used, as everywhere else.
+ */
+let deliveryZone: string | null = null;
+export function setDeliveryTimeZone(tz: string | null): void {
+  deliveryZone = tz;
+}
+
+function partsOf(iso: string): { y: string; mo: string; d: string; h: string; mi: string } {
+  const f = new Intl.DateTimeFormat('en-CA', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+    ...(deliveryZone ? { timeZone: deliveryZone } : {}),
+  }).formatToParts(new Date(iso));
+  const get = (t: string) => f.find((p) => p.type === t)?.value ?? '00';
+  return { y: get('year'), mo: get('month'), d: get('day'), h: get('hour'), mi: get('minute') };
+}
+
 export function fmtTime(iso: string): string {
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const p = partsOf(iso);
+  return `${p.h}:${p.mi}`;
 }
 
 export function fmtDayMonth(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  const p = partsOf(iso);
+  return `${Number(p.d)} ${MONTHS[Number(p.mo) - 1]}`;
 }
 
-/** Local `YYYY-MM-DDTHH:mm` for a datetime-local input. */
+/** Company-zone `YYYY-MM-DDTHH:mm` for a datetime-local input. */
 export function toLocalInput(iso: string): string {
-  const d = new Date(iso);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  const p = partsOf(iso);
+  return `${p.y}-${p.mo}-${p.d}T${p.h}:${p.mi}`;
 }
 
 /** Today as `YYYY-MM-DD` (input default). */
@@ -271,8 +293,11 @@ export function ActionError({ route, error, onRetry }: { route: ErrorRoute | nul
       </div>
     );
   }
+  if (route.kind === 'busy') return <Alert tone="warning" title="The system is busy" body="Try again in a few seconds. Your entries are kept." />;
   if (route.kind === 'session-ended') return <Alert tone="danger" title="Your session ended" body="Sign in again; your entries on this page are not saved." />;
   if (route.kind === 'validation') {
+    const form = route.fieldErrors._form;
+    if (form?.length) return <Alert tone="danger" title={form[0]} />;
     return Object.keys(route.fieldErrors).length === 0 ? <Alert tone="danger" title={error?.message ?? 'Check the highlighted fields.'} /> : null;
   }
   const missing = missingFacts(error?.details);

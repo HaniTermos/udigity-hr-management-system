@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AppShell } from '@/components/layout/AppShell';
 import { ApiErrorView } from '@/components/states';
-import { useAuth } from '@/lib/auth';
+import { useCapability } from '@/lib/hooks/useCapability';
 import { ACTIONS } from '@/lib/actions';
 import type { LogAttemptResultDto } from '@/lib/api/calling';
 import { CallingPageHeader, HeaderLink, LoadingBlock } from '@/components/calling/CallingPageHeader';
@@ -43,8 +43,8 @@ export default function ContactWorkspacePage({ params }: { params: Promise<{ bus
 }
 
 function Workspace({ businessId }: { businessId: string }) {
-  const { user } = useAuth();
-  const isOwner = user?.role === 'owner';
+  // Capability, not role name (S-26, B-11).
+  const isOwner = useCapability(ACTIONS.reservationOverride);
   const access = useBusinessAccess();
   const { data: queue } = useQueue();
   const dncCount = useDoNotCallCount();

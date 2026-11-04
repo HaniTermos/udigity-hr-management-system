@@ -74,6 +74,8 @@ export interface ErrorBody {
   /** VALIDATION_ERROR: `Record<field, string[]>`; VERSION_CONFLICT: `{ currentVersion }`. */
   details?: unknown;
   requestId?: string;
+  /** 429: seconds to wait, from the `Retry-After` header. */
+  retryAfterSeconds?: number;
 }
 
 /** Access outcome attached to detail responses (plan.md §5). */

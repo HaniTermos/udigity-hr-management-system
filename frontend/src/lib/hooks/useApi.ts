@@ -1,8 +1,10 @@
 'use client';
 
+import { useRef } from 'react';
 import useSWR, { type KeyedMutator, type SWRConfiguration } from 'swr';
 import { ApiError, buildQuery, swrFetcher, type Page, type PageQuery, type QueryValue } from '@/lib/api';
 import { classifyError, isRetryable, type ErrorRoute } from '@/lib/errorRouting';
+import { DEFAULT_POLL_MS, effectivePollMs, stopsPolling } from '@/lib/polling';
 
 export interface UseApiResult<T> {
   data: T | undefined;
@@ -22,16 +24,30 @@ export interface UseApiResult<T> {
  * the screen decides (SHR-011..015).
  */
 export function useApi<T>(path: string | null, config?: SWRConfiguration<T, ApiError>): UseApiResult<T> {
+  // Polling policy (lib/polling.ts): off unless the caller sets an interval, paused while the tab is hidden,
+  // and stopped for a key that answered 401/403/404.
+  const base = typeof config?.refreshInterval === 'number' ? config.refreshInterval : DEFAULT_POLL_MS;
+  const blocked = useRef<{ key: string | null; status: number | undefined }>({ key: null, status: undefined });
   const { data, error, isLoading, isValidating, mutate } = useSWR<T, ApiError>(path, (key: string) => swrFetcher<T>(key), {
-    refreshInterval: 4000,
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
     dedupingInterval: 1500,
+    refreshWhenHidden: false,
+    refreshWhenOffline: false,
     onErrorRetry: (err, _key, _cfg, revalidate, { retryCount }) => {
       if (!isRetryable(err) || retryCount >= 3) return;
       setTimeout(() => revalidate({ retryCount }), 2000 * (retryCount + 1));
     },
     ...config,
+    refreshInterval: () => effectivePollMs(base, blocked.current.key === path ? blocked.current.status : undefined),
+    onError: (err, key, cfg) => {
+      if (err instanceof ApiError && stopsPolling(err.status)) blocked.current = { key, status: err.status };
+      config?.onError?.(err, key, cfg);
+    },
+    onSuccess: (d, key, cfg) => {
+      if (blocked.current.key === key) blocked.current = { key: null, status: undefined };
+      config?.onSuccess?.(d, key, cfg);
+    },
   });
   return {
     data,

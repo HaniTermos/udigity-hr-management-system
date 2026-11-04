@@ -8,6 +8,7 @@ import { LoadErrorState } from './SystemStates';
 import { StateView } from '@/components/ui/State';
 import { Button } from '@/components/ui/Button';
 import { classifyError, type ErrorRoute } from '@/lib/errorRouting';
+import { rateLimitMessage } from '@/lib/api/rateLimit';
 
 export interface ApiErrorViewProps {
   /** The thrown error, or an already-classified route (`useApi().route`). */
@@ -65,7 +66,18 @@ export function ApiErrorView({ error, route, onRetry, backHref = '/my-day', back
           type="error"
           size={size}
           title="Too many requests"
-          body="Please wait a moment, then try again."
+          body={r.retryAfterSeconds ? rateLimitMessage(r.retryAfterSeconds, 'requests') : 'Please wait a moment, then try again.'}
+          action={onRetry && <Button variant={size === 'page' ? 'secondary' : 'link'} size="sm" onClick={onRetry}>Try again</Button>}
+          className={className}
+        />
+      );
+    case 'busy':
+      return (
+        <StateView
+          type="error"
+          size={size}
+          title="The system is busy"
+          body="Try again in a few seconds. Anything you typed is kept."
           action={onRetry && <Button variant={size === 'page' ? 'secondary' : 'link'} size="sm" onClick={onRetry}>Try again</Button>}
           className={className}
         />
