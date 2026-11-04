@@ -116,7 +116,7 @@ function policy(p: Partial<DeliveryPolicy>): void {
   setRuleFlagOverridesForTests(p.developerPreClosure ? { 'deals.developerPreClosure': p.developerPreClosure } : {});
 }
 
-describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
+describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', { timeout: 60_000 }, () => {  // H-07: DB-heavy, realistic limit
   let owner: Agent;
   let pendingOwner: Agent;
   let de: Agent;

@@ -87,6 +87,8 @@ export interface DashboardMetricsDto {
     failedDeliveriesCount: number;
     suppressedDeliveriesCount: number;
     failedRemindersCount: number;
+    /** H-06: operator alerts marked failed (could not be emailed after every attempt). */
+    failedOpsAlertsCount: number;
   };
   /** D7: Owner-set targets active today (company timezone) with server-computed progress; [] = none set. */
   targets: {

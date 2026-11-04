@@ -52,6 +52,7 @@ export async function queryDashboardStats(
   failedDeliveries: number;
   suppressedDeliveries: number;
   failedReminders: number;
+  failedOpsAlerts: number;
 }> {
   // `until` is exclusive (company-timezone day boundary); open-ended when absent.
   const endDate = until ?? new Date('9999-12-31T23:59:59Z');
@@ -156,6 +157,8 @@ export async function queryDashboardStats(
   const remFailRes = await db.query<{ failed: string }>(
     `SELECT count(*)::text AS failed FROM reminders WHERE state = 'failed'`
   );
+  // H-06: operator alerts that could not be emailed to every recipient after every attempt.
+  const opsFailRes = await db.query<{ failed: string }>(`SELECT count(*)::text AS failed FROM ops_alerts WHERE failed_at IS NOT NULL`);
 
   return {
     totalBusinesses: Number(bizRes.rows[0]?.total ?? 0),
@@ -179,6 +182,7 @@ export async function queryDashboardStats(
     failedDeliveries: Number(notifFailRes.rows[0]?.failed ?? 0),
     suppressedDeliveries: Number(notifFailRes.rows[0]?.suppressed ?? 0),
     failedReminders: Number(remFailRes.rows[0]?.failed ?? 0),
+    failedOpsAlerts: Number(opsFailRes.rows[0]?.failed ?? 0),
   };
 }
 
@@ -256,12 +260,15 @@ export async function queryDeveloperWorkload(
   }));
 }
 
+/** S-32 (Owner 2026-11-04): rows per export. */
+export const EXPORT_ROW_CAP = 10_000;
+
 export async function queryExportRows(
   db: Queryable,
   reportType: string,
   filters: Record<string, unknown> = {},
   /** R2-02 row cap: callers pass cap + 1 to detect truncation. */
-  limit = 1000
+  limit = EXPORT_ROW_CAP + 1
 ): Promise<Record<string, unknown>[]> {
   const max = Math.max(1, Math.min(Math.trunc(limit), 100_000));
   // A-18 / R2-05 residual: the requested date range is applied (inclusive days), not only recorded.

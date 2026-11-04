@@ -7,6 +7,7 @@
  * Approved rule U-01: "Save, keep reservation" is allowed for every outcome except Rejected.
  */
 import { z } from 'zod';
+import { MAX_PAGE } from '../../shared/pagination.js';
 import { isoDateTime as isoDateTimeStrict, safeString } from '../../shared/validation.js';
 import { defineActions } from '../../shared/access.js';
 import { defineMatrixActions } from '../access/schemas.js';
@@ -161,7 +162,7 @@ export const QUEUE_BUCKETS = [
 export type QueueBucket = (typeof QUEUE_BUCKETS)[number];
 
 const paging = {
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_PAGE).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
   order: z.enum(['asc', 'desc']).default('asc'),
 };

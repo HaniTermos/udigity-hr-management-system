@@ -277,6 +277,16 @@ export function guardedAction(fn: unknown): Action | undefined {
 }
 
 /** Route middleware. Use after `authenticate`. Unknown actions are denied (fail closed). */
+/**
+ * Controls gap V16 (review 2026-11-04): a 403 on an admin-flagged matrix row is audited (`access.denied`).
+ * The recorder is registered by MOD-access init (it needs the pool); best effort, it never changes the answer.
+ */
+export type DeniedAdminRecorder = (req: Request, action: Action) => Promise<void>;
+let deniedAdminRecorder: DeniedAdminRecorder | null = null;
+export function registerDeniedAdminRecorder(fn: DeniedAdminRecorder | null): void {
+  deniedAdminRecorder = fn;
+}
+
 export function requireAction(action: Action) {
   const middleware = (req: Request, res: Response, next: NextFunction) => {
     if (!req.user) return res.status(401).json({ error: 'Authentication required', code: 'UNAUTHENTICATED' });
@@ -286,7 +296,14 @@ export function requireAction(action: Action) {
       return res.status(403).json({ error: 'Permission denied', code: 'FORBIDDEN_ROLE' });
     }
     const role = req.user.role;
-    const forbidden = () => res.status(403).json({ error: 'Permission denied', code: 'FORBIDDEN_ROLE' });
+    const forbidden = () => {
+      if (policy.admin && deniedAdminRecorder) {
+        void deniedAdminRecorder(req, action).catch((err: unknown) =>
+          console.error('Access: denied-admin audit failed', { action, requestId: req.requestId, message: (err as Error)?.message })
+        );
+      }
+      return res.status(403).json({ error: 'Permission denied', code: 'FORBIDDEN_ROLE' });
+    };
     const secondFactor = () =>
       res.status(403).json({ error: 'Two-factor authentication must be completed first', code: 'OWNER_2FA_REQUIRED' });
     if (isSystemRole(role)) {

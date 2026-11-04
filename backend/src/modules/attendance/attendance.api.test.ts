@@ -16,6 +16,7 @@ import bcrypt from 'bcryptjs';
 import { authenticator } from 'otplib';
 import { app } from '../../app.js';
 import { pool, query } from '../../db/pool.js';
+import { restoreAttendanceSettings, snapshotAttendanceSettings, type SettingsSnapshot } from '../../tests/helpers/testState.js';
 import { config } from '../../config/index.js';
 import { DEMO_LABEL, loadPolicyFlags } from '../../shared/flags.js';
 import { runSystemCommand } from '../../shared/tx.js';
@@ -125,12 +126,13 @@ const BASE_SETTINGS = {
   graceMinutes: 10,
   verificationMode: 'ip',
   officeIps: LOCAL_IPS,
+  officeHostnames: [] as string[], // H-07: stated, so a hostname left by an earlier run never applies
   holidays: ['2026-12-25'],
   holidaysConfirmed: true,
   missingCheckoutFlagHours: 6,
 };
 
-describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
+describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', { timeout: 60_000 }, () => {  // H-07: DB-heavy, realistic limit
   let owner: Agent;
   let de: Agent;
   let cc: Agent;
@@ -144,7 +146,9 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
     return res;
   }
 
+  let settingsBefore: SettingsSnapshot = { id: null };
   beforeAll(async () => {
+    settingsBefore = await snapshotAttendanceSettings(pool); // H-07: restored in afterAll
     owner = await ownerAgent();
     de = await agentFor('data_entry');
     cc = await agentFor('call_center');
@@ -169,6 +173,7 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', () => {
     clock.set(null);
     // Other suites in this DB expect company.timezone unset (it is a NEEDS VALUE setting).
     await query(`UPDATE company_settings SET "values" = "values" - 'company.timezone' WHERE id = 1`);
+    await restoreAttendanceSettings(pool, settingsBefore);
     await pool.end();
   }, 300_000);
 

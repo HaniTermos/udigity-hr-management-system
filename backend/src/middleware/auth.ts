@@ -5,13 +5,12 @@ import { countAuthenticatedRead } from '../shared/rateLimit.js';
 import {
   MUTATING_METHODS,
   SessionState,
-  deriveCsrfToken,
   evaluateSession,
-  hashToken,
   isPendingRequestAllowed,
   nextIdleExpiry,
   safeEqual,
 } from '../modules/identity/security.js';
+import { csrfToken as issueCsrfToken, csrfTokenCandidates, tokenHash, tokenHashCandidates } from '../modules/identity/keys.js';
 
 export type Role = 'owner' | 'data_entry' | 'call_center' | 'developer' | (string & {});
 
@@ -44,6 +43,7 @@ declare global {
 
 interface SessionRow {
   session_id: string;
+  token_hash: string;
   state: SessionState;
   created_at: Date;
   expires_at: Date;
@@ -81,17 +81,18 @@ export function createAuthenticate(deps: AuthDeps) {
       // 1. Look up the session by token hash (raw tokens are never stored).
       const { rows } = await deps.db.query<SessionRow>(
         `
-        SELECT s.id AS session_id, s.state, s.created_at, s.expires_at, s.idle_expires_at, s.csrf_nonce,
+        SELECT s.id AS session_id, s.token_hash, s.state, s.created_at, s.expires_at, s.idle_expires_at, s.csrf_nonce,
                (s.rotated_from IS NOT NULL AND EXISTS (
                   SELECT 1 FROM two_factor_factors f
                    WHERE f.employee_id = e.id AND f.factor_type = 'totp' AND f.is_enrolled = true)) AS second_factor_verified,
                e.id AS employee_id, e.email, e.full_name, e.role, e.department, e.job_title, e.is_active
         FROM sessions s
         JOIN employees e ON s.employee_id = e.id
-        WHERE s.token_hash = $1
+        WHERE s.token_hash = ANY($1::text[])
         LIMIT 1;
         `,
-        [hashToken(config.session.secret, token)]
+        // Per-purpose key first, then the legacy and previous-secret hashes (identity/keys.ts).
+        [tokenHashCandidates('session-token', token)]
       );
       if (rows.length === 0) return unauthenticated(res, 'SESSION_INVALID');
       const session = rows[0];
@@ -132,7 +133,16 @@ export function createAuthenticate(deps: AuthDeps) {
         return unauthenticated(res, 'SESSION_INVALID');
       }
 
-      const csrfToken = deriveCsrfToken(config.session.secret, session.session_id, session.csrf_nonce || '');
+      // A session found by a legacy or previous-secret hash is re-keyed now (identity/keys.ts rotation).
+      const currentHash = tokenHash('session-token', token);
+      if (session.token_hash !== currentHash) {
+        await deps.db.query('UPDATE sessions SET token_hash = $2 WHERE id = $1 AND token_hash = $3', [
+          session.session_id,
+          currentHash,
+          session.token_hash,
+        ]);
+      }
+      const csrfToken = issueCsrfToken(session.session_id, session.csrf_nonce || '');
       req.user = {
         id: session.employee_id,
         email: session.email,
@@ -162,7 +172,9 @@ export function createAuthenticate(deps: AuthDeps) {
       // 5. CSRF token on every authenticated mutation (the Origin check runs earlier, globally).
       if (MUTATING_METHODS.has(req.method.toUpperCase())) {
         const sent = req.get('x-csrf-token') || '';
-        if (!session.csrf_nonce || !safeEqual(sent, csrfToken)) {
+        // A CSRF token issued before a key change stays valid for the session's life (identity/keys.ts).
+        const accepted = session.csrf_nonce ? csrfTokenCandidates(session.session_id, session.csrf_nonce) : [];
+        if (accepted.length === 0 || !accepted.some((t) => safeEqual(sent, t))) {
           return res.status(403).json({ error: 'Request could not be verified', code: 'CSRF_FAILED' });
         }
       }

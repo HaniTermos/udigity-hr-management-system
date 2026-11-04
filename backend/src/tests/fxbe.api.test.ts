@@ -99,7 +99,7 @@ async function relayAll(): Promise<void> {
   }
 }
 
-describe.skipIf(!hasTestDb)('FX-BE production-fix wave (DB)', () => {
+describe.skipIf(!hasTestDb)('FX-BE production-fix wave (DB)', { timeout: 60_000 }, () => {  // H-07: DB-heavy, realistic limit
   let owner: Agent;
   let cc: Agent;
   let dv: Agent;

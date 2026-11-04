@@ -116,7 +116,7 @@ afterAll(async () => {
   if (hasTestDb) await pool.end();
 });
 
-describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)', () => {
+describe.skipIf(!hasTestDb)('E-03 security email via outbox (replaces emailStub)', { timeout: 60_000 }, () => {  // H-07: DB-heavy, realistic limit
   beforeEach(() => {
     setEmailTransport(null);
     mailSink.clear();

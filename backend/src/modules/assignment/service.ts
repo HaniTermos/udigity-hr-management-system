@@ -281,9 +281,15 @@ export async function autofill(
   ctx: CommandContext,
   body: z.infer<typeof AutofillBody>
 ): Promise<AssignResultDto & { cap: number; agents: AutofillAgentResultDto[] }> {
-  // C-03: serialise auto-fills. The queue sizes are read in this transaction, so a parallel run must wait
-  // for the first one to commit (READ COMMITTED then sees its rows) or both would fill past the cap.
-  await ctx.tx.query(`SELECT pg_advisory_xact_lock(hashtextextended('calling.autofill', 0))`);
+  // C-03: serialise auto-fills. The queue sizes are read in this transaction, so a parallel run must not
+  // proceed until the first one commits or both would fill past the cap. H-03: a run that finds another one in
+  // progress answers 409 AUTOFILL_RUNNING at once (nothing changed) instead of waiting into lock_timeout (503).
+  const { rows: lock } = await ctx.tx.query<{ locked: boolean }>(
+    `SELECT pg_try_advisory_xact_lock(hashtextextended('calling.autofill', 0)) AS locked`
+  );
+  if (!lock[0]?.locked) {
+    throw new HttpError(409, 'AUTOFILL_RUNNING', 'Auto-fill is already running. Try again when it has finished.');
+  }
   if (body.agentId) await assertAssignee(ctx.tx, body.agentId, 'agentId');
   const agentIds = body.agentId ? [body.agentId] : await repo.activeCallCenterAgents(ctx.tx);
   const cap = await autofillQueueCap(ctx.tx);

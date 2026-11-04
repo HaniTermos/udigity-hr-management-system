@@ -197,7 +197,7 @@ function expectBareDenial(body: Record<string, unknown>, code: string): void {
 
 // ---------------------------------------------------------------------------------------------
 
-describe.skipIf(!hasTestDb)('BE2 Increment 3: businesses, categories, search, corrections (DB)', () => {
+describe.skipIf(!hasTestDb)('BE2 Increment 3: businesses, categories, search, corrections (DB)', { timeout: 60_000 }, () => {  // H-07: DB-heavy, realistic limit
   let owner: Agent;
   let de: Agent;
   let de2: Agent;

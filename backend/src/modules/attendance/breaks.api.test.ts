@@ -16,7 +16,8 @@ import request from 'supertest';
 import bcrypt from 'bcryptjs';
 import { authenticator } from 'otplib';
 import { app } from '../../app.js';
-import { query } from '../../db/pool.js';
+import { pool, query } from '../../db/pool.js';
+import { restoreAttendanceSettings, snapshotAttendanceSettings, type SettingsSnapshot } from '../../tests/helpers/testState.js';
 import { config } from '../../config/index.js';
 import { DEV_TOTP_SECRET } from '../../db/seed.js';
 import { clock } from '../platform/clock.js';
@@ -55,11 +56,13 @@ function call(a: Pick<Agent, 'cookie' | 'csrf'>, method: Method, path: string, b
   return body ? r.send(body) : r;
 }
 
-describe.skipIf(!hasTestDb)('Wave 2: Attendance Break Timer Engine', () => {
+describe.skipIf(!hasTestDb)('Wave 2: Attendance Break Timer Engine', { timeout: 60_000 }, () => {  // H-07: DB-heavy, realistic limit
   let owner: Agent;
   let employee: Agent;
 
+  let settingsBefore: SettingsSnapshot = { id: null };
   beforeAll(async () => {
+    settingsBefore = await snapshotAttendanceSettings(pool); // H-07: restored in afterAll
     setAttendanceFlagOverridesForTests({ 'attendance.breaksEnabled': true });
     // 1. Login owner with 2FA (reset the TOTP replay guard: other suites used the same 30 s code).
     await query(
@@ -112,6 +115,7 @@ describe.skipIf(!hasTestDb)('Wave 2: Attendance Break Timer Engine', () => {
   afterAll(async () => {
     clock.set(null);
     setAttendanceFlagOverridesForTests({});
+    await restoreAttendanceSettings(pool, settingsBefore);
   });
 
   it('routes refused when the flag is off: with attendance.breaksEnabled false every break route is 404 and My Day hides the timer', async () => {

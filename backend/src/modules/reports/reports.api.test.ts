@@ -295,7 +295,8 @@ describe('Dashboard company-timezone window (D7)', () => {
   });
 });
 
-describe.skipIf(!hasTestDb)('Exports stream with bounded resources; dashboard has no invented quotas', () => {
+// S-32: the cap test streams 10,000 rows; DB-heavy, so a realistic per-test limit.
+describe.skipIf(!hasTestDb)('Exports stream with bounded resources; dashboard has no invented quotas', { timeout: 120_000 }, () => {
   let o: Agent;
   /** A far-future day of its own per run, so reruns on one test DB never mix rows. */
   const freshDay = () => new Date(Date.UTC(2040, 0, 1) + Math.floor(Math.random() * 20_000) * 86_400_000).toISOString().slice(0, 10);

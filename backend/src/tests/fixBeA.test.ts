@@ -185,7 +185,7 @@ describe.skipIf(!hasTestDb)('FIX-BE-A API behaviour', { timeout: 120_000 }, () =
     expect((await call(owner, 'post', '/api/targets', { ...dup, startDate: '2100-03-01' })).status).toBe(201);
   });
 
-  it('C-06: total stays real past the last page (deals, projects)', async () => {
+  it('C-06: total stays real past the last page (Owner: deals, projects; scoped Developer: their own deals)', async () => {
     const owner = await ownerAgent();
     for (const p of ['/api/deals', '/api/projects']) {
       const first = await call(owner, 'get', `${p}?pageSize=3&page=1`);
@@ -194,6 +194,34 @@ describe.skipIf(!hasTestDb)('FIX-BE-A API behaviour', { timeout: 120_000 }, () =
       expect(far.body.items).toEqual([]);
       expect(far.body.total).toBe(first.body.total);
     }
+    // Review H §6.2 #4: the scoped role (R-02 broke it) with rows of its own, so the totals are not 0 = 0.
+    const devId = await makeEmployee('developer');
+    const { rows: e } = await query<{ email: string }>('SELECT email FROM employees WHERE id = $1', [devId]);
+    const login = await request(app).post('/api/auth/login').set('Origin', ORIGIN).send({ email: e[0].email, password: PASSWORD });
+    const dev: Agent = { cookie: cookieFrom(login), csrf: login.body.csrfToken, id: devId };
+    const tag = uniq();
+    for (let i = 0; i < 5; i++) {
+      const { rows: b } = await query<{ id: string }>(`INSERT INTO businesses (name, created_by) VALUES ($1, $2) RETURNING id`, [`FXA dev deal ${i}.${tag}`, owner.id]);
+      const { rows: a } = await query<{ id: string }>(
+        `INSERT INTO call_attempts (business_id, agent_id, outcome, idempotency_key) VALUES ($1, $2, 'accepted', $3) RETURNING id`,
+        [b[0].id, owner.id, crypto.randomUUID()]
+      );
+      await query(
+        `INSERT INTO deals (business_id, accepted_attempt_id, accepted_by_id, client_needs_note, assigned_developer_id) VALUES ($1, $2, $3, 'fxa', $4)`,
+        [b[0].id, a[0].id, owner.id, devId]
+      );
+    }
+    const first = await call(dev, 'get', '/api/deals?scope=assigned_to_me&pageSize=3&page=1');
+    expect(first.status, JSON.stringify(first.body).slice(0, 200)).toBe(200);
+    expect(first.body.total).toBe(5);
+    expect(first.body.items).toHaveLength(3);
+    const second = await call(dev, 'get', '/api/deals?scope=assigned_to_me&pageSize=3&page=2');
+    expect(second.body.items).toHaveLength(2);
+    expect(new Set([...first.body.items, ...second.body.items].map((d: { id: string }) => d.id)).size).toBe(5);
+    const far = await call(dev, 'get', '/api/deals?scope=assigned_to_me&pageSize=3&page=500');
+    expect(far.status).toBe(200);
+    expect(far.body.items).toEqual([]);
+    expect(far.body.total).toBe(5);
   });
 
   it('C-16: a corrected body can reuse the key after a 400; a stale claim is taken over', async () => {
@@ -219,33 +247,47 @@ describe.skipIf(!hasTestDb)('FIX-BE-A API behaviour', { timeout: 120_000 }, () =
     expect(r.body.total).toBe(0);
   });
 
-  it('C-03: parallel auto-fill never pushes a queue past the cap', async () => {
+  it('C-03: parallel auto-fills for every agent (two new agents, the original repro) never push a queue past the cap', async () => {
     const owner = await ownerAgent();
-    const agent = await makeEmployee('call_center');
+    const a1 = await makeEmployee('call_center');
+    const a2 = await makeEmployee('call_center');
     const tag = uniq();
     await query(
       `WITH b AS (INSERT INTO businesses (name, created_by, created_at)
-                  SELECT 'FXA cap ' || g || '.${tag}', $1, now() - interval '1 year' - g * interval '1 second' FROM generate_series(1, 70) g RETURNING id)
+                  SELECT 'FXA cap ' || g || '.${tag}', $1, now() - interval '3 years' - g * interval '1 second' FROM generate_series(1, 110) g RETURNING id)
        INSERT INTO business_phones (business_id, country_code, number, normalized_phone)
        SELECT id, '+961', '3', '+9619' || substr(md5(id::text), 1, 9) FROM b`,
       [owner.id]
     );
-    const results = await Promise.all([1, 2, 3].map(() => call(owner, 'post', '/api/calling-assignments/autofill', { agentId: agent })));
-    for (const r of results) expect(r.status).toBe(200);
-    const { rows } = await query<{ n: number }>(`SELECT count(*)::int n FROM calling_assignments WHERE assignee_id = $1 AND ended_at IS NULL`, [agent]);
-    expect(rows[0].n).toBeLessThanOrEqual(40);
-    expect(rows[0].n).toBeGreaterThan(0);
+    const results = await Promise.all([1, 2, 3].map(() => call(owner, 'post', '/api/calling-assignments/autofill', {})));
+    // H-03: an overlapping run is refused at once with 409 AUTOFILL_RUNNING (nothing changed); one run succeeds.
+    for (const r of results) expect([200, 409], JSON.stringify(r.body).slice(0, 200)).toContain(r.status);
+    for (const r of results.filter((x) => x.status === 409)) expect(r.body.code).toBe('AUTOFILL_RUNNING');
+    expect(results.some((r) => r.status === 200)).toBe(true);
+    // A follow-up run (sequential) tops every queue up to the cap and never past it.
+    expect((await call(owner, 'post', '/api/calling-assignments/autofill', {})).status).toBe(200);
+    const { rows } = await query<{ assignee_id: string; n: number }>(
+      `SELECT assignee_id, count(*)::int n FROM calling_assignments WHERE assignee_id = ANY($1::uuid[]) AND ended_at IS NULL GROUP BY assignee_id`,
+      [[a1, a2]]
+    );
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      expect(r.n, r.assignee_id).toBeLessThanOrEqual(40);
+      expect(r.n, r.assignee_id).toBeGreaterThan(0);
+    }
+    const dup = await query(`SELECT business_id FROM calling_assignments WHERE ended_at IS NULL GROUP BY business_id HAVING count(*) > 1`);
+    expect(dup.rowCount).toBe(0);
   });
 
   it('C-04 / C-05: CSV dates have no quotes; catalogue states the row cap', async () => {
     const owner = await ownerAgent();
     await query('UPDATE two_factor_factors SET last_used_step = NULL, failed_count = 0, locked_until = NULL WHERE employee_id = $1', [owner.id]);
     const cat = await call(owner, 'get', '/api/reports');
-    expect(cat.body.rowCap).toBeGreaterThan(0);
+    expect(cat.body.rowCap).toBe(10_000); // S-32 (Owner 2026-11-04)
     expect(JSON.stringify(cat.body.items)).not.toMatch(/PDF|reservation locks|agent notes/);
     const r = await call(owner, 'post', '/api/reports/export', { report: 'rep-4', format: 'csv', totpCode: authenticator.generate(DEV_TOTP_SECRET) });
     expect(r.status, r.text.slice(0, 300)).toBe(200);
-    expect(r.headers['x-export-row-cap']).toBeTruthy();
+    expect(r.headers['x-export-row-cap']).toBe('10000');
     expect(r.text).not.toContain('"""');
     expect(r.text).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
   });

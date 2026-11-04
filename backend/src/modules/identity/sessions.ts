@@ -5,15 +5,8 @@
 import type { Response } from 'express';
 import type { Queryable } from '../../db/pool.js';
 import { config } from '../../config/index.js';
-import {
-  SessionEndReason,
-  SessionState,
-  absoluteExpiry,
-  deriveCsrfToken,
-  generateToken,
-  hashToken,
-  nextIdleExpiry,
-} from './security.js';
+import { SessionEndReason, SessionState, absoluteExpiry, generateToken, nextIdleExpiry } from './security.js';
+import { csrfToken, tokenHash } from './keys.js';
 
 export interface NewSession {
   id: string;
@@ -48,7 +41,7 @@ export async function createSession(client: Queryable, input: CreateSessionInput
     RETURNING id;
     `,
     [
-      hashToken(config.session.secret, token),
+      tokenHash('session-token', token),
       nonce,
       input.employeeId,
       input.role,
@@ -62,7 +55,7 @@ export async function createSession(client: Queryable, input: CreateSessionInput
     ]
   );
   const id = rows[0].id;
-  return { id, token, csrfToken: deriveCsrfToken(config.session.secret, id, nonce), expiresAt, state: input.state };
+  return { id, token, csrfToken: csrfToken(id, nonce), expiresAt, state: input.state };
 }
 
 export async function endSession(client: Queryable, sessionId: string, reason: SessionEndReason): Promise<void> {

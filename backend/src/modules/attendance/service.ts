@@ -255,6 +255,30 @@ function selfDecision(message: string): HttpError {
 }
 
 /**
+ * S-30 (Owner 2026-11-04, review H-01): the Owner may adjust, resolve the review of, or create a retroactive
+ * session for THEIR OWN attendance, with a mandatory reason; the audit row then carries `selfAdjusted: true`.
+ * Anyone else (custom roles included) still gets 403 SELF_DECISION on their own record. Approving one's own
+ * correction request stays refused for everyone (the Owner adjusts directly instead).
+ * Returns true when this is an allowed Owner self-decision, false when the record is someone else's.
+ */
+export function ownerSelfDecision(
+  actor: { role: string; employeeId: string },
+  subjectEmployeeId: string,
+  reason: string | null | undefined,
+  message: string
+): boolean {
+  if (subjectEmployeeId !== actor.employeeId) return false;
+  if (actor.role !== 'owner') throw selfDecision(message);
+  if (!reason || !reason.trim()) throw validationError({ reason: ['A reason is required when you change your own attendance'] });
+  return true;
+}
+
+const selfActor = (ctx: CommandContext) => {
+  if (ctx.actor.kind !== 'employee') throw new Error('attendance command needs an employee actor');
+  return { role: String(ctx.actor.role), employeeId: ctx.actor.employeeId };
+};
+
+/**
  * PUT /attendance/settings: one new version (append-only) + company.timezone, audited, one tx.
  * D1: the first save states every company value explicitly (env values are suggestions only, never a
  * fallback); a later save keeps omitted fields from the current Owner-saved version (FX-BE-C2). Every
@@ -1414,8 +1438,8 @@ async function ownerSummaryPatch(ctx: CommandContext, s: repo.SessionRow, workCo
 export async function adjustSession(ctx: CommandContext, id: string, input: AdjustInput) {
   const s0 = await repo.sessionById(ctx.tx, id);
   if (!s0) throw notFound();
-  // E-03 (D4): nobody adjusts their own attendance record, whatever role grants the action.
-  if (s0.employee_id === actorIdOf(ctx)) throw selfDecision('You cannot adjust your own attendance session');
+  // E-03 (D4) / S-30: only the Owner adjusts their own record, with a reason (audited selfAdjusted).
+  const selfAdjusted = ownerSelfDecision(selfActor(ctx), s0.employee_id, input.reason, 'You cannot adjust your own attendance session');
   await repo.lockEmployeeAttendance(ctx.tx, s0.employee_id);
   const s = (await repo.sessionById(ctx.tx, id, true))!;
   if (s.version !== input.version) throw versionConflict(s.version, await reloadSession(ctx, s.id)); // BL-09
@@ -1464,7 +1488,14 @@ export async function adjustSession(ctx: CommandContext, id: string, input: Adju
     entityType: 'attendance_session',
     entityId: s.id,
     before: sessionAuditState(s),
-    after: { state: closes ? 'closed' : s.state, effectiveCheckInAt: newIn.toISOString(), effectiveCheckOutAt: iso(newOut), checkOutUnknown: unknown, correctionId },
+    after: {
+      state: closes ? 'closed' : s.state,
+      effectiveCheckInAt: newIn.toISOString(),
+      effectiveCheckOutAt: iso(newOut),
+      checkOutUnknown: unknown,
+      correctionId,
+      ...(selfAdjusted ? { selfAdjusted: true } : {}),
+    },
     reason: input.reason,
     sourceWorkflow: 'WF-ATT-003',
   });
@@ -1475,8 +1506,8 @@ export async function adjustSession(ctx: CommandContext, id: string, input: Adju
 export async function resolveReview(ctx: CommandContext, id: string, input: ResolveReviewInput) {
   const s0 = await repo.sessionById(ctx.tx, id);
   if (!s0) throw notFound();
-  // E-03 (D4): nobody resolves the review of their own session.
-  if (s0.employee_id === actorIdOf(ctx)) throw selfDecision('You cannot resolve the review of your own attendance session');
+  // E-03 (D4) / S-30: only the Owner resolves their own review item, with a reason (audited selfAdjusted).
+  const selfAdjusted = ownerSelfDecision(selfActor(ctx), s0.employee_id, input.reason, 'You cannot resolve the review of your own attendance session');
   await repo.lockEmployeeAttendance(ctx.tx, s0.employee_id);
   const s = (await repo.sessionById(ctx.tx, id, true))!;
   if (s.state === 'closed' && s.review_resolved_at) return { session: await reloadSession(ctx, s.id), label: DEMO_LABEL };
@@ -1530,7 +1561,7 @@ export async function resolveReview(ctx: CommandContext, id: string, input: Reso
     entityType: 'attendance_session',
     entityId: s.id,
     before: sessionAuditState(s),
-    after: { state: 'closed', effectiveCheckOutAt: iso(out), checkOutUnknown: unknown, adjusted: changed || s.adjusted },
+    after: { state: 'closed', effectiveCheckOutAt: iso(out), checkOutUnknown: unknown, adjusted: changed || s.adjusted, ...(selfAdjusted ? { selfAdjusted: true } : {}) },
     reason: input.reason ?? null,
     sourceWorkflow: 'WF-ATT-003',
   });
@@ -1539,8 +1570,8 @@ export async function resolveReview(ctx: CommandContext, id: string, input: Reso
 
 /** POST /sessions (Owner retroactive session, N-2). */
 export async function createRetroactive(ctx: CommandContext, input: RetroactiveInput) {
-  // E-03 (D4): nobody creates a retroactive session for themselves.
-  if (input.employeeId === actorIdOf(ctx)) throw selfDecision('You cannot create a retroactive session for yourself');
+  // E-03 (D4) / S-30: only the Owner creates their own retroactive session, with a reason (audited selfAdjusted).
+  const selfAdjusted = ownerSelfDecision(selfActor(ctx), input.employeeId, input.reason, 'You cannot create a retroactive session for yourself');
   const emp = await repo.employeeExists(ctx.tx, input.employeeId);
   if (!emp) throw notFound();
   await repo.lockEmployeeAttendance(ctx.tx, input.employeeId);
@@ -1585,7 +1616,14 @@ export async function createRetroactive(ctx: CommandContext, input: RetroactiveI
     eventName: 'attendance.retroactive_created', // placeholder name (N-2), needs approval (G2)
     entityType: 'attendance_session',
     entityId: id,
-    after: { state: 'closed', origin: 'retroactive', employeeId: input.employeeId, checkInAt: inAt.toISOString(), checkOutAt: outAt.toISOString() },
+    after: {
+      state: 'closed',
+      origin: 'retroactive',
+      employeeId: input.employeeId,
+      checkInAt: inAt.toISOString(),
+      checkOutAt: outAt.toISOString(),
+      ...(selfAdjusted ? { selfAdjusted: true } : {}),
+    },
     reason: input.reason,
     sourceWorkflow: 'WF-ATT-003',
   });

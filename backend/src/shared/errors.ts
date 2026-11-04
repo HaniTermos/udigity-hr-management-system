@@ -41,6 +41,7 @@ export type ErrorCode =
   | 'RESERVATION_LOST' // lease expired / overridden / token mismatch
   | 'IDEMPOTENCY_KEY_REUSED' // same key, different request body
   | 'POLICY_NOT_CONFIGURED' // a NEEDS VALUE setting is not configured yet
+  | 'AUTOFILL_RUNNING' // H-03: another auto-fill run is in progress (nothing changed; try again)
   // 422
   | 'RULE_VIOLATION' // a business rule rejected an otherwise valid request
   // 429

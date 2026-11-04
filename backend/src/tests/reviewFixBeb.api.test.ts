@@ -1,6 +1,7 @@
 /**
  * Review fix FIX-BE-B: C-08 (poison job/outbox/email), D-07 (lease ownership), D-03 (ops alert claim),
- * C-12 (visible characters), E-03 (self-decision), C-19 (break allowance), C-13 (My Day date).
+ * C-12 (visible characters), E-03 / S-30 (self-decision), C-19 (break allowance), C-13 (My Day date).
+ * H-07: every check is scoped to this file's own rows and the global attendance settings are restored.
  */
 import crypto from 'crypto';
 import request from 'supertest';
@@ -18,6 +19,7 @@ import { sendOpsAlerts } from '../modules/notifications/opsAlerts.js';
 import { createMemoryTransport, mailSink, setEmailTransport } from '../modules/notifications/transport.js';
 import { summaryCharCount } from '../modules/attendance/time.js';
 import { setAttendanceFlagOverridesForTests } from '../modules/attendance/service.js';
+import { restoreAttendanceSettings, snapshotAttendanceSettings, type SettingsSnapshot } from './helpers/testState.js';
 
 const hasTestDb = Boolean(process.env.TEST_DATABASE_URL);
 const ORIGIN = 'http://localhost:3000';
@@ -50,11 +52,15 @@ describe.skipIf(!hasTestDb)('FIX-BE-B platform and notifications', () => {
        VALUES ('platform.heartbeat', $1, '{}', now() - interval '1 hour', 1, 1, now() - interval '1 minute')`,
       [dedupe]
     );
+    // H-07: the alert check counts THIS run's occurrence (earlier rows of the same kind may exist).
+    const occ = async () =>
+      Number((await query<{ n: string }>(`SELECT COALESCE(SUM(occurrences), 0)::text AS n FROM ops_alerts WHERE kind = 'job.dead:platform.heartbeat'`)).rows[0].n);
+    const before = await occ();
     const res = await runDueJobs(['platform.heartbeat']);
     expect(res.dead).toBeGreaterThanOrEqual(1);
     const { rows } = await query(`SELECT state FROM background_jobs WHERE dedupe_key = $1`, [dedupe]);
     expect(rows[0].state).toBe('dead');
-    expect((await query(`SELECT 1 FROM ops_alerts WHERE kind = 'job.dead:platform.heartbeat'`)).rowCount).toBeGreaterThan(0);
+    expect(await occ()).toBeGreaterThan(before);
   });
 
   it('C-08: an outbox event at the attempt cap is dead-ended, not claimed again', async () => {
@@ -86,17 +92,26 @@ describe.skipIf(!hasTestDb)('FIX-BE-B platform and notifications', () => {
   });
 
   it('D-03: two concurrent dispatchers email each alert once', async () => {
-    await query(`UPDATE ops_alerts SET sent_at = now() WHERE sent_at IS NULL`);
-    const k = `test.${crypto.randomUUID()}`;
-    for (let i = 0; i < 3; i++) {
-      await query(`INSERT INTO ops_alerts (kind, detail, dedupe_key) VALUES ($1, 'x', $2)`, [k, `${k}:${i}`]);
+    // H-07: other files' pending alerts are parked (leased) for the duration, never marked sent.
+    const parked = await query<{ id: string }>(
+      `UPDATE ops_alerts SET lease_until = now() + interval '1 hour' WHERE sent_at IS NULL AND failed_at IS NULL AND lease_until IS NULL RETURNING id`
+    );
+    try {
+      const k = `test.${crypto.randomUUID()}`;
+      for (let i = 0; i < 3; i++) {
+        await query(`INSERT INTO ops_alerts (kind, detail, dedupe_key) VALUES ($1, 'x', $2)`, [k, `${k}:${i}`]);
+      }
+      process.env.ALERT_EMAIL_TO = 'ops@udigity.test';
+      setEmailTransport(createMemoryTransport('alerts@udigity.test'));
+      mailSink.clear();
+      const [a, b] = await Promise.all([sendOpsAlerts(), sendOpsAlerts()]);
+      expect(a.sent + b.sent).toBe(3);
+      expect(mailSink.messages().length).toBe(3);
+      const own = await query<{ n: string }>(`SELECT count(*)::text AS n FROM ops_alerts WHERE kind = $1 AND sent_at IS NOT NULL`, [k]);
+      expect(own.rows[0].n).toBe('3');
+    } finally {
+      await query(`UPDATE ops_alerts SET lease_until = NULL WHERE id = ANY($1::uuid[])`, [parked.rows.map((r) => r.id)]);
     }
-    process.env.ALERT_EMAIL_TO = 'ops@udigity.test';
-    setEmailTransport(createMemoryTransport('alerts@udigity.test'));
-    mailSink.clear();
-    const [a, b] = await Promise.all([sendOpsAlerts(), sendOpsAlerts()]);
-    expect(a.sent + b.sent).toBe(3);
-    expect(mailSink.messages().length).toBe(3);
   });
 });
 
@@ -121,8 +136,14 @@ describe.skipIf(!hasTestDb)('FIX-BE-B attendance', () => {
   let owner: Agent;
   let employee: Agent;
   let ownerSessionId: string;
+  let settingsBefore: SettingsSnapshot = { id: null };
+  /** H-07: a past day of its own per run (the Owner's sessions are never deleted, so reruns must not overlap). */
+  const day = new Date(Date.UTC(2001, 0, 1) + (Math.floor(Date.now() / 60_000) % 3000) * 3 * 86_400_000).toISOString().slice(0, 10);
+  const at = (d: string, hm: string) => `${d}T${hm}:00Z`;
+  const nextDay = new Date(Date.parse(day) + 86_400_000).toISOString().slice(0, 10);
 
   beforeAll(async () => {
+    settingsBefore = await snapshotAttendanceSettings(pool);
     setAttendanceFlagOverridesForTests({ 'attendance.breaksEnabled': true });
     const OWNER = 'udigity@gmail.com';
     await query(
@@ -159,36 +180,59 @@ describe.skipIf(!hasTestDb)('FIX-BE-B attendance', () => {
     const { rows: s } = await query<{ id: string }>(
       `INSERT INTO attendance_sessions (employee_id, state, origin, work_date, check_in_at, check_out_at, effective_check_in_at,
          effective_check_out_at, remote, check_in_verification)
-       VALUES ($1, 'closed_provisional', 'check_in', '2026-01-05', '2026-01-05T07:00:00Z', '2026-01-05T15:00:00Z',
-         '2026-01-05T07:00:00Z', '2026-01-05T15:00:00Z', false, '{}') RETURNING id`,
-      [owner.id]
+       VALUES ($1, 'closed_provisional', 'check_in', $2::date, $3, $4, $3, $4, false, '{}') RETURNING id`,
+      [owner.id, day, at(day, '07:00'), at(day, '15:00')]
     );
     ownerSessionId = s[0].id;
   });
   afterEach(() => clock.set(null));
-  afterAll(() => setAttendanceFlagOverridesForTests({}));
+  afterAll(async () => {
+    setAttendanceFlagOverridesForTests({});
+    await restoreAttendanceSettings(pool, settingsBefore);
+  });
 
-  it('E-03: the Owner cannot adjust, resolve the review of, or create a retroactive session for themselves', async () => {
-    const adj = await call(owner, 'post', `/api/attendance/sessions/${ownerSessionId}/adjust`, { version: 1, reason: 'x', checkOutAt: '2026-01-05T16:00:00Z' });
-    expect(adj.status).toBe(403);
-    expect(adj.body.details?.reason ?? adj.body.reason).toBe('SELF_DECISION');
-    const rev = await call(owner, 'post', `/api/attendance/sessions/${ownerSessionId}/resolve-review`, { version: 1 });
-    expect(rev.status).toBe(403);
+  const selfAudit = async (entityId: string, eventName: string) =>
+    (
+      await query<{ after: Record<string, unknown> }>(
+        `SELECT after_state AS after FROM audit_events WHERE entity_id = $1 AND event_name = $2 AND actor_id = $3 ORDER BY created_at DESC LIMIT 1`,
+        [entityId, eventName, owner.id]
+      )
+    ).rows[0]?.after;
+
+  it('S-30: the Owner resolves the review of, adjusts and creates a retroactive session for themselves with a reason; audited selfAdjusted', async () => {
+    const noReason = await call(owner, 'post', `/api/attendance/sessions/${ownerSessionId}/resolve-review`, { version: 1 });
+    expect(noReason.status).toBe(400); // S-30: the reason is mandatory for a self-decision
+    expect(JSON.stringify(noReason.body.details)).toContain('reason');
+    const rev = await call(owner, 'post', `/api/attendance/sessions/${ownerSessionId}/resolve-review`, { version: 1, reason: 'Confirmed my own provisional checkout' });
+    expect(rev.status, JSON.stringify(rev.body)).toBe(200);
+    expect(await selfAudit(ownerSessionId, 'attendance.review_resolved')).toMatchObject({ selfAdjusted: true });
+
+    const adj = await call(owner, 'post', `/api/attendance/sessions/${ownerSessionId}/adjust`, {
+      version: rev.body.session.version,
+      reason: 'Left at 16:00',
+      checkOutAt: at(day, '16:00'),
+    });
+    expect(adj.status, JSON.stringify(adj.body)).toBe(200);
+    expect(await selfAudit(ownerSessionId, 'attendance.corrected')).toMatchObject({ selfAdjusted: true });
+
     const retro = await call(owner, 'post', '/api/attendance/sessions', {
       employeeId: owner.id,
-      checkInAt: '2026-01-06T07:00:00Z',
-      checkOutAt: '2026-01-06T15:00:00Z',
-      reason: 'forgot',
+      checkInAt: at(nextDay, '07:00'),
+      checkOutAt: at(nextDay, '15:00'),
+      reason: 'Forgot to check in',
     });
-    expect(retro.status).toBe(403);
-    // Another employee is still allowed.
+    expect(retro.status, JSON.stringify(retro.body)).toBe(201);
+    expect(await selfAudit(retro.body.session.id, 'attendance.retroactive_created')).toMatchObject({ selfAdjusted: true });
+
+    // Another employee's record: allowed and NOT marked self-adjusted.
     const ok = await call(owner, 'post', '/api/attendance/sessions', {
       employeeId: employee.id,
-      checkInAt: '2026-01-06T07:00:00Z',
-      checkOutAt: '2026-01-06T15:00:00Z',
+      checkInAt: at(nextDay, '07:00'),
+      checkOutAt: at(nextDay, '15:00'),
       reason: 'forgot to check in',
     });
     expect(ok.status).toBe(201);
+    expect(await selfAudit(ok.body.session.id, 'attendance.retroactive_created')).not.toHaveProperty('selfAdjusted');
   });
 
   it('C-19: no new break starts once the 60 minute allowance is used up', async () => {

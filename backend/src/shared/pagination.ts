@@ -15,9 +15,11 @@ import { safeString } from './validation.js';
 
 export const DEFAULT_PAGE_SIZE = 25;
 export const MAX_PAGE_SIZE = 100;
+/** Controls gap API4: highest page number accepted (100 rows x 10,000 pages; far beyond any list here). */
+export const MAX_PAGE = 10_000;
 
 export const PageQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(MAX_PAGE).default(1),
   pageSize: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
   sort: safeString().max(40).optional(),
   order: z.enum(['asc', 'desc']).default('desc'),

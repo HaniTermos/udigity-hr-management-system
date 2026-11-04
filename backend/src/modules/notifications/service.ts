@@ -277,6 +277,21 @@ function formatNotification(d: repo.DeliveryRow): NotificationDto {
       link = '/delivery-monitor';
       break;
     }
+    case 'security.password_changed':
+      title = 'Password Changed';
+      message = 'Your password was changed and your other sessions were signed out. If this was not you, contact the Owner.';
+      link = '/profile';
+      break;
+    case 'security.two_factor_enrolled':
+      title = 'Two-Factor Authentication Set Up';
+      message = 'A new authenticator was set up for your account. If this was not you, contact the Owner at once.';
+      link = '/profile';
+      break;
+    case 'security.recovery_codes_regenerated':
+      title = 'New Recovery Codes';
+      message = 'New recovery codes were created for your account; the old ones no longer work. If this was not you, contact the Owner.';
+      link = '/profile';
+      break;
     case 'security.recovery_code_used':
       title = 'Recovery Code Used';
       message = 'A recovery code was used to sign in to your account. If this was not you, contact the Owner.';
@@ -752,6 +767,9 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
     'project.provisioning_failed',
     'business.duplicate_review_requested',
     'two_factor.recovery_succeeded',
+    'password.changed',
+    'two_factor.enrolled',
+    'two_factor.recovery_codes_regenerated',
     'notification.failed',
     'notification.suppressed',
     'reminder.failed',
@@ -931,6 +949,23 @@ export const businessEventsNotificationConsumer: OutboxConsumer = {
           sourceId: aggregateId,
         });
         return;
+      case 'password.changed':
+      case 'two_factor.enrolled':
+      case 'two_factor.recovery_codes_regenerated': {
+        // Controls gap V6.4-b: in-app security notice to the account holder. No e-mail: the per-template e-mail
+        // mapping (securityEmailConsumer) covers reset / set-up links only, and no new real sends are added.
+        const template =
+          name === 'password.changed' ? 'security.password_changed' : name === 'two_factor.enrolled' ? 'security.two_factor_enrolled' : 'security.recovery_codes_regenerated';
+        await notifyInApp(ctx, event, {
+          key: name.replace(/[^a-z_]/g, '_'),
+          template,
+          family: 'security',
+          recipients: await activeOnly(ctx.tx, [aggregateId]),
+          sourceType: 'employee',
+          sourceId: aggregateId,
+        });
+        return;
+      }
       case 'notification.failed':
       case 'reminder.failed':
         // E-17 / D6: a delivery failure is an Owner item on the delivery monitor (every failed row stays

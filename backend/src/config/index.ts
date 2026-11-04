@@ -289,6 +289,11 @@ export function loadConfig(env: Env) {
     // Development/test only: an ephemeral secret. Sessions do not survive a restart.
     secret = crypto.randomBytes(32).toString('hex');
   }
+  // Rotation window (identity/keys.ts): values made with the previous secret are still accepted.
+  const previousSecret = env.SESSION_SECRET_PREVIOUS || null;
+  if (isProduction && previousSecret && (previousSecret.length < 32 || KNOWN_PLACEHOLDER_SECRETS.has(previousSecret))) {
+    throw new ConfigError('SESSION_SECRET_PREVIOUS, when set, must be the previous SESSION_SECRET (>= 32 random characters).');
+  }
 
   const pendingScopeRaw = env.OWNER_PENDING_2FA_SCOPE || 'R11-a';
   if (pendingScopeRaw !== 'R11-a' && pendingScopeRaw !== 'R11-b') {
@@ -336,6 +341,8 @@ export function loadConfig(env: Env) {
 
     session: {
       secret,
+      /** SESSION_SECRET_PREVIOUS: accepted for verification/decryption only during a rotation (identity/keys.ts). */
+      previousSecret,
       // Host-only prefix in production (ADR-002). __Host- requires Secure, so dev uses the plain name.
       cookieName: env.SESSION_COOKIE_NAME || (isProduction ? '__Host-udigity_session' : 'udigity_session'),
       csrfCookieName: env.CSRF_COOKIE_NAME || (isProduction ? '__Host-udigity_csrf' : 'udigity_csrf'),
@@ -351,8 +358,13 @@ export function loadConfig(env: Env) {
     // Working default R11-a (pending Owner session can do nothing until 2FA); R11-b allows non-admin routes.
     owner2faPendingScope: pendingScopeRaw as PendingTwoFactorScope,
 
-    // IMPL-LOCKOUT: Demonstration alternative — not approved (docs/policy-defaults.md).
-    // Working default: 5 failures per account in 15 min -> 15 min lock; same for 2FA codes.
+    // IMPL-LOCKOUT (review 2026-11-04 E-01/F-01/H-02, H-05). Sign-in never locks the account:
+    // LOCKOUT_MAX_FAILURES failed sign-ins per (email, client IP) within LOCKOUT_WINDOW_MINUTES refuse that
+    // pair (429) until the window ends, and a correct sign-in clears the pair's count. From 2 x
+    // LOCKOUT_MAX_FAILURES failures per email (all addresses) each attempt is slowed (0.5 s doubling to 4 s),
+    // never refused. Failed sign-ins per client IP are capped by AUTH_RATE_LIMIT_* (identity/limits.ts).
+    // LOCKOUT_DURATION_MINUTES applies only to the account lock set by in-session re-authentication
+    // (2FA enrollment, enrollment tokens, password change) and to the TOTP factor lock (5 wrong codes).
     lockout: {
       maxFailures: int(env, 'LOCKOUT_MAX_FAILURES', 5),
       windowMinutes: int(env, 'LOCKOUT_WINDOW_MINUTES', 15),

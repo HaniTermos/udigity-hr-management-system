@@ -7,6 +7,7 @@
  * B8: only this module creates or changes calling assignments (WF-WORK-001 hands Call Center items here).
  */
 import { z } from 'zod';
+import { MAX_PAGE } from '../../shared/pagination.js';
 import { safeString } from '../../shared/validation.js';
 import { defineMatrixActions } from '../access/schemas.js';
 
@@ -26,7 +27,7 @@ export type FollowUpChoice = z.infer<typeof FollowUpChoice>;
 
 export const ListAssignmentsQuery = z
   .object({
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(MAX_PAGE).default(1),
     pageSize: z.coerce.number().int().min(1).max(100).default(25),
     sort: z.enum(['businessName', 'assignee', 'startedAt']).default('startedAt'),
     order: z.enum(['asc', 'desc']).default('desc'),

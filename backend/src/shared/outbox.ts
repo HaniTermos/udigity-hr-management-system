@@ -23,6 +23,9 @@ export const OUTBOX_EVENTS = [
   'password_reset.assistance_triggered', // E-03
   'password_reset.completed', // E-04
   'two_factor.recovery_succeeded', // E-04
+  'password.changed', // review 2026-11-04 controls gap V6.4-b: in-app security notice (placeholder name, G2)
+  'two_factor.enrolled', // same: 2FA enrolled / replaced
+  'two_factor.recovery_codes_regenerated', // same: new recovery codes issued
   'follow_up.scheduled', // E-05
   'follow_up.rescheduled',
   'follow_up.reassigned',

@@ -301,7 +301,12 @@ const DEAL_SORT: Record<string, string> = {
   stage: 'd.stage',
 };
 
-/** Developer list confinement (OI-27): own pre-closure deals under DEC-005 `assigned`, plus closed deals (row 2). */
+/**
+ * Developer list confinement (OI-27): own pre-closure deals under DEC-005 `assigned`, plus closed deals (row 2).
+ * S-29 (Owner 2026-11-04): `assigned` is the default (flags.ts), so the ASSIGNED Developer lists their accepted /
+ * open deals (`GET /api/deals?tab=accepted&scope=assigned_to_me`); never an unassigned or another Developer's
+ * open deal (D15). `closedOnly` stays only as an explicit opt-out.
+ */
 function developerConfinement(p: Principal, params: SqlParams, policy: DeliveryPolicy): string {
   if (p.role !== 'developer') return 'TRUE';
   if (policy.developerPreClosure !== 'assigned') return `d.stage = 'closed'`;

@@ -156,6 +156,7 @@ export async function getDashboardMetrics(
       failedDeliveriesCount: stats.failedDeliveries,
       suppressedDeliveriesCount: stats.suppressedDeliveries,
       failedRemindersCount: stats.failedReminders,
+      failedOpsAlertsCount: stats.failedOpsAlerts,
     },
     // D7: Owner-set targets only (the former 500/12/200 bars were invented quotas and are removed).
     targets,
@@ -224,12 +225,14 @@ export function formatAsCsv(rows: Record<string, unknown>[]): string {
 }
 
 /**
- * R2-02 export limits. EX-2 step-up window is the authz-matrix value (≤ 10 min); the caps are
- * Security defaults ("Demonstration alternative — not approved" until the Owner confirms values).
+ * R2-02 export limits. EX-2 step-up window is the authz-matrix value (≤ 10 min). Row cap: S-32 (Owner
+ * 2026-11-04) 10,000 rows per synchronous streamed export; the catalogue (`rowCap`) and the export headers
+ * (`X-Export-Row-Cap`, `X-Export-Truncated`) tell the user when it is reached. Statement timeout and the
+ * concurrency limits (routes.ts) are unchanged.
  */
 export const EXPORT_LIMITS = {
   stepUpMinutes: 10,
-  rowCap: 1000,
+  rowCap: repo.EXPORT_ROW_CAP,
   statementTimeoutMs: 15_000,
 } as const;
 

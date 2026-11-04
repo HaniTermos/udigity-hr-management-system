@@ -15,6 +15,9 @@ export interface SealedSecret {
 
 const b64 = (b: Buffer) => b.toString('base64url');
 
+/** T-01: GCM tags are always 16 bytes; a shorter (truncated) tag is refused, never accepted. */
+export const GCM_TAG_BYTES = 16;
+
 export function sealSecret(plaintext: string, aad: string, key: EncryptionKey): SealedSecret {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key.key, iv);
@@ -31,9 +34,11 @@ export function openSecret(sealed: SealedSecret, aad: string, keyring: Map<strin
   const parts = sealed.ciphertext.split('.');
   if (parts.length !== 4 || parts[0] !== 'v1') throw new SecretBoxError('Unsupported ciphertext format');
   try {
-    const decipher = crypto.createDecipheriv('aes-256-gcm', key.key, Buffer.from(parts[1], 'base64url'));
+    const tag = Buffer.from(parts[2], 'base64url');
+    if (tag.length !== GCM_TAG_BYTES) throw new Error('bad tag length');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key.key, Buffer.from(parts[1], 'base64url'), { authTagLength: GCM_TAG_BYTES });
     decipher.setAAD(Buffer.from(aad, 'utf8'));
-    decipher.setAuthTag(Buffer.from(parts[2], 'base64url'));
+    decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(Buffer.from(parts[3], 'base64url')), decipher.final()]).toString('utf8');
   } catch {
     throw new SecretBoxError('Ciphertext could not be authenticated');

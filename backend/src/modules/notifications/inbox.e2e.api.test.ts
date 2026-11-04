@@ -188,7 +188,7 @@ describe.skipIf(!hasTestDb)('notifications end to end: producer → relay → in
     cc = await agentFor('call_center');
     dv = await agentFor('developer');
     await relayAll();
-  });
+  }, 120_000); // H-07: drains the shared outbox backlog of earlier files; realistic limit
 
   afterAll(async () => {
     await pool.end();

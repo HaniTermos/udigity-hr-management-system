@@ -9,7 +9,8 @@ import { recordAuditEvent } from '../admin/audit.js';
 import type { DeliveredEvent, OutboxConsumer } from '../../shared/outbox.js';
 import type { CommandContext } from '../../shared/tx.js';
 import { stashSecuritySecret } from '../notifications/service.js';
-import { generateToken, hashToken } from './security.js';
+import { generateToken } from './security.js';
+import { tokenHash } from './keys.js';
 import { endAllSessions } from './sessions.js';
 
 /** Credential-setup link lifetime (E-01). Same working default as a reset: IMPL-PASSWORD. */
@@ -37,7 +38,7 @@ export async function issueCredentialSetup(
   const { rows } = await tx.query<{ id: string }>(
     `INSERT INTO security_tokens (employee_id, purpose, token_hash, expires_at, issued_by, issued_via)
      VALUES ($1, 'credential_setup', $2, $3, $4, 'system') RETURNING id`,
-    [employeeId, hashToken(config.session.secret, raw), expiresAt, issuedBy]
+    [employeeId, tokenHash('reset-token', raw), expiresAt, issuedBy]
   );
   await stashSecuritySecret(tx, rows[0].id, raw, expiresAt);
   return { securityTokenId: rows[0].id, expiresAt };

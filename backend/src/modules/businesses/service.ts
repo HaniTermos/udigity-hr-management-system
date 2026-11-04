@@ -30,8 +30,6 @@ import { audit, runCommand, type CommandContext } from '../../shared/tx.js';
 import { getSetting } from '../admin/service.js';
 import { hiddenForOthersPredicate, refreshAccessSettings } from '../access/schemas.js';
 import { initCallingState } from '../calls/service.js';
-import * as deals from '../deals/service.js';
-import * as reservations from '../reservation/service.js';
 import { clock } from '../platform/clock.js';
 import {
   collapsePhones,
@@ -982,29 +980,9 @@ export async function setBusinessArchived(
     const block = await detectBlock(db, probe, id);
     if (block) throw new DuplicateBlockedError(await shapeMatch(db, principal, block), block.businessId, block.matchedOn);
   }
-  if (archive) {
-    // C-20 (review 2026-11-04). D20 keeps relationships: assignments, follow-ups, meetings and history stay
-    // attached and come back on restore (access already denies them while archived, D9). Two dependants
-    // would be left in a live state the archive cannot settle on its own, so archiving is refused until the
-    // Owner settles them through their own audited workflow:
-    //  - an open deal (D16 stages before Closed / Not proceeding): close it or mark it Not proceeding first;
-    //  - a live contact reservation (someone is on a call now): wait for it to end or override it first.
-    const openDeal = await deals.findOpenDeal(db, id);
-    if (openDeal) {
-      throw stateConflict('This business has an open deal. Close it or mark it Not proceeding before archiving.', {
-        reason: 'OPEN_DEAL',
-        dealId: openDeal.dealId,
-        stage: openDeal.stage,
-      });
-    }
-    const reservation = await reservations.activeFor(db, id);
-    if (reservation) {
-      throw stateConflict('Someone is calling this business right now. Wait for the call to end or override the reservation before archiving.', {
-        reason: 'ACTIVE_RESERVATION',
-        reservationId: reservation.id,
-      });
-    }
-  }
+  // S-31 (Owner 2026-11-04, reverting review fix C-20): archiving is allowed with an open deal or a live
+  // contact reservation. D20 keeps every relationship: the deal, the reservation, assignments, follow-ups,
+  // meetings and history stay exactly as they are and come back on restore (access denies them while archived).
   const next = await repo.setArchived(db, id, version, archive, me);
   if (next === null) throw versionConflict(row.version);
   await repo.insertHistory(db, {

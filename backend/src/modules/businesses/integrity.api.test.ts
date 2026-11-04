@@ -2,7 +2,7 @@
  * Review fix 2026-11-04 (FIX-DB), DB tests on TEST_DATABASE_URL only:
  *  - S-27 / D-11: a phone removed by a business edit is kept as history and still blocks duplicates.
  *  - D-06: the similar-name check uses `businesses_similar_names` (trigram `%` + exact `>=`), no GUC leak.
- *  - C-20: archiving is refused while the business has an open deal or a live contact reservation.
+ *  - S-31 (reverts C-20): archiving is allowed with an open deal or a live contact reservation; both stay as they are.
  *  - D20: original attendance facts are immutable.
  * Every case runs inside a transaction that is rolled back (nothing is left behind).
  */
@@ -112,7 +112,7 @@ describe.skipIf(!hasTestDb)('FIX-DB integrity (review 2026-11-04)', () => {
     });
   });
 
-  it('C-20: archive is refused with 409 while a deal is open or a reservation is live', async () => {
+  it('S-31: archive succeeds with a live reservation and with an open deal; both are left exactly as they were', async () => {
     accessModule.init?.();
     businessesModule.init?.();
     await inRollback(async (tx) => {
@@ -127,32 +127,35 @@ describe.skipIf(!hasTestDb)('FIX-DB integrity (review 2026-11-04)', () => {
       };
       const id = await makeBusiness(tx, `fixdb archive ${randomUUID()}`, me);
 
+      const version = async () => (await tx.query<{ version: number }>('SELECT version FROM businesses WHERE id = $1', [id])).rows[0].version;
       const res = await tx.query<{ id: string }>(
         `INSERT INTO contact_reservations (business_id, holder_id, lease_expires_at) VALUES ($1, $2, now() + interval '10 minutes') RETURNING id`,
         [id, me]
       );
-      const r1 = await errorOf(tx, () => setBusinessArchived(ctx as never, principal, id, 1, true, null));
-      expect(r1).toMatchObject({ statusCode: 409, code: 'STATE_CONFLICT', details: { reason: 'ACTIVE_RESERVATION' } });
+      const reservationBefore = (await tx.query('SELECT state, ended_at, lease_expires_at FROM contact_reservations WHERE id = $1', [res.rows[0].id])).rows[0];
+      const a1 = await setBusinessArchived(ctx as never, principal, id, await version(), true, 'closed down');
+      expect(a1.archived).toBe(true);
+      const reservationAfter = (await tx.query('SELECT state, ended_at, lease_expires_at FROM contact_reservations WHERE id = $1', [res.rows[0].id])).rows[0];
+      expect(reservationAfter).toEqual(reservationBefore); // the live reservation is untouched
+
+      const back = await setBusinessArchived(ctx as never, principal, id, await version(), false, 'reopened');
+      expect(back.archived).toBe(false);
 
       await tx.query(`UPDATE contact_reservations SET state = 'released', ended_at = now(), end_reason = 'released' WHERE id = $1`, [res.rows[0].id]);
       const att = await tx.query<{ id: string }>(
         `INSERT INTO call_attempts (business_id, agent_id, outcome, idempotency_key) VALUES ($1, $2, 'accepted', $3) RETURNING id`,
         [id, me, randomUUID()]
       );
-      await tx.query(`INSERT INTO deals (business_id, accepted_attempt_id, accepted_by_id, client_needs_note) VALUES ($1, $2, $3, 'fixdb')`, [
-        id,
-        att.rows[0].id,
-        me,
-      ]);
-      const r2 = await errorOf(tx, () => setBusinessArchived(ctx as never, principal, id, 1, true, null));
-      expect(r2).toMatchObject({ statusCode: 409, code: 'STATE_CONFLICT', details: { reason: 'OPEN_DEAL' } });
-
-      await errorOf(tx, () => tx.query(`UPDATE deals SET stage = 'not_proceeding' WHERE business_id = $1`, [id]));
-      const stage = await tx.query<{ stage: string }>('SELECT stage FROM deals WHERE business_id = $1', [id]);
-      if (stage.rows[0].stage === 'not_proceeding') {
-        const ok = await setBusinessArchived(ctx as never, principal, id, 1, true, 'closed down');
-        expect(ok.archived).toBe(true);
-      }
+      const deal = await tx.query<{ id: string }>(
+        `INSERT INTO deals (business_id, accepted_attempt_id, accepted_by_id, client_needs_note) VALUES ($1, $2, $3, 'fixdb') RETURNING id`,
+        [id, att.rows[0].id, me]
+      );
+      const dealBefore = (await tx.query('SELECT stage, version, closed_at FROM deals WHERE id = $1', [deal.rows[0].id])).rows[0];
+      expect(dealBefore.stage).toBe('accepted_opportunity'); // an open deal
+      const a2 = await setBusinessArchived(ctx as never, principal, id, await version(), true, 'closed down');
+      expect(a2.archived).toBe(true);
+      expect((await tx.query('SELECT stage, version, closed_at FROM deals WHERE id = $1', [deal.rows[0].id])).rows[0]).toEqual(dealBefore);
+      expect((await tx.query<{ archived: boolean }>('SELECT archived_at IS NOT NULL AS archived FROM businesses WHERE id = $1', [id])).rows[0].archived).toBe(true);
     });
   });
 

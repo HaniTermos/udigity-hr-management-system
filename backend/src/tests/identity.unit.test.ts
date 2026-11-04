@@ -38,6 +38,7 @@ vi.mock('../db/pool.js', async () => {
 const { app } = await import('../app.js');
 const { config } = await import('../config/index.js');
 const { hashToken, deriveCsrfToken, totpStep } = await import('../modules/identity/security.js');
+const keys = await import('../modules/identity/keys.js');
 const { createAuthenticate } = await import('../middleware/auth.js');
 const { createOriginCheck, createAuthRateLimiter } = await import('../middleware/requestGuards.js');
 const { FixedWindowCounter, accountDelayMs, createLoginIpLimiter, createLoginPairLimiter, ipBucket } = await import('../modules/identity/limits.js');
@@ -56,6 +57,8 @@ function sessionRow(overrides: Record<string, unknown> = {}) {
   const now = Date.now();
   return {
     session_id: OLD_SID,
+    // Legacy derivation (raw SESSION_SECRET): sessions issued before per-purpose keys keep working.
+    token_hash: hashToken(config.session.secret, RAW),
     state: 'pending_2fa_verification',
     created_at: new Date(now - 60_000),
     expires_at: new Date(now + 9 * 60_000),
@@ -101,7 +104,7 @@ function wrongCode(): string {
 beforeEach(() => {
   fake.db.reset();
   fake.db.on(/FROM sessions s JOIN employees e/, (p) => ({
-    rows: p[0] === hashToken(config.session.secret, RAW) ? [sessionRow()] : [],
+    rows: (p[0] as string[]).includes(hashToken(config.session.secret, RAW)) ? [sessionRow()] : [],
   }));
   fake.db.on(/INSERT INTO sessions/, () => ({ rows: [{ id: NEW_SID }] }));
 });
@@ -154,7 +157,7 @@ describe('POST /api/auth/2fa/verify', () => {
     expect(sessionCookie).toMatch(/HttpOnly/);
     expect(JSON.stringify(res.body)).not.toContain(newRaw);
     expect(res.body.token).toBeUndefined();
-    expect(res.body.csrfToken).toBe(deriveCsrfToken(config.session.secret, NEW_SID, inserted.params[1] as string));
+    expect(res.body.csrfToken).toBe(keys.csrfToken(NEW_SID, inserted.params[1] as string));
 
     // The audit row is written inside the same transaction (BEGIN ... audit ... COMMIT).
     const texts = fake.db.calls.map((c) => c.text);

@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { defineMatrixActions } from '../access/schemas.js';
 import { BoolQuery } from '../deals/schemas.js';
+import { isoDateTime, safeString } from '../../shared/validation.js';
 
 /**
  * VT-3 actions from docs/security/authz-matrix.md §3.8. `meeting.cancel` has no matrix row yet:
@@ -30,8 +31,8 @@ export const AttendeeOptionsQuery = z
   .object({
     dealId: z.string().uuid().optional(),
     businessId: z.string().uuid().optional(),
-    q: z.string().trim().max(80).optional(),
-    role: z.string().trim().min(1).max(64).optional(),
+    q: safeString().trim().max(80).optional(),
+    role: safeString().trim().min(1).max(64).optional(),
     pageSize: z.coerce.number().int().min(1).max(100).default(100),
   })
   .strict();
@@ -41,7 +42,8 @@ export interface AttendeeOptionDto {
   role: string;
 }
 const Version = z.number().int().min(1);
-const IsoDateTime = z.string().datetime({ offset: true });
+// Controls gap V2 (CTL-VAL): real, in-range date-times; free text without control characters (shared/validation.ts).
+const IsoDateTime = isoDateTime();
 const AttendeeIds = z.array(z.string().uuid()).min(1, 'At least one attendee').max(20);
 
 export const MEETING_STATUSES = ['scheduled', 'held', 'cancelled', 'missed'] as const;
@@ -69,11 +71,11 @@ export const CreateMeetingBody = z
   .object({
     dealId: z.string().uuid().optional(),
     businessId: z.string().uuid().optional(),
-    title: z.string().trim().max(200).optional(),
+    title: safeString().trim().max(200).optional(),
     startsAt: IsoDateTime,
     endsAt: IsoDateTime.optional(),
-    location: z.string().trim().max(300).optional(),
-    agenda: z.string().trim().max(4000).optional(),
+    location: safeString().trim().max(300).optional(),
+    agenda: safeString().trim().max(4000).optional(),
     attendeeIds: AttendeeIds,
   })
   .strict()
@@ -87,18 +89,18 @@ export const RescheduleMeetingBody = z.object({
   version: Version,
   startsAt: IsoDateTime,
   endsAt: IsoDateTime.nullable().optional(),
-  location: z.string().trim().max(300).nullable().optional(),
-  agenda: z.string().trim().max(4000).nullable().optional(),
+  location: safeString().trim().max(300).nullable().optional(),
+  agenda: safeString().trim().max(4000).nullable().optional(),
   attendeeIds: AttendeeIds.optional(),
-  reason: z.string().trim().max(1000).optional(),
+  reason: safeString().trim().max(1000).optional(),
 }).strict();
 
 /** POST /:id/held - start time must have been reached. Notes attach to the deal. */
-export const MeetingHeldBody = z.object({ version: Version, discoveryNotes: z.string().trim().min(1).max(8000) }).strict();
+export const MeetingHeldBody = z.object({ version: Version, discoveryNotes: safeString().trim().min(1).max(8000) }).strict();
 /** POST /:id/missed - start time must have passed. */
-export const MeetingMissedBody = z.object({ version: Version, note: z.string().trim().max(1000).optional() }).strict();
+export const MeetingMissedBody = z.object({ version: Version, note: safeString().trim().max(1000).optional() }).strict();
 /** POST /:id/cancel - reason required, destructive confirm in UI. Not reopenable. */
-export const MeetingCancelBody = z.object({ version: Version, reason: z.string().trim().min(3).max(1000) }).strict();
+export const MeetingCancelBody = z.object({ version: Version, reason: safeString().trim().min(3).max(1000) }).strict();
 
 export interface MeetingDto {
   id: string;

@@ -6,7 +6,7 @@
  *
  * Buckets (each its own counter):
  * - login, per (email, client IP): FAILED attempts only. After `LOCKOUT_MAX_FAILURES` failures in
- *   `LOCKOUT_WINDOW_MINUTES` that PAIR is refused (429) until the window ends. A correct password from
+ *   `LOCKOUT_WINDOW_MINUTES` that PAIR is refused (429) until the window ends; a correct sign-in clears the pair (H-02). A correct password from
  *   any other address still works, so knowing an email (the Owner's is a public address) is not enough
  *   to lock anyone out (E-01). The DB per-account lock is no longer set by sign-in failures.
  * - login, per client IP: FAILED attempts only, `AUTH_RATE_LIMIT_MAX` per `AUTH_RATE_LIMIT_WINDOW_MINUTES`.
@@ -35,9 +35,10 @@
  * Every refusal is 429 `{ code: 'RATE_LIMITED' }` with a `Retry-After` header (seconds).
  */
 import { isIPv6 } from 'node:net';
-import type { Request, RequestHandler, Response } from 'express';
-import rateLimit from 'express-rate-limit';
+import type { Request, Response } from 'express';
+import rateLimit, { type RateLimitRequestHandler } from 'express-rate-limit';
 import { config } from '../../config/index.js';
+import { raiseOpsAlert } from '../../shared/opsAlert.js';
 
 export const RATE_LIMITED_BODY = { error: 'Too many attempts. Please wait and try again.', code: 'RATE_LIMITED' } as const;
 
@@ -88,7 +89,7 @@ interface BucketOptions {
 }
 
 /** One express-rate-limit bucket with the shared 429 contract. */
-export function bucket(o: BucketOptions): RequestHandler {
+export function bucket(o: BucketOptions): RateLimitRequestHandler {
   return rateLimit({
     windowMs: o.windowMs,
     limit: o.limit,
@@ -103,13 +104,18 @@ export function bucket(o: BucketOptions): RequestHandler {
 const minutes = (m: number) => m * 60_000;
 const employeeKey = (req: Request) => (req.user?.id ? `u:${req.user.id}` : `ip:${clientIp(req)}`);
 
+const loginPairBucketKey = (req: Request) => `${emailKey(req.body?.email)}|${clientIp(req)}`;
+
+/** The store key of the (email, IP) login bucket for this request (H-02: cleared on a successful sign-in). */
+export const loginPairKey = (req: Request) => `login-pair:${loginPairBucketKey(req)}`;
+
 /** Login: per (email, IP) pair, failed attempts only (E-01: never locks the account itself). */
 export function createLoginPairLimiter(limit = config.lockout.maxFailures, windowMinutes = config.lockout.windowMinutes) {
   return bucket({
     name: 'login-pair',
     limit,
     windowMs: minutes(windowMinutes),
-    key: (req) => `${emailKey(req.body?.email)}|${clientIp(req)}`,
+    key: loginPairBucketKey,
     failuresOnly: true,
   });
 }
@@ -186,6 +192,37 @@ export function accountDelayMs(failures: number, threshold = 2 * config.lockout.
 }
 
 export const loginAccountFailures = new FixedWindowCounter(minutes(config.lockout.windowMinutes));
+
+/**
+ * Controls gap V16 (abuse alerting): failed sign-ins across the whole system per 5 minutes. Reaching
+ * FAILED_SIGNIN_SURGE_THRESHOLD raises one operator alert (ops_alerts, emailed to ALERT_EMAIL_TO by J-14;
+ * raiseOpsAlert also merges repeats into one row per 15 minutes).
+ * Why 25: about 50 staff sign in once or twice a day; even a bad morning (everyone mistyping once around 09:00)
+ * spreads over more than 5 minutes and stays well below 25. One attacker address is capped at
+ * AUTH_RATE_LIMIT_MAX (100) failures per 15 min, i.e. about 33 per 5 min, so a single-address guessing run at
+ * full speed crosses 25 within 5 minutes, and a distributed one sooner.
+ */
+export const FAILED_SIGNIN_SURGE_THRESHOLD = 25;
+export const FAILED_SIGNIN_SURGE_WINDOW_MINUTES = 5;
+const failedSignIns = new FixedWindowCounter(minutes(FAILED_SIGNIN_SURGE_WINDOW_MINUTES));
+
+/** Counts one failed sign-in; raises the surge alert when the window reaches the threshold. Returns true then. */
+export async function noteFailedSignIn(now = new Date(), threshold = FAILED_SIGNIN_SURGE_THRESHOLD): Promise<boolean> {
+  const n = failedSignIns.add('all', now.getTime());
+  if (n !== threshold) return false;
+  await raiseOpsAlert(
+    'auth.failed_signin_surge',
+    `${threshold} or more failed sign-ins within ${FAILED_SIGNIN_SURGE_WINDOW_MINUTES} minutes (all accounts). Check audit login.failed.`,
+    undefined,
+    now
+  );
+  return true;
+}
+
+/** Tests only: start the surge window afresh. */
+export function resetFailedSignInsForTests(): void {
+  failedSignIns.clear('all');
+}
 export const resetRequestsPerEmail = new FixedWindowCounter(minutes(60));
 
 export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));

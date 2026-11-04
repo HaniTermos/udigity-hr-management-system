@@ -18,6 +18,8 @@ import {
   createResetRequestLimiter,
   emailKey,
   loginAccountFailures,
+  loginPairKey,
+  noteFailedSignIn,
   padTo,
   resetRequestsPerEmail,
   sendRateLimited,
@@ -28,7 +30,6 @@ import {
   LockoutState,
   SessionState,
   generateToken,
-  hashToken,
   isLocked,
   isReplayedStep,
   registerFailure,
@@ -50,6 +51,9 @@ import { flags } from '../../shared/flags.js';
 import { outbox } from '../../shared/outbox.js';
 import { principalFromRequest, requireAction } from '../../shared/access.js';
 import { capabilitiesFor } from './schemas.js';
+import { tokenHash, tokenHashCandidates } from './keys.js';
+import { COMMON_PASSWORD_MESSAGE, EMAIL_IN_PASSWORD_MESSAGE, containsEmailName, isCommonPassword } from './passwordPolicy.js';
+import { HttpError } from '../../shared/errors.js';
 
 const router = Router();
 
@@ -83,6 +87,29 @@ export const NewPasswordSchema = z
   .string()
   .min(config.password.minLength, `Password must be at least ${config.password.minLength} characters`)
   .refine((p) => Buffer.byteLength(p, 'utf8') <= 72, 'Password cannot exceed 72 bytes');
+
+/**
+ * Controls gap V6.2 / S-33, after the schema (length) passed: a common or easily guessed password
+ * (passwordPolicy.ts, offline) or one containing the account's email name is refused with 400
+ * VALIDATION_ERROR, `details.reason` PASSWORD_COMMON | PASSWORD_CONTAINS_EMAIL and the field message under
+ * `details.password` (and `details.newPassword`, the body field).
+ */
+export function assertNewPasswordAllowed(password: string, email: string | null | undefined): void {
+  const refuse = (reason: 'PASSWORD_COMMON' | 'PASSWORD_CONTAINS_EMAIL', message: string) => {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Validation failed', { reason, password: [message], newPassword: [message] });
+  };
+  if (isCommonPassword(password)) refuse('PASSWORD_COMMON', COMMON_PASSWORD_MESSAGE);
+  if (containsEmailName(password, email)) refuse('PASSWORD_CONTAINS_EMAIL', EMAIL_IN_PASSWORD_MESSAGE);
+}
+
+/** Session list: the address with its last IPv4 octet (or IPv6 beyond the /48) masked. */
+function maskIp(ip: string | null): string | null {
+  if (!ip) return null;
+  const bare = ip.startsWith('::ffff:') && ip.includes('.') ? ip.slice(7) : ip;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(bare)) return bare.replace(/\.\d{1,3}$/, '.x');
+  if (bare.includes(':')) return `${bare.split(':').slice(0, 3).join(':')}:…`;
+  return null;
+}
 
 const LoginSchema = z.object({
   email: z.string().email().max(255),
@@ -273,9 +300,12 @@ router.post('/login', loginPairLimiter, loginIpLimiter, async (req: Request, res
 
     if (!outcome.ok) {
       loginAccountFailures.add(accountKey);
+      void noteFailedSignIn(); // controls gap V16: system-wide failed sign-in surge alert (limits.ts)
       return res.status(401).json(GENERIC_LOGIN_FAILURE);
     }
     loginAccountFailures.clear(accountKey);
+    // H-02: a correct password clears this (email, IP) pair's failure count, as the old DB lockout did.
+    await loginPairLimiter.resetKey(loginPairKey(req));
 
     setSessionCookies(res, outcome.session);
     const requires2FA = outcome.session.state !== 'active';
@@ -519,6 +549,8 @@ async function completeSecondFactor(req: Request, code: string, mode: SecondFact
         sessionId: user.sessionId,
         payload: { method: 'totp', enrollmentTokenId: tokenId },
       });
+      // Controls gap V6.4-b: security notice to the account holder (in-app; ids only).
+      await outbox.emit(client, { name: 'two_factor.enrolled', aggregateType: 'employee', aggregateId: user.id, payload: {} });
       // AU-9: first batch of recovery codes, shown once in this response.
       recoveryCodes = await replaceRecoveryCodes(client, user.id, flags['auth.recoveryCodeCount']);
       await recordAuditEvent(client, {
@@ -732,6 +764,8 @@ router.post(
           payload: { count: codes.length, reason: 'regenerated' },
           sourceWorkflow: 'WF-AUTH-001',
         });
+        // Controls gap V6.4-b: security notice to the account holder (in-app; ids only).
+        await outbox.emit(client, { name: 'two_factor.recovery_codes_regenerated', aggregateType: 'employee', aggregateId: user.id, payload: {} });
         return { kind: 'ok', codes };
       });
       if (out.kind === 'not_configured') {
@@ -865,6 +899,8 @@ router.post('/logout', authenticate, async (req: Request, res: Response, next: N
       });
     });
     clearSessionCookies(res);
+    // Controls gap V14.3: the browser drops cached pages and site storage of this origin on sign-out.
+    res.setHeader('Clear-Site-Data', '"cache", "storage"');
     return res.status(200).json({ message: 'Logged out successfully' });
   } catch (error) {
     return next(error);
@@ -913,6 +949,86 @@ router.post('/sessions/revoke-all', authenticate, requireAction('auth.session.re
   }
 });
 
+// GET /api/auth/sessions — the caller's own live sessions (controls gap V7.4). Same audience and row as
+// "sign out everywhere" (own sessions only). Never another employee's session; never a token or hash.
+router.get('/sessions', authenticate, requireAction('auth.session.revoke_all'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = req.user!;
+    const { rows } = await query<{
+      id: string;
+      state: string;
+      created_at: Date;
+      last_active_at: Date | null;
+      expires_at: Date;
+      client_ip: string | null;
+      user_agent: string | null;
+    }>(
+      `SELECT id, state, created_at, last_active_at, expires_at, client_ip::text AS client_ip, user_agent
+         FROM sessions
+        WHERE employee_id = $1 AND state <> 'ended' AND expires_at > now() AND (idle_expires_at IS NULL OR idle_expires_at > now())
+        ORDER BY COALESCE(last_active_at, created_at) DESC, id DESC
+        LIMIT 100`,
+      [user.id]
+    );
+    const iso = (d: Date | null) => (d ? new Date(d).toISOString() : null);
+    return res.status(200).json({
+      items: rows.map((r) => ({
+        id: r.id,
+        current: r.id === user.sessionId,
+        state: r.state,
+        createdAt: iso(r.created_at),
+        lastSeenAt: iso(r.last_active_at),
+        expiresAt: iso(r.expires_at),
+        ip: maskIp(r.client_ip),
+        userAgent: r.user_agent ? r.user_agent.slice(0, 300) : null,
+      })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// DELETE /api/auth/sessions/:id — end ONE of the caller's own sessions (Origin + CSRF like every mutation).
+// Another employee's, an unknown or an already ended session answers 404, so ids reveal nothing.
+const SessionIdParam = z.object({ id: z.string().uuid() }).strict();
+
+router.delete('/sessions/:id', authenticate, requireAction('auth.session.revoke_all'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = SessionIdParam.parse(req.params);
+    const user = req.user!;
+    const ended = await withTransaction(async (client) => {
+      const { rows } = await client.query<{ id: string }>(
+        `UPDATE sessions
+         SET state = 'ended', end_reason = 'revoked', ended_at = CURRENT_TIMESTAMP,
+             revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP), is_pending_2fa = false
+         WHERE id = $1 AND employee_id = $2 AND state <> 'ended'
+         RETURNING id`,
+        [id, user.id]
+      );
+      if (!rows[0]) return false;
+      await recordAuditEvent(client, {
+        eventName: 'session.revoked',
+        actorId: user.id,
+        actorRole: user.role,
+        entityType: 'session',
+        entityId: id,
+        sessionId: user.sessionId,
+        requestId: req.requestId,
+        clientIp: clientIpOf(req),
+        payload: { reason: 'sign_out_one_device', sessionIds: [id] },
+        sourceWorkflow: 'SCR-SHR-006',
+      });
+      return true;
+    });
+    if (!ended) return res.status(404).json({ error: 'Not found', code: 'NOT_FOUND' });
+    const current = id === user.sessionId;
+    if (current) clearSessionCookies(res);
+    return res.status(200).json({ revoked: 1, currentSessionEnded: current });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 const ChangePasswordSchema = z.object({
   currentPassword: PasswordInputSchema,
   newPassword: NewPasswordSchema,
@@ -922,6 +1038,7 @@ router.post('/password/change', authenticate, requireAction('auth.password.chang
   try {
     const user = req.user!;
     const { currentPassword, newPassword } = ChangePasswordSchema.parse(req.body);
+    assertNewPasswordAllowed(newPassword, user.email);
     const clientIp = clientIpOf(req);
     const now = new Date();
 
@@ -960,7 +1077,7 @@ router.post('/password/change', authenticate, requireAction('auth.password.chang
       const token = generateToken();
       const { rows: sessionRows } = await client.query<{ expires_at: Date }>(
         'UPDATE sessions SET token_hash = $2 WHERE id = $1 RETURNING expires_at',
-        [user.sessionId, hashToken(config.session.secret, token)]
+        [user.sessionId, tokenHash('session-token', token)]
       );
       await recordAuditEvent(client, {
         eventName: 'password.changed',
@@ -978,6 +1095,8 @@ router.post('/password/change', authenticate, requireAction('auth.password.chang
         },
         sourceWorkflow: 'SCR-SHR-006',
       });
+      // Controls gap V6.4-b: security notice to the account holder (in-app; ids only).
+      await outbox.emit(client, { name: 'password.changed', aggregateType: 'employee', aggregateId: user.id, payload: {} });
       return { token, expiresAt: new Date(sessionRows[0].expires_at) };
     });
 
@@ -1047,7 +1166,7 @@ router.post('/password-reset/request', resetRequestLimiter, async (req: Request,
       const { rows: tokenRows } = await client.query<{ id: string }>(
         `INSERT INTO security_tokens (employee_id, purpose, token_hash, expires_at, requested_ip)
          VALUES ($1, 'password_reset', $2, $3, $4) RETURNING id`,
-        [employee.id, hashToken(config.session.secret, rawToken), expiresAt, clientIp]
+        [employee.id, tokenHash('reset-token', rawToken), expiresAt, clientIp]
       );
       await recordAuditEvent(client, {
         eventName: 'password_reset.requested',
@@ -1079,9 +1198,9 @@ router.post('/password-reset/request', resetRequestLimiter, async (req: Request,
 });
 
 // 'credential_setup' (E-01, new employee) uses the same single-use link and page as a reset.
-const OPEN_RESET_TOKEN_SQL = `SELECT st.id, st.employee_id, e.role, st.purpose
+const OPEN_RESET_TOKEN_SQL = `SELECT st.id, st.employee_id, e.role, e.email, st.purpose
          FROM security_tokens st JOIN employees e ON e.id = st.employee_id
-         WHERE st.token_hash = $1 AND st.purpose IN ('password_reset', 'credential_setup')
+         WHERE st.token_hash = ANY($1::text[]) AND st.purpose IN ('password_reset', 'credential_setup')
            AND st.used_at IS NULL AND st.superseded_at IS NULL AND st.expires_at > CURRENT_TIMESTAMP
            AND e.is_active = true`;
 
@@ -1089,21 +1208,23 @@ router.post('/password-reset/complete', resetCompleteLimiter, async (req: Reques
   try {
     const { token, newPassword } = ResetCompleteSchema.parse(req.body);
     const clientIp = clientIpOf(req);
-    const tokenHash = hashToken(config.session.secret, token);
+    // Per-purpose key first, then legacy / previous-secret hashes of links issued earlier (keys.ts).
+    const tokenHashes = tokenHashCandidates('reset-token', token);
 
     // F-08: no bcrypt work for an invalid link. Cheap pre-check, then hash, then the locked re-check
     // inside the transaction (the token can still be used or superseded in between).
-    const pre = await query(OPEN_RESET_TOKEN_SQL, [tokenHash]);
+    const pre = await query<{ email: string }>(OPEN_RESET_TOKEN_SQL, [tokenHashes]);
     if (!pre.rows[0]) {
       return res.status(400).json({ error: 'This link has expired or was already used', code: 'RESET_LINK_INVALID' });
     }
+    assertNewPasswordAllowed(newPassword, pre.rows[0].email);
     const newHash = await bcrypt.hash(newPassword, config.password.bcryptRounds);
 
     const ok = await withTransaction(async (client) => {
       const { rows } = await client.query<{ id: string; employee_id: string; role: string; purpose: string }>(
         `${OPEN_RESET_TOKEN_SQL}
          FOR UPDATE OF st`,
-        [tokenHash]
+        [tokenHashes]
       );
       const row = rows[0];
       if (!row) return false;

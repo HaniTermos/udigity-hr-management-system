@@ -3,6 +3,7 @@
  * Contract: docs/implementation/plan.md §4.1, docs/security/authz-matrix.md §3.9.
  */
 import { z } from 'zod';
+import { MAX_PAGE } from '../../shared/pagination.js';
 import { boundedInt, isoDate, isoDateOrDateTime, MAX_TARGET_VALUE, safeString } from '../../shared/validation.js';
 import { defineMatrixActions } from '../access/matrix.js';
 import { TARGET_METRICS, type ProgressNote } from './progress.js';
@@ -75,7 +76,7 @@ export type UpdateWorkItemInput = z.infer<typeof UpdateWorkItemSchema>;
 /** GET /api/work-items. `limit` is an alias of `pageSize` (My Day asks for the first 5). */
 export const WorkItemsQuerySchema = z
   .object({
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(MAX_PAGE).default(1),
     pageSize: z.coerce.number().int().min(1).max(100).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
     sort: safeString().max(40).optional(),
@@ -89,7 +90,7 @@ export const WorkItemsQuerySchema = z
 /** GET /api/targets. Non-Owners always get their own targets; `scope=self` is accepted for clarity. */
 export const TargetsQuerySchema = z
   .object({
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(MAX_PAGE).default(1),
     pageSize: z.coerce.number().int().min(1).max(100).default(25),
     sort: safeString().max(40).optional(),
     order: z.enum(['asc', 'desc']).default('desc'),
