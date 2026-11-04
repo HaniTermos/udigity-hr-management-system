@@ -18,7 +18,7 @@ export function CallingPageHeader({
     <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
       <div className="min-w-0">
         {breadcrumb && <div className="text-[13px] leading-[18px] text-text-muted mb-0.5">{breadcrumb}</div>}
-        <h1 className="text-[22px] leading-7 font-semibold text-text-primary">{title}</h1>
+        <h1 className="text-[22px] leading-7 font-semibold text-text-primary [overflow-wrap:anywhere]">{title}</h1>
         {subtitle && <p className="text-[13px] leading-[18px] text-text-muted mt-0.5">{subtitle}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2 shrink-0">{actions}</div>}

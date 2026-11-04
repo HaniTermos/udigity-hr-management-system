@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { requestDuplicateReview, type DuplicateMatch, type SimilarName } from '@/lib/api/businesses';
 import { ApiError } from '@/lib/api/client';
+import { useCompanyTime } from '@/lib/hooks/useCompanyTime';
 import { Button } from '@/components/ui/Button';
 import { Textarea } from '@/components/ui/Input';
 import { useToast } from '@/components/ui/Toast';
@@ -101,6 +102,7 @@ export interface DuplicateReviewProbe {
 
 /** D10 hidden-match disclosure: matched field type, business name, category and creation date only. */
 function HiddenMatchSummary({ match }: { match: Extract<DuplicateMatch, { visibility: 'hidden' }> }) {
+  const time = useCompanyTime();
   if (!match.name) return null;
   const created = match.createdAt ? new Date(match.createdAt) : null;
   return (
@@ -110,7 +112,7 @@ function HiddenMatchSummary({ match }: { match: Extract<DuplicateMatch, { visibi
       <p className="text-[13px] leading-[18px] text-text-secondary">
         {match.categoryName ? `${match.categoryName} · ` : ''}
         Matched on {match.matchedOn === 'phone' ? 'phone' : 'name'}
-        {created && !Number.isNaN(created.getTime()) ? ` · created ${created.toLocaleDateString()}` : ''}
+        {created && !Number.isNaN(created.getTime()) ? ` · created ${time.format(created, { dateStyle: 'medium' })}` : ''}
       </p>
     </CardInset>
   );

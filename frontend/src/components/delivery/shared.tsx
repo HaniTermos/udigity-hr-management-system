@@ -390,7 +390,7 @@ export function PageTitle({
   return (
     <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
       <div className="min-w-0">
-        <h1 className="text-2xl leading-8 font-semibold tracking-tight text-text-primary">{title}</h1>
+        <h1 className="text-2xl leading-8 font-semibold tracking-tight text-text-primary [overflow-wrap:anywhere]">{title}</h1>
         {description && <p className="mt-1 text-sm text-text-secondary">{description}</p>}
       </div>
       {aside && <div className="shrink-0 flex flex-wrap items-center gap-2">{aside}</div>}

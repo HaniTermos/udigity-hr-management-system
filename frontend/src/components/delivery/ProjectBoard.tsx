@@ -245,7 +245,7 @@ export function ProjectBoard({ id }: { id: string }) {
 
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
         <div className="min-w-0 space-y-2">
-          <h1 className="text-2xl leading-8 font-semibold tracking-tight text-text-primary">{p.name}</h1>
+          <h1 className="text-2xl leading-8 font-semibold tracking-tight text-text-primary [overflow-wrap:anywhere]">{p.name}</h1>
           <div className="flex flex-wrap items-center gap-2 text-[13px] text-text-secondary">
             <ProjectStatusBadge status={p.status} />
             <Badge tone="info" hasDot>
@@ -282,9 +282,6 @@ export function ProjectBoard({ id }: { id: string }) {
                 {p.developers.length === 0 ? 'Assign developer' : 'Manage developers'}
               </Button>
             )}
-            <Button variant="secondary" leadingIcon={<Icon name="calendar" size={16} />} disabled title="Edit schedule is not designed yet (deferred)">
-              Edit schedule
-            </Button>
             <Button leadingIcon={<Icon name="plus" size={16} />} disabled={!p.allowed.createTask || busy} onClick={() => setPending({ kind: 'add-task' })}>
               Add task
             </Button>
@@ -696,7 +693,7 @@ function TaskCard({ task, readOnly, busy, onOpen, onMove }: { task: Task; readOn
       {!readOnly && task.allowedNextStatuses.length > 0 && (
         <div className="flex flex-wrap gap-1 pt-1 border-t border-border-subtle">
           {task.allowedNextStatuses.map((to) => (
-            <Button key={to} variant="ghost" size="sm" disabled={busy} onClick={() => onMove(to)}>
+            <Button key={to} variant="ghost" size="sm" disabled={busy} aria-label={`${taskActionLabel(task.status, to).replace(/…$/, '')} task: ${task.title}`} onClick={() => onMove(to)}>
               {taskActionLabel(task.status, to)}
             </Button>
           ))}
@@ -815,7 +812,8 @@ function AssignDevelopersDialog({
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
-  const rows = useMemo(() => mergeDeveloperRows(devs.data?.items ?? [], assigned), [devs.data, assigned]);
+  // Nothing is listed until the active list has loaded: otherwise an assigned developer flashes "Inactive" (A-09).
+  const rows = useMemo(() => (devs.data ? mergeDeveloperRows(devs.data.items ?? [], assigned) : []), [devs.data, assigned]);
   const removingAll = selectedIds.length === 0 && assigned.length > 0;
 
   async function handleSave() {
@@ -855,7 +853,7 @@ function AssignDevelopersDialog({
         {devs.isLoading && <p className="text-sm text-text-muted">Loading active developers…</p>}
         {devs.error && <Alert tone="danger" title="Could not load developers" body={devs.error.message} />}
 
-        {!devs.isLoading && rows.length === 0 && <p className="text-sm text-text-muted">No active developers found in the company.</p>}
+        {!devs.isLoading && !devs.error && rows.length === 0 && <p className="text-sm text-text-muted">No active developers found in the company.</p>}
 
         {rows.length > 0 && (
           <div className="space-y-1 max-h-60 overflow-y-auto divide-y divide-border-subtle border border-border-default rounded-lg p-2">

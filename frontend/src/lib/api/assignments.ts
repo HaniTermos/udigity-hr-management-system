@@ -98,6 +98,9 @@ export const assignBusinesses = (input: { businessIds: string[]; assigneeId: str
   api.post<AssignResultDto>(callingPaths.assignmentsCommand('assign'), { ...input, source: 'manual' }, { idempotencyKey: newIdempotencyKey() });
 
 /** No `agentId`: round-robin across every active Call Center agent ("Auto-fill queues"). */
+/** 409 `AUTOFILL_RUNNING`: a second auto-fill for the same agent was started while one is still running. */
+export const AUTOFILL_RUNNING_MESSAGE = 'Auto-fill is already running for this agent';
+
 export const autofillQueues = (input: { agentId?: string; limit?: number } = {}) =>
   api.post<AutofillResultDto>(callingPaths.assignmentsCommand('autofill'), input, { idempotencyKey: newIdempotencyKey() });
 

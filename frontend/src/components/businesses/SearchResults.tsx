@@ -66,7 +66,7 @@ export function SearchResultsTable({
 
   return (
     <div className="w-full overflow-hidden rounded-xl border border-border-default bg-surface-default">
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Search results table (scrolls sideways)">
         <Table aria-label="Search results">
           <THead>
             <tr>

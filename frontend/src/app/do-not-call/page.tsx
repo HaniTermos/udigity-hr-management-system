@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/Button';
 import { CardSection } from '@/components/ui/Card';
 import { Alert } from '@/components/ui/Alert';
 import { Icon } from '@/components/ui/Icon';
+import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { SearchInput } from '@/components/ui/Input';
 import { StateView } from '@/components/ui/State';
 import { Table, TableContainer, TBody, TD, TH, THead, TR } from '@/components/ui/Table';
@@ -31,7 +32,8 @@ export default function DoNotCallPage() {
   const access = useBusinessAccess();
   const f = useCallingFormat();
   const [q, setQ] = useState('');
-  const { data, error, route, isLoading, retry, mutate } = useDoNotCall({ pageSize: 100, ...(q.trim() ? { q: q.trim() } : {}) });
+  const debouncedQ = useDebouncedValue(q);
+  const { data, error, route, isLoading, retry, mutate } = useDoNotCall({ pageSize: 100, ...(debouncedQ.trim() ? { q: debouncedQ.trim() } : {}) });
   const [selected, setSelected] = useState<string | null>(null);
   const [reopening, setReopening] = useState(false);
   const [correctionOpen, setCorrectionOpen] = useState(false);

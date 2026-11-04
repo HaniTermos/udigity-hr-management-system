@@ -3,6 +3,8 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
+import { useCapability } from '@/lib/hooks/useCapability';
+import { ACTIONS } from '@/lib/actions';
 import { ApiError } from '@/lib/api/client';
 import {
   closeCorrectionNoChange,
@@ -53,6 +55,9 @@ export function ResolveCorrectionDrawer({
 
 function OpenDrawer({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged: () => void }) {
   const { user } = useAuth();
+  const canReview = useCapability(ACTIONS.correctionReview);
+  // Acting on a request another reviewer took is an admin power (staff list = Owner-level), not a role-name check.
+  const canActForOthers = useCapability(ACTIONS.employeeList);
   const toast = useToast();
   const { data, error, isLoading, mutate } = useCorrection(id);
   const [outcome, setOutcome] = useState<Outcome>('apply');
@@ -101,7 +106,7 @@ function OpenDrawer({ id, onClose, onChanged }: { id: string; onClose: () => voi
 
   const terminal = data.status === 'resolved' || data.status === 'closed' || data.status === 'rejected' || data.status === 'withdrawn';
   const mine = !!user && data.reviewerId === user.id;
-  const canAct = data.status === 'in_review' && (mine || user?.role === 'owner');
+  const canAct = data.status === 'in_review' && canReview && (mine || canActForOthers);
   const noteRequired = outcome !== 'apply';
   const noteError = tried && noteRequired && !note.trim() ? (outcome === 'reject' ? 'Give the reason for rejecting.' : 'Say what you verified.') : undefined;
 

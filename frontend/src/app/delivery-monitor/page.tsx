@@ -1,5 +1,7 @@
 'use client';
 
+import { useCapability } from '@/lib/hooks/useCapability';
+import { ACTIONS } from '@/lib/actions';
 import React, { useState } from 'react';
 import useSWR from 'swr';
 import { useCompanyTime } from '@/lib/hooks/useCompanyTime';
@@ -74,8 +76,9 @@ export default function DeliveryMonitorPage() {
   const queryState = stateFilter === 'all' ? undefined : stateFilter;
   const listKey = `/api/delivery-monitor?kind=${queryKind ?? 'all'}&state=${queryState ?? 'all'}&page=${page}`;
 
+  const mayOpen = useCapability(ACTIONS.reminderMonitorRead);
   const { data, error, isLoading, mutate } = useSWR(
-    listKey,
+    mayOpen ? listKey : null,
     () => listDeliveryMonitor({ kind: queryKind, state: queryState, page, pageSize: 50 }),
     { refreshInterval: 10000, keepPreviousData: true }
   );
@@ -222,7 +225,7 @@ export default function DeliveryMonitorPage() {
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Delivery items table (scrolls sideways)">
               <table className="w-full text-left text-xs">
                 <thead className="bg-surface-sunken border-b border-border-default text-text-secondary uppercase tracking-wider text-[11px]">
                   <tr>
@@ -270,12 +273,13 @@ export default function DeliveryMonitorPage() {
                         {time.format(item.sentAt || item.createdAt, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                       </td>
                       <td className="px-4 py-3.5 text-right">
-                        {(item.state === 'failed' || item.state === 'pending') && (
+                        {(item.state === 'failed' || item.state === 'suppressed') && (
                           <Button
                             variant="secondary"
                             size="sm"
                             leadingIcon={<Icon name="refresh" size={14} />}
                             disabled={retryingId === item.id}
+                            aria-label={`Send again: ${item.recipientName}, ${sourceLabel(item.channel)}`}
                             onClick={() => handleRetry(item.id)}
                           >
                             {retryingId === item.id ? 'Queueing...' : 'Send again'}

@@ -11,7 +11,7 @@ import { IconButton } from './IconButton';
 
 export function TableContainer({ className, children, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className={cn('w-full overflow-x-auto rounded-xl border border-border-default bg-surface-default', className)} {...props}>
+    <div tabIndex={0} role="region" aria-label="Table (scrolls sideways)" className={cn('w-full overflow-x-auto rounded-xl border border-border-default bg-surface-default', className)} {...props}>
       {children}
     </div>
   );

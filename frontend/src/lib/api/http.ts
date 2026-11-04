@@ -11,6 +11,7 @@
 
 import { browserIsOffline, networkFailure, offlineBlock } from './offline';
 import { isRateLimited, parseRetryAfter } from './rateLimit';
+import { signalSessionLost } from '@/lib/sessionEndedSignal';
 
 export const CSRF_HEADER = 'X-CSRF-Token';
 
@@ -122,6 +123,9 @@ export async function apiFetch<T = unknown>(
       const wait = parseRetryAfter(res.headers.get('Retry-After'));
       if (wait !== undefined) payload.retryAfterSeconds = wait;
     }
+    // A-01/B-16: any 401 while working (save, poll, read) opens the sign-in dialog and keeps the page and its input.
+    // Sign-in, 2FA and /me calls are handled by their own screens.
+    if (res.status === 401 && (!path.startsWith('/api/auth/') || path.startsWith('/api/auth/sessions'))) signalSessionLost(payload.code);
     return { ok: false, status: res.status, data: null, error: payload };
   }
   return { ok: true, status: res.status, data: json as T, error: null };

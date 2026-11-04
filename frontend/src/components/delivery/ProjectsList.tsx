@@ -3,13 +3,14 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { Alert } from '@/components/ui/Alert';
+import { useCapability } from '@/lib/hooks/useCapability';
+import { ACTIONS } from '@/lib/actions';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Select } from '@/components/ui/Input';
 import { SkeletonCard, SkeletonTableRow, StateView } from '@/components/ui/State';
 import { Table, TableContainer, TBody, TD, TH, THead, TR } from '@/components/ui/Table';
 import { useToast } from '@/components/ui/Toast';
-import { useAuth } from '@/lib/auth';
 import { useApi } from '@/lib/hooks/useApi';
 import { useVersionedSave } from '@/lib/hooks/useVersionedSave';
 import {
@@ -152,8 +153,7 @@ export function ProjectsList() {
 /** Closed deals without a project (derived). F3 failure offers the Owner retry; manual F2 offers Create project. */
 function Unprovisioned({ items, autoProvision, onChanged }: { items: UnprovisionedDeal[]; autoProvision: boolean; onChanged: () => void }) {
   const toast = useToast();
-  const { user } = useAuth();
-  const isOwner = user?.role === 'owner';
+  const isOwner = useCapability(ACTIONS.projectProvisionRetry);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const retrySave = useVersionedSave<string, ProvisionRetryResult>((dealId) => retryProvisioning(dealId), {

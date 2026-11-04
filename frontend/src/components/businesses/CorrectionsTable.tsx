@@ -71,7 +71,7 @@ export function CorrectionsTable({
 
   return (
     <div className="w-full overflow-hidden rounded-xl border border-border-default bg-surface-default">
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Correction requests table (scrolls sideways)">
         <Table aria-label="Correction requests">
           <THead>
             <tr>

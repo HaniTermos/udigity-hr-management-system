@@ -3,6 +3,7 @@
 import React, { useMemo, useState } from 'react';
 import useSWR from 'swr';
 import { Alert } from '@/components/ui/Alert';
+import { fmtDate } from '@/components/delivery/shared';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -45,7 +46,7 @@ function errorText(err: unknown, fallback: string): string {
   return fallback;
 }
 
-const range = (d: RemoteExceptionDto) => (d.startDate === d.endDate ? d.startDate : `${d.startDate} – ${d.endDate}`);
+const range = (d: RemoteExceptionDto) => (d.startDate === d.endDate ? fmtDate(d.startDate) : `${fmtDate(d.startDate)} – ${fmtDate(d.endDate)}`);
 
 type Action = { kind: 'approve' | 'reject' | 'revoke'; item: RemoteExceptionDto };
 
@@ -106,16 +107,16 @@ export function AttendanceRemoteExceptions({
               <div className="flex gap-1 shrink-0">
                 {d.status === 'requested' && (
                   <>
-                    <Button size="sm" variant="ghost" onClick={() => setAction({ kind: 'approve', item: d })}>
+                    <Button size="sm" variant="ghost" aria-label={`Approve remote exception for ${d.employeeName}`} onClick={() => setAction({ kind: 'approve', item: d })}>
                       Approve
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setAction({ kind: 'reject', item: d })}>
+                    <Button size="sm" variant="ghost" aria-label={`Reject remote exception for ${d.employeeName}`} onClick={() => setAction({ kind: 'reject', item: d })}>
                       Reject
                     </Button>
                   </>
                 )}
                 {d.status === 'granted' && (
-                  <Button size="sm" variant="ghost" onClick={() => setAction({ kind: 'revoke', item: d })}>
+                  <Button size="sm" variant="ghost" aria-label={`Revoke remote exception for ${d.employeeName}`} onClick={() => setAction({ kind: 'revoke', item: d })}>
                     Revoke
                   </Button>
                 )}

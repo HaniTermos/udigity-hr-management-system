@@ -1,5 +1,6 @@
 'use client';
 
+import { ACTIONS } from '@/lib/actions';
 import useSWR from 'swr';
 import { useAuth } from '@/lib/auth';
 import {
@@ -52,8 +53,8 @@ export function useBusinessSearch(q: SearchQuery) {
 }
 
 export function useCorrections(q: CorrectionQuery) {
-  const { role } = useBusinessAccess();
-  return useSWR(role ? ['corrections', q, role] : null, () => listCorrections(q), { keepPreviousData: true, shouldRetryOnError: false });
+  const { role, allowed } = useBusinessAccess();
+  return useSWR(role && allowed(ACTIONS.correctionRead) ? ['corrections', q, role] : null, () => listCorrections(q), { keepPreviousData: true, shouldRetryOnError: false });
 }
 
 export function useCorrection(id: string | null) {

@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Input } from '@/components/ui/Input';
 import { apiFetch, isRateLimited, rateLimitMessage } from '@/lib/api';
-import { PASSWORD_MIN_LENGTH } from '@/lib/passwordPolicy';
+import { PASSWORD_MIN_LENGTH, passwordRuleMessage } from '@/lib/passwordPolicy';
 
 /** SHR-015: status 0 means the request was not sent (offline) or the connection dropped. */
 const OFFLINE_TEXT = 'You’re offline or the connection dropped. Try again when your connection returns.';
@@ -97,7 +97,10 @@ function ResetPasswordContent() {
       return;
     }
     if (res.status === 400) {
-      setRuleError('Does not meet the password rules.');
+      setRuleError(
+        passwordRuleMessage({ code: res.error?.code, status: 400, fieldErrors: (res.error as { fieldErrors?: Record<string, string[]> } | null)?.fieldErrors }) ??
+          'Does not meet the password rules.'
+      );
       return;
     }
     setRuleError(isRateLimited(res.status, res.error?.code) ? rateLimitMessage(res.error?.retryAfterSeconds) : res.status === 0 ? OFFLINE_TEXT : 'Something went wrong. Please try again.');

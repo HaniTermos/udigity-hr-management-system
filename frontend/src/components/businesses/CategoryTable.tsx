@@ -87,7 +87,7 @@ export function CategoryTable({
 
   return (
     <div className="w-full overflow-hidden rounded-xl border border-border-default bg-surface-default">
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Categories table (scrolls sideways)">
         <Table aria-label="Categories">
           <THead>
             <tr>

@@ -1,5 +1,7 @@
 'use client';
 
+import { useCapability } from '@/lib/hooks/useCapability';
+import { ACTIONS } from '@/lib/actions';
 import React, { useMemo, useState } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
 import { ApiErrorView } from '@/components/states/ApiErrorView';
@@ -77,11 +79,13 @@ export default function TargetsPage() {
   const toast = useToast();
   const time = useCompanyTime();
 
-  const targets = useApi<Page<TargetItem>>(workPaths.targets, { refreshInterval: 0 });
-  const workItems = useApi<Page<WorkItem>>(workPaths.workItems, { refreshInterval: 0 });
-  const metrics = useApi<DashboardMetrics>('/api/dashboard?period=30d', { refreshInterval: 60_000 });
+  // A-07: nothing is fetched for an account that may not set targets.
+  const mayOpen = useCapability(ACTIONS.targetSet);
+  const targets = useApi<Page<TargetItem>>(mayOpen ? workPaths.targets : null, { refreshInterval: 0 });
+  const workItems = useApi<Page<WorkItem>>(mayOpen ? workPaths.workItems : null, { refreshInterval: 0 });
+  const metrics = useApi<DashboardMetrics>(mayOpen ? '/api/dashboard?period=30d' : null, { refreshInterval: 60_000 });
   const peopleQuery = { pageSize: 100 };
-  const people = useApi<Page<EmployeeRow>>(employeesListKey(peopleQuery), { refreshInterval: 0 });
+  const people = useApi<Page<EmployeeRow>>(mayOpen ? employeesListKey(peopleQuery) : null, { refreshInterval: 0 });
   const employees = useMemo(() => people.data?.items.filter((e) => e.isActive) ?? [], [people.data]);
   const employeeOptions = employees.map((e) => ({ value: e.id, label: `${e.fullName} (${e.role.replace(/_/g, ' ')})` }));
 

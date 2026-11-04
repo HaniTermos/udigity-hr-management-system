@@ -86,7 +86,7 @@ export function BusinessTable({
 
   return (
     <div className="w-full overflow-hidden rounded-xl border border-border-default bg-surface-default">
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Businesses table (scrolls sideways)">
         <Table aria-label="Businesses">
           <THead>
             <tr>

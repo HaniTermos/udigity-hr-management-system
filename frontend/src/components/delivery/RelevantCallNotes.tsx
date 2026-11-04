@@ -3,6 +3,7 @@
 import React from 'react';
 import { CardSection } from '@/components/ui/Card';
 import { useApi } from '@/lib/hooks/useApi';
+import { useCompanyTime } from '@/lib/hooks/useCompanyTime';
 
 /** GET /api/deals/:id/call-notes (D15, BE2): read-only call notes for the assigned Developer and the Owner. */
 interface RelevantCallNote {
@@ -26,6 +27,7 @@ const OUTCOME_LABEL: Record<string, string> = {
  * or the Owner (`show`); the server applies the same gate. Read-only: no agent identity, no editing.
  */
 export function RelevantCallNotes({ dealId, show }: { dealId: string; show: boolean }) {
+  const time = useCompanyTime();
   const { data, error } = useApi<{ items: RelevantCallNote[] }>(show ? `/api/deals/${dealId}/call-notes` : null, { refreshInterval: 0 });
   if (!show) return null;
   return (
@@ -41,7 +43,7 @@ export function RelevantCallNotes({ dealId, show }: { dealId: string; show: bool
           {data.items.map((n) => (
             <li key={n.attemptId} className="space-y-0.5">
               <p className="text-[13px] text-text-muted">
-                {new Date(n.attemptedAt).toLocaleString()} · {OUTCOME_LABEL[n.outcome] ?? n.outcome}
+                {time.format(n.attemptedAt)} · {OUTCOME_LABEL[n.outcome] ?? n.outcome}
               </p>
               {n.notes && <p className="text-sm text-text-primary whitespace-pre-line">{n.notes}</p>}
               {n.clientNeedsNote && <p className="text-sm text-text-secondary whitespace-pre-line">Client needs: {n.clientNeedsNote}</p>}

@@ -269,7 +269,6 @@ export function RoleEditor({ role, permissions, inspectedAction, onInspect, onDi
                   <button
                     type="button"
                     aria-expanded={!isCollapsed}
-                    aria-label={`${isCollapsed ? 'Show' : 'Hide'} ${label} options`}
                     onClick={() => setCollapsed((prev) => ({ ...prev, [mod]: !prev[mod] }))}
                     className="flex items-start sm:items-center gap-2.5 min-w-0 text-left cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
                   >

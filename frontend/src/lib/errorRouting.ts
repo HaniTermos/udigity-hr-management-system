@@ -11,7 +11,9 @@
 import { ApiError } from '@/lib/api';
 import { CONNECTION_LOST_MESSAGE, OFFLINE_CODE, OFFLINE_NOT_SENT_MESSAGE } from '@/lib/api/offline';
 
-export type SessionEndReason = 'expired' | 'revoked' | 'deactivated';
+import { sessionEndReasonFor, type SessionEndReason } from '@/lib/sessionEndReason';
+
+export { sessionEndReasonFor, type SessionEndReason };
 
 export type ErrorRoute =
   | { kind: 'session-ended'; reason: SessionEndReason }
@@ -27,19 +29,6 @@ export type ErrorRoute =
   | { kind: 'error'; requestId?: string };
 
 export const SESSION_ENDED_PATH = '/session-ended';
-
-export function sessionEndReasonFor(code: string | undefined): SessionEndReason {
-  switch (code) {
-    case 'ACCOUNT_DEACTIVATED':
-    case 'ACCOUNT_INACTIVE':
-      return 'deactivated';
-    case 'SESSION_REVOKED':
-    case 'SESSION_INVALID':
-      return 'revoked';
-    default:
-      return 'expired';
-  }
-}
 
 export function parseSessionEndReason(raw: string | null | undefined): SessionEndReason {
   return raw === 'revoked' || raw === 'deactivated' ? raw : 'expired';

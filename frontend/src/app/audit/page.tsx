@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useDeferredValue, useState } from 'react';
+import React, { useState } from 'react';
+import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import useSWR from 'swr';
 import { AppShell } from '@/components/layout/AppShell';
 import { Alert } from '@/components/ui/Alert';
@@ -97,19 +98,20 @@ export default function AuditLogPage() {
   const [open, setOpen] = useState<AuditEventRow | null>(null);
   const timeZone = useCompanyTimezone();
 
-  const deferredEvent = useDeferredValue(event.trim());
-  const deferredRef = useDeferredValue(entityRef.trim());
+  const deferredEvent = useDebouncedValue(event.trim());
+  const deferredRef = useDebouncedValue(entityRef.trim());
   const query: AuditQuery = { page, pageSize: PAGE_SIZE, event: deferredEvent, actorId, entityType, entityRef: deferredRef, from, to };
-  const { data, error, isLoading, mutate } = useSWR(auditKey(query), () => listAuditEvents(query));
+  const allowed = useCapability(ACTIONS.auditRead);
+  // A-07: a denied account never calls the audit endpoints.
+  const { data, error, isLoading, mutate } = useSWR(allowed ? auditKey(query) : null, () => listAuditEvents(query));
 
   const actorQuery = { pageSize: 100 };
-  const { data: people } = useSWR(employeesListKey(actorQuery), () => listEmployees(actorQuery), { revalidateOnFocus: false });
+  const { data: people } = useSWR(allowed ? employeesListKey(actorQuery) : null, () => listEmployees(actorQuery), { revalidateOnFocus: false });
   const actorOptions = (people?.items ?? []).map((p) => ({ value: p.id, label: p.fullName }));
 
   const items = data?.items ?? [];
   const pageCount = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
   const filtered = Boolean(from || to || actorId || entityType || deferredEvent || deferredRef);
-  const allowed = useCapability(ACTIONS.auditRead);
   const owner2fa = error instanceof ApiError && error.code === 'OWNER_2FA_REQUIRED';
   const denied = !allowed || owner2fa || (error instanceof ApiError && error.isPermissionDenied);
 

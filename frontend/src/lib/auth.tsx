@@ -7,7 +7,7 @@ import { apiFetch, forgetCsrfToken, rememberCsrfToken } from '@/lib/api';
 import { authFailureText } from '@/lib/authErrors';
 import { useToast } from '@/components/ui/Toast';
 import type { SessionState } from '@/lib/authRoutes';
-import { resetSessionEnded } from '@/lib/sessionEndedSignal';
+import { markSessionKnown, resetSessionEnded, signalSessionLost } from '@/lib/sessionEndedSignal';
 import {
   identityPaths,
   type EnrollConfirmDto,
@@ -103,8 +103,11 @@ const meFetcher = async (url: string): Promise<MeResponse | null> => {
   const res = await apiFetch<MeResponse>(url);
   if (res.ok && res.data) {
     rememberCsrfToken(res.data.csrfToken);
+    markSessionKnown(true);
     return res.data;
   }
+  // The session was working and is gone: raise the in-app dialog before the shell guard can redirect (B-16).
+  if (res.status === 401) signalSessionLost(res.error?.code);
   if (res.status === 401 || res.status === 403) return null;
   throw new Error('Failed to fetch session');
 };
@@ -224,6 +227,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return false;
     }
     forgetCsrfToken();
+    markSessionKnown(false);
     await clearCachedData();
     await mutate(null, false);
     router.push('/login');

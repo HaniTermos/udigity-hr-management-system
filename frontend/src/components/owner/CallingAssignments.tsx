@@ -17,6 +17,7 @@ import {
   assignBusinesses,
   assignmentsListKey,
   autofillQueues,
+  AUTOFILL_RUNNING_MESSAGE,
   listAssignments,
   type AssignmentListItem,
   type AssignmentListQuery,
@@ -112,7 +113,9 @@ export function CallingAssignments() {
   function reportFailure(e: unknown) {
     const route = classifyError(e);
     setActionError(
-      route.kind === 'offline'
+      e instanceof ApiError && e.code === 'AUTOFILL_RUNNING'
+        ? AUTOFILL_RUNNING_MESSAGE
+        : route.kind === 'offline'
         ? 'You are offline. Nothing was saved.'
         : route.kind === 'permission-denied' || route.kind === 'owner-2fa-required'
           ? 'Assigning needs an Owner session with two-factor verification.'

@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { SessionsList } from '@/components/auth/SessionsList';
 import { AppShell } from '@/components/layout/AppShell';
 import { Alert } from '@/components/ui/Alert';
 import { Avatar } from '@/components/ui/Avatar';
@@ -15,7 +16,7 @@ import { api, ApiError } from '@/lib/api';
 import type { EmployeeRow } from '@/lib/api/employees';
 import { identityAvailability, ownProfilePath, selfServicePaths } from '@/lib/api/identity';
 import { useAuth } from '@/lib/auth';
-import { PASSWORD_MIN_LENGTH } from '@/lib/passwordPolicy';
+import { PASSWORD_MIN_LENGTH, passwordRuleMessage } from '@/lib/passwordPolicy';
 import { useApi } from '@/lib/hooks/useApi';
 import { useTheme, type ThemePreference } from '@/lib/theme';
 
@@ -144,8 +145,8 @@ function ProfileContent() {
     } catch (err) {
       if (err instanceof ApiError && (err.code === 'REAUTH_FAILED' || err.code === 'INVALID_CREDENTIALS')) {
         setPasswordError('The current password is not correct.');
-      } else if (err instanceof ApiError && err.code === 'VALIDATION_ERROR') {
-        setPasswordError('The new password does not meet the rules (at least ' + PASSWORD_MIN_LENGTH + ' characters).');
+      } else if (err instanceof ApiError && passwordRuleMessage(err)) {
+        setPasswordError(passwordRuleMessage(err) ?? undefined);
       } else {
         toast.show({ tone: 'error', title: 'Password not changed', body: 'Nothing was changed. Try again.' });
       }
@@ -326,6 +327,7 @@ function ProfileContent() {
                 ))}
               </div>
             </fieldset>
+            <SessionsList />
             <div className="flex flex-wrap items-center gap-3">
               <Button variant="secondary" onClick={() => void logout()} leadingIcon={<Icon name="log-out" size={16} />}>
                 Sign out

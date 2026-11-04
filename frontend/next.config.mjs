@@ -3,6 +3,8 @@ const nextConfig = {
   reactStrictMode: true,
   devIndicators: false,
   output: 'standalone',
+  // T-05: do not advertise the framework (X-Powered-By: Next.js). nginx also drops it.
+  poweredByHeader: false,
   async rewrites() {
     return [
       {

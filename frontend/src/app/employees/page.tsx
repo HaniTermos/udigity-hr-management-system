@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useDeferredValue, useState } from 'react';
+import React, { useState } from 'react';
+import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import useSWR from 'swr';
 import { AppShell } from '@/components/layout/AppShell';
 import { Button } from '@/components/ui/Button';
@@ -27,17 +28,17 @@ function EmployeesView() {
   const [role, setRole] = useState<Role | ''>('');
   const [status, setStatus] = useState<'active' | 'deactivated' | ''>('');
   const [target, setTarget] = useState<EmployeeRow | 'new' | null>(null);
-  const q = useDeferredValue(search.trim());
+  const q = useDebouncedValue(search.trim());
   const timeZone = useCompanyTimezone();
   const toast = useToast();
 
   const query: EmployeeListQuery = { q, role, status, pageSize: 100 };
+  const allowed = useCapability(ACTIONS.employeeList);
   const key = employeesListKey(query);
-  const { data, error, isLoading, mutate } = useSWR(key, () => listEmployees(query));
+  const { data, error, isLoading, mutate } = useSWR(allowed ? key : null, () => listEmployees(query));
 
   const employees = data?.items ?? [];
   const filtered = Boolean(q || role || status);
-  const allowed = useCapability(ACTIONS.employeeList);
   const denied = !allowed || (error instanceof ApiError && error.isPermissionDenied);
 
   // SHR-011: no header, Add employee or filters for someone who cannot open the directory.

@@ -104,7 +104,7 @@ function CreateBusiness() {
           formKey="create"
           categories={(categories ?? []).filter((c) => c.active).map((c) => ({ id: c.id, name: c.name }))}
           submitLabel="Save business"
-          footerNote="Created by and last updated by are set by the system when you save."
+          footerNote="The system records who created and last updated this business when you save."
           status={
             saveError
               ? { text: saveError, tone: 'danger' }

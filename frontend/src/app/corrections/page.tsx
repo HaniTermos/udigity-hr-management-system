@@ -5,6 +5,7 @@ import { ACTIONS } from '@/lib/actions';
 import { AppShell } from '@/components/layout/AppShell';
 import type { CorrectionTab } from '@/lib/api/corrections';
 import { NoticeAccess } from '@/components/ui/NoticeAccess';
+import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { SearchInput, Select } from '@/components/ui/Input';
 import { Tabs } from '@/components/ui/Tabs';
 import { ErrorState } from '@/components/businesses/AsyncState';
@@ -20,6 +21,7 @@ function CorrectionsContent() {
   const { allowed } = useBusinessAccess();
   const [tab, setTab] = useState<CorrectionTab>('open');
   const [q, setQ] = useState('');
+  const debouncedQ = useDebouncedValue(q);
   const [status, setStatus] = useState<'' | 'submitted' | 'in_review'>('');
   const [requestedBy, setRequestedBy] = useState('');
   const [age, setAge] = useState<'' | 'lt1d' | 'd1to3' | 'gt3d'>('');
@@ -28,7 +30,7 @@ function CorrectionsContent() {
 
   const { data, error, isLoading, mutate } = useCorrections({
     tab,
-    q: q.trim() || undefined,
+    q: debouncedQ.trim() || undefined,
     status: tab === 'open' ? status || undefined : undefined,
     requestedBy: requestedBy || undefined,
     age: age || undefined,

@@ -46,6 +46,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden bg-surface-page text-text-primary font-sans">
+      {/* A-13: first focus stop, visible only when focused (WCAG 2.4.1). */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[100] focus:rounded-md focus:bg-surface-default focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-text-primary focus:shadow-lg focus:ring-2 focus:ring-brand-accent"
+      >
+        Skip to main content
+      </a>
       {/* Desktop Sidebar (w-56 wide) */}
       <div className="hidden md:flex">
         <Sidebar />
@@ -89,7 +96,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         )}
 
         {/* Scrollable Page Body */}
-        <main className="flex-1 overflow-y-auto p-4 md:p-6 pb-20 md:pb-6">
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto p-4 md:p-6 pb-20 md:pb-6 focus:outline-none">
           <OfflineBanner className="mb-4" />
           {children}
         </main>

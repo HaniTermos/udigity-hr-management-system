@@ -43,6 +43,9 @@ export function DealDetailView({ id }: { id: string }) {
   const { user } = useAuth();
   const toast = useToast();
   const canCorrect = useCapability(ACTIONS.correctionSubmit);
+  // Owner-level powers come from capabilities, not from the role name (custom roles, B-11).
+  const isOwner = useCapability(ACTIONS.dealFinalize);
+  const canRetryProvisioning = useCapability(ACTIONS.projectProvisionRetry);
   const { data, error, isLoading, retry } = useApi<DealResponse>(dealsPaths.detail(id));
   const history = useApi<{ items: DealHistoryItem[] }>(data ? dealsPaths.history(id) : null);
   const meetings = useApi<{ items: Meeting[] }>(data ? meetingListPath({ dealId: id }) : null);
@@ -60,7 +63,6 @@ export function DealDetailView({ id }: { id: string }) {
   const closed = deal.stage === 'closed';
   const notProceeding = deal.stage === 'not_proceeding';
   const mine = Boolean(user && deal.assignedDeveloperId === user.id);
-  const isOwner = user?.role === 'owner';
   const pendingVerification = Boolean(deal.openClosureReview) && !closed;
   const missing: DealFactKey[] = deal.closureMissing.map((m) => (m === 'agreementReference' ? 'signature' : 'payment'));
 
@@ -97,7 +99,7 @@ export function DealDetailView({ id }: { id: string }) {
 
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
         <div className="min-w-0 space-y-2">
-          <h1 className="text-2xl leading-8 font-semibold tracking-tight text-text-primary">{deal.businessName ?? deal.code}</h1>
+          <h1 className="text-2xl leading-8 font-semibold tracking-tight text-text-primary [overflow-wrap:anywhere]">{deal.businessName ?? deal.code}</h1>
           <div className="flex flex-wrap items-center gap-2 text-[13px] text-text-secondary">
             <DealStageBadge stage={deal.stage} size="md" pendingVerification={pendingVerification} />
             {mine && <AssignedChip />}
@@ -171,8 +173,8 @@ export function DealDetailView({ id }: { id: string }) {
       {closed && (
         <ProvisioningNotice
           deal={deal}
-          isOwner={isOwner}
-          canCreate={isOwner || mine}
+          isOwner={canRetryProvisioning}
+          canCreate={canRetryProvisioning || mine}
           onChanged={() => {
             void retry();
           }}

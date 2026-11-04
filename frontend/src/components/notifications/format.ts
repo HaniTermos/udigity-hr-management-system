@@ -5,7 +5,7 @@
 import type { IconName } from '@/components/ui/Icon';
 
 /** "just now", "5 minutes ago", "3 hours ago", "yesterday", "4 days ago", then a short date. */
-export function relativeTime(iso: string, now: Date = new Date()): string {
+export function relativeTime(iso: string, now: Date = new Date(), timeZone?: string | null): string {
   const at = new Date(iso);
   const ms = now.getTime() - at.getTime();
   if (Number.isNaN(ms)) return '';
@@ -17,7 +17,9 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
   const days = Math.floor(hours / 24);
   if (days === 1) return 'yesterday';
   if (days < 7) return `${days} days ago`;
-  return at.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: at.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
+  const zone = timeZone ? { timeZone } : {};
+  const year = (d: Date) => new Intl.DateTimeFormat('en-GB', { year: 'numeric', ...zone }).format(d);
+  return new Intl.DateTimeFormat('en-GB', { month: 'short', day: 'numeric', year: year(at) === year(now) ? undefined : 'numeric', ...zone }).format(at);
 }
 
 /** Only same-origin app paths are followed (never an absolute or protocol-relative URL). */

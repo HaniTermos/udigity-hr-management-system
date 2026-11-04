@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import useSWR from 'swr';
 import { useRouter } from 'next/navigation';
+import { useCompanyTime } from '@/lib/hooks/useCompanyTime';
 import { AppShell } from '@/components/layout/AppShell';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -25,6 +26,7 @@ const REFRESH_MS = 30_000;
 
 export default function NotificationsPage() {
   const router = useRouter();
+  const time = useCompanyTime();
   const [activeTab, setActiveTab] = useState<'all' | 'unread'>('all');
   const [page, setPage] = useState(1);
   const [busy, setBusy] = useState(false);
@@ -218,10 +220,10 @@ export default function NotificationsPage() {
                           </div>
                           <time
                             dateTime={item.createdAt}
-                            title={new Date(item.createdAt).toLocaleString()}
+                            title={time.format(item.createdAt)}
                             className="text-[11px] text-text-muted shrink-0 tabular-nums"
                           >
-                            {relativeTime(item.createdAt)}
+                            {relativeTime(item.createdAt, new Date(), time.timezone)}
                           </time>
                         </div>
                         <p className="text-xs text-text-secondary leading-relaxed mt-1">{item.message}</p>

@@ -34,7 +34,8 @@ function stepUpMessage(err: unknown): string {
 
 export default function ReportsPage() {
   const time = useCompanyTime();
-  const { data, error, route, isLoading, retry } = useApi<ListResponse>(reportsPaths.reports, { refreshInterval: 0 });
+  const allowed = useCapability(ACTIONS.reportRead);
+  const { data, error, route, isLoading, retry } = useApi<ListResponse>(allowed ? reportsPaths.reports : null, { refreshInterval: 0 });
   const [format, setFormat] = useState<'csv' | 'json'>('csv');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -43,7 +44,6 @@ export default function ReportsPage() {
   const [stepUp, setStepUp] = useState<{ id: string; error: string | null } | null>(null);
 
   const rangeInvalid = Boolean(from && to && from > to);
-  const allowed = useCapability(ACTIONS.reportRead);
   const denied = !allowed || (error instanceof ApiError && error.isPermissionDenied);
 
   async function run(reportId: string, totpCode?: string) {

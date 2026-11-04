@@ -18,7 +18,7 @@ export function Breadcrumb({ items }: { items: Crumb[] }) {
           return (
             <li key={`${c.label}-${i}`} className="flex items-center gap-1.5 min-w-0">
               {c.href && !last ? (
-                <Link href={c.href} className="text-text-link hover:underline underline-offset-2 truncate">
+                <Link href={c.href} className="text-text-link underline underline-offset-2 hover:no-underline truncate">
                   {c.label}
                 </Link>
               ) : (
@@ -61,7 +61,7 @@ export function PageHeader({
     <div className={cn('flex flex-col sm:flex-row sm:items-start justify-between gap-3', className)}>
       <div className="min-w-0 flex flex-col gap-1">
         {breadcrumb && <Breadcrumb items={breadcrumb} />}
-        <h1 className="ds-h1 text-text-primary">{title}</h1>
+        <h1 className="ds-h1 text-text-primary [overflow-wrap:anywhere]">{title}</h1>
         {meta}
         {(subtitle || chips) && (
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">

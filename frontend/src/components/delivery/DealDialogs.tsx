@@ -1,5 +1,6 @@
 'use client';
 
+import { useUnsavedGuard } from '@/lib/hooks/useUnsavedGuard';
 import React, { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
@@ -185,6 +186,14 @@ export function DealActionDialog({
       runDealCommand(deal.id, input.verb, { ...input.body, version: ctx.version } as never, ctx.idempotencyKey),
     { onSaved: (d) => onDone(d, TOAST[action.kind]) }
   );
+
+  // B-15: typed input is not lost to a sidebar click or a tab close without asking.
+  const dirty =
+    text.trim() !== '' ||
+    reference.trim() !== '' ||
+    (action.kind === 'contract' && (amount !== (deal.contract.amount ?? '') || currency !== (deal.contract.currency ?? ''))) ||
+    JSON.stringify(fix) !== JSON.stringify(initial);
+  useUnsavedGuard(dirty && status !== 'saving' && status !== 'saved');
 
   const reported = useRef<unknown>(null);
   useEffect(() => {

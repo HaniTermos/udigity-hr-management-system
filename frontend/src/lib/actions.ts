@@ -55,6 +55,8 @@ export const ACTIONS = {
   dealRead: 'deal.read',
   meetingRead: 'meeting.read',
   projectRead: 'project.read',
+  projectProvisionRetry: 'project.provision_retry',
+  dealFinalize: 'deal.finalize',
 } as const;
 
 export type ActionName = (typeof ACTIONS)[keyof typeof ACTIONS];
@@ -110,6 +112,8 @@ export const ROLE_DEFAULTS: Partial<Record<ActionName, readonly Role[]>> = {
   [ACTIONS.opportunitiesList]: ['owner'],
   [ACTIONS.meetingRead]: ['owner', 'developer'],
   [ACTIONS.projectRead]: ['owner', 'developer'],
+  [ACTIONS.projectProvisionRetry]: ['owner'],
+  [ACTIONS.dealFinalize]: ['owner'],
 };
 
 /** Role-default check for an action name (string, since callers hold plain strings). */

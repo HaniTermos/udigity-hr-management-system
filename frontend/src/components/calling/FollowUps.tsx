@@ -1,5 +1,7 @@
 'use client';
 
+import { useCapability } from '@/lib/hooks/useCapability';
+import { ACTIONS } from '@/lib/actions';
 import React, { useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/Badge';
@@ -238,7 +240,7 @@ export function WeekGrid({ items, weekStart, onOpen }: { items: FollowUpDto[]; w
   const last = Math.max(17, ...hs);
   const hours = Array.from({ length: last - first + 1 }, (_, i) => first + i);
   return (
-    <div className="rounded-xl border border-border-default bg-surface-default overflow-x-auto">
+    <div className="rounded-xl border border-border-default bg-surface-default overflow-x-auto" tabIndex={0} role="region" aria-label="Follow-ups table (scrolls sideways)">
       <div className="min-w-[720px]">
         <div className="grid grid-cols-[56px_repeat(7,minmax(0,1fr))] border-b border-border-subtle">
           <div />
@@ -344,7 +346,8 @@ function DrawerBody({
   const toast = useToast();
   const resched = mode === 'reschedule' && target !== null;
   const { user } = useAuth();
-  const isOwner = user?.role === 'owner';
+  // Naming another agent needs the staff list (Owner-level), checked by capability, not role name (B-11).
+  const isOwner = useCapability(ACTIONS.employeeList);
   const [businessId, setBusinessId] = useState(target?.businessId ?? presetBusinessId ?? '');
   const [responsibleId, setResponsibleId] = useState(target?.responsibleId ?? '');
   const [note, setNote] = useState('');

@@ -9,7 +9,7 @@ import { ToastProvider } from '@/components/ui/Toast';
 import { GlobalErrorRouting } from '@/components/layout/GlobalErrorRouting';
 
 export const metadata: Metadata = {
-  title: 'Udigity Management System',
+  title: { default: 'Udigity Management System', template: '%s | Udigity' },
   description: 'Udigity Internal Management System (Attendance, Data Entry, Outreach & Delivery)',
 };
 

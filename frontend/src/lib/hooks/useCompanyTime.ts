@@ -3,6 +3,8 @@
 import { useCallback, useMemo } from 'react';
 import { useApi } from './useApi';
 import { useAuth } from '@/lib/auth';
+import { ACTIONS } from '@/lib/actions';
+import { useCapability } from './useCapability';
 import type { SettingsDto } from '@/lib/api/admin';
 import { useToday } from '@/components/attendance/hooks';
 
@@ -37,10 +39,11 @@ const toDate = (v: string | Date) => (typeof v === 'string' ? new Date(v) : v);
  */
 export function useCompanyTime(): CompanyTime {
   const { user, sessionState } = useAuth();
+  const canReadSettings = useCapability(ACTIONS.settingsRead);
   // Everyone reads the timezone from their attendance day (`schedule.timezone`, BE1-C2); only the Owner may read the
   // full settings, so other roles never call it (it would be a 403).
   const { data: today } = useToday();
-  const key = user && sessionState === 'active' && user.role === 'owner' ? '/api/settings' : null;
+  const key = user && sessionState === 'active' && canReadSettings ? '/api/settings' : null;
   const { data } = useApi<SettingsDto>(key, { revalidateOnFocus: false, dedupingInterval: 60_000 });
 
   const company = data?.company as Record<string, unknown> | undefined;

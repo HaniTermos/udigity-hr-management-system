@@ -1,5 +1,7 @@
 'use client';
 
+import { useCapability } from '@/lib/hooks/useCapability';
+import { ACTIONS } from '@/lib/actions';
 import React, { useState } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
 import { ApiErrorView } from '@/components/states/ApiErrorView';
@@ -25,6 +27,7 @@ import {
   type WeekdayCode } from '@/lib/api/admin';
 import { identityPaths, type TwoFactorStatusDto } from '@/lib/api/identity';
 import { useAuth } from '@/lib/auth';
+import { useUnsavedGuard } from '@/lib/hooks/useUnsavedGuard';
 import { useApi } from '@/lib/hooks/useApi';
 
 type TabId = 'schedule' | 'company' | 'security' | 'access';
@@ -76,8 +79,9 @@ function saveErrorText(err: unknown, fallback: string): string {
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<TabId>('schedule');
-  const att = useApi<AttendanceSettingsDto>(attendanceSettingsPath, { revalidateOnFocus: false, refreshInterval: 0 });
-  const company = useApi<SettingsDto>(adminPaths.settings, { revalidateOnFocus: false, refreshInterval: 0 });
+  const allowed = useCapability(ACTIONS.settingsRead);
+  const att = useApi<AttendanceSettingsDto>(allowed ? attendanceSettingsPath : null, { revalidateOnFocus: false, refreshInterval: 0 });
+  const company = useApi<SettingsDto>(allowed ? adminPaths.settings : null, { revalidateOnFocus: false, refreshInterval: 0 });
 
   // A 403 on either read means this account may not open Settings at all.
   const denied = [att.route, company.route].find((r) => r?.kind === 'permission-denied' || r?.kind === 'session-ended' || r?.kind === 'owner-2fa-required');
@@ -175,6 +179,9 @@ function AttendanceForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
+  const formSnapshot = JSON.stringify([workingDays, shiftStart, graceMinutes, timezone, officeIps, officeHostnames, holidays, holidaysConfirmed, breakMinutes, maxBreaks]);
+  const [initialSnapshot] = useState(formSnapshot);
+  useUnsavedGuard(formSnapshot !== initialSnapshot && !saving);
 
   const timezones =
     timezone && !COMMON_TIMEZONES.some((t) => t.value === timezone) ? [{ value: timezone, label: timezone }, ...COMMON_TIMEZONES] : COMMON_TIMEZONES;
@@ -407,6 +414,7 @@ function CompanyForm({ data, onSaved, onReload }: { data: SettingsDto; onSaved: 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
+  useUnsavedGuard(name !== String(data.company['company.name'] ?? '') && !saving);
   const { user } = useAuth();
 
   async function submit(e: React.FormEvent) {

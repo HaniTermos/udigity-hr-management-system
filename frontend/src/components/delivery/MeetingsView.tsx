@@ -225,7 +225,7 @@ function WeekGrid({ weekStart, meetings, onOpen, fmt }: { weekStart: string; mee
   const todayKey = fmt.todayKey();
   const hours = Array.from({ length: LAST_HOUR - FIRST_HOUR + 1 }, (_, i) => FIRST_HOUR + i);
   return (
-    <div className="rounded-xl border border-border-default bg-surface-default overflow-x-auto">
+    <div className="rounded-xl border border-border-default bg-surface-default overflow-x-auto" tabIndex={0} role="region" aria-label="Week calendar (scrolls sideways)">
       <div className="min-w-[860px] grid grid-cols-[56px_repeat(7,1fr)]">
         <div className="border-b border-border-subtle" />
         {days.map((d) => {

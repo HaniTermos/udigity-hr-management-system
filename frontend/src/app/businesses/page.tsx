@@ -1,5 +1,6 @@
 'use client';
 
+import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import React, { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
@@ -23,9 +24,10 @@ function DirectoryContent() {
   const [filters, setFilters] = useState<DirectoryFilterState>({ ...EMPTY_FILTERS, q: params.get('q') ?? '' });
   const [page, setPage] = useState(1);
   const [order, setOrder] = useState<'asc' | 'desc'>('asc');
+  const debouncedQ = useDebouncedValue(filters.q);
 
   const { data, error, isLoading, mutate } = useBusinessList({
-    ...filtersToQuery(filters),
+    ...filtersToQuery({ ...filters, q: debouncedQ }),
     page,
     pageSize: PAGE_SIZE,
     sort: 'name',

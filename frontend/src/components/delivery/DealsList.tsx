@@ -14,6 +14,7 @@ import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import type { ProjectStatus } from '@/lib/api/projects';
 import {
   AssignedChip,
+  DealStageBadge,
   fmtDate,
   isProjectStatus,
   LoadError,
@@ -37,9 +38,15 @@ const STATUS_OPTIONS = [
   ...(Object.keys(PROJECT_STATUS_OPTION_LABEL) as ProjectStatus[]).map((s) => ({ value: s, label: PROJECT_STATUS_OPTION_LABEL[s] })),
 ];
 
+function tabClass(active: boolean): string {
+  return active
+    ? 'h-10 px-1 -mb-px border-b-2 border-brand-accent text-text-primary font-medium flex items-center gap-1.5 whitespace-nowrap'
+    : 'h-10 px-1 -mb-px border-b-2 border-transparent text-text-secondary hover:text-text-primary flex items-center gap-1.5 whitespace-nowrap';
+}
+
 export function DealsList() {
   const { user } = useAuth();
-  const [tab] = useState<'closed'>('closed');
+  const [tab, setTab] = useState<'closed' | 'accepted'>('closed');
   const [q, setQ] = useState('');
   const [scope, setScope] = useState<'all' | 'assigned_to_me'>('all');
   const [closed, setClosed] = useState('all');
@@ -50,14 +57,14 @@ export function DealsList() {
   // on page 2 is found and the count badge is the count of what is shown.
   const search = dealSearchTerm(useDebouncedValue(q));
   const { items, total, pageCount, error, isLoading, retry } = usePage<DealListItem>(dealsPaths.list, {
-    tab: 'closed',
+    tab,
     scope,
-    closedWithinDays: closed === 'all' ? undefined : Number(closed),
+    closedWithinDays: tab === 'closed' && closed !== 'all' ? Number(closed) : undefined,
     q: search,
     projectStatus: status === 'any' ? undefined : status,
     page,
     pageSize: PAGE_SIZE,
-    sort: 'closedAt',
+    sort: tab === 'closed' ? 'closedAt' : 'createdAt',
     order: 'desc',
   });
 
@@ -76,19 +83,27 @@ export function DealsList() {
           type="button"
           role="tab"
           aria-selected={tab === 'closed'}
-          className="h-10 px-1 -mb-px border-b-2 border-brand-accent text-text-primary font-medium flex items-center gap-1.5 whitespace-nowrap"
+          onClick={() => {
+            setTab('closed');
+            setPage(1);
+          }}
+          className={tabClass(tab === 'closed')}
         >
           Closed deals
-          {!error && !isLoading && <CountBadge count={total} tone="brand" />}
+          {tab === 'closed' && !error && !isLoading && <CountBadge count={total} tone="brand" />}
         </button>
         <button
           type="button"
           role="tab"
-          aria-selected={false}
-          disabled
-          className="h-10 px-1 -mb-px border-b-2 border-transparent text-text-disabled flex items-center gap-2 whitespace-nowrap"
+          aria-selected={tab === 'accepted'}
+          onClick={() => {
+            setTab('accepted');
+            setPage(1);
+          }}
+          className={tabClass(tab === 'accepted')}
         >
           Accepted opportunities
+          {tab === 'accepted' && !error && !isLoading && <CountBadge count={total} tone="brand" />}
         </button>
       </div>
 
@@ -114,7 +129,7 @@ export function DealsList() {
             }}
             wrapperClassName="w-full min-w-0"
           />
-          <Select
+          {tab === 'closed' && <Select
             aria-label="Closed within"
             options={CLOSED_OPTIONS}
             value={closed}
@@ -123,7 +138,7 @@ export function DealsList() {
               setPage(1);
             }}
             wrapperClassName="w-full min-w-0"
-          />
+          />}
           <Select
             aria-label="Project status"
             options={STATUS_OPTIONS}
@@ -136,7 +151,7 @@ export function DealsList() {
           />
         </div>
         <div className="flex justify-end">
-          <span className="text-xs text-text-muted">Sorted by closed date, newest first</span>
+          <span className="text-xs text-text-muted">{tab === 'closed' ? 'Sorted by closed date, newest first' : 'Sorted by date created, newest first'}</span>
         </div>
       </div>
 
@@ -151,8 +166,8 @@ export function DealsList() {
       ) : rows.length === 0 ? (
         <StateView
           type={filtered ? 'no-results' : 'empty'}
-          title={filtered ? 'No deals match' : 'No closed deals yet'}
-          body={filtered ? 'Try a different search, or clear filters.' : 'Closed deals you are eligible to see will appear here.'}
+          title={filtered ? 'No deals match' : tab === 'closed' ? 'No closed deals yet' : 'No accepted opportunities yet'}
+          body={filtered ? 'Try a different search, or clear filters.' : tab === 'closed' ? 'Closed deals you are eligible to see will appear here.' : 'Open deals you are allowed to see will appear here.'}
         />
       ) : (
         <TableContainer>
@@ -162,7 +177,7 @@ export function DealsList() {
                 <TH>Deal</TH>
                 <TH>Stage</TH>
                 <TH>Developer</TH>
-                <TH>Closed on</TH>
+                <TH>{tab === 'closed' ? 'Closed on' : 'Created on'}</TH>
                 <TH>Project status</TH>
                 <TH>For you</TH>
                 <TH aria-label="Actions" />
@@ -192,7 +207,7 @@ export function DealsList() {
       )}
 
       <p className="text-xs text-text-muted">
-        Closed deals only · no pre-closure or unassigned rows · rows you cannot access are omitted and not counted.
+        Rows you cannot access are omitted and not counted.
       </p>
     </div>
   );
@@ -222,14 +237,18 @@ function DealTableRow({ deal, mine }: { deal: DealListItem; mine: boolean }) {
         </Link>
       </TD>
       <TD>
-        <Badge tone="info" hasDot>
-          Verified closed
-        </Badge>
+        {deal.stage === 'closed' ? (
+          <Badge tone="info" hasDot>
+            Verified closed
+          </Badge>
+        ) : (
+          <DealStageBadge stage={deal.stage} />
+        )}
       </TD>
       <TD>
         <PersonCell name={deal.assignedDeveloperName} />
       </TD>
-      <TD>{fmtDate(deal.closedAt)}</TD>
+      <TD>{fmtDate(deal.closedAt ?? deal.createdAt)}</TD>
       <TD>
         <ProjectCell deal={deal} />
       </TD>

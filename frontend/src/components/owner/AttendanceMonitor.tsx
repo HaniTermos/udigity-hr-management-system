@@ -1,5 +1,6 @@
 'use client';
 
+import { verificationModeLabel } from '@/lib/verificationMode';
 import React, { useState } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
@@ -35,7 +36,7 @@ const STATUS: Record<MonitorStatus, { label: string; tone: BadgeTone }> = {
 };
 
 const VERIFICATION: Record<VerificationState, { primary: string; secondary: string }> = {
-  recorded: { primary: 'Recorded', secondary: 'mode unknown' },
+  recorded: { primary: 'Recorded', secondary: 'Mode not recorded' },
   remote: { primary: 'Remote', secondary: 'remote exception' },
   blocked: { primary: 'Check-in blocked', secondary: 'until corrected' },
   none: { primary: '—', secondary: '' },
@@ -231,7 +232,7 @@ function MonitorTableRow({ row: r, timeZone }: { row: MonitorRow & { dayOff?: bo
   const checkInVerification = r.session?.verification.checkIn;
   const v =
     r.verification === 'recorded' && checkInVerification
-      ? { primary: 'Recorded', secondary: `mode ${checkInVerification.mode ?? 'unknown'}` }
+      ? { primary: 'Recorded', secondary: verificationModeLabel(checkInVerification.mode) }
       : base;
   return (
     <TR className="border-t border-border-subtle" interactive={false}>
