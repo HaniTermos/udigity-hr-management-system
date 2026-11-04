@@ -120,6 +120,14 @@ Earlier text stays where it lived; this log records what the baseline changes. "
 | S-27 | Business edit hard-deletes removed phones, freeing them for duplicates (review D-11) | Implementation | Owner answer 2026-11-04: a phone removed by an edit is **kept as history and still blocks duplicates**, like archived businesses (D20) | D11, D20 |
 | S-28 | Public hostname (brief 2026-11-04 said `systemmanagement.udigity.com`) | Review brief | Owner answer 2026-11-04: **`https://hrsystem.udigity.com`**; the server is a Hostinger VPS that already runs other sites/a proxy on 80/443, so the app runs behind that proxy | Deployment |
 
+| S-29 | Approved design shows Developers closed deals only (review B-03/A-02) | Phase 6 preview SCR-DEV-001 | Owner answer 2026-11-04: the **assigned Developer also sees their accepted opportunities** (open deals) — D15 | D15 |
+| S-30 | Self-decision guard blocked the only Owner from correcting their own attendance (review H-01) | Review fix E-03 | Owner answer 2026-11-04: the **Owner may adjust/resolve their own attendance with a mandatory reason, audited as self-adjusted**; other roles stay blocked from self-decisions | D4 |
+| S-31 | Review fix C-20 refused archiving a business with an open deal or a live reservation | Review fix | Owner answer 2026-11-04: **archiving is allowed anyway**; the open deal and reservation stay as they are | D20 |
+| S-32 | Export row cap 1,000 | Implementation | Owner answer 2026-11-04: **10,000 rows** per synchronous streamed export; the user is told when it is reached | Fixed v1 scope |
+| S-33 | Staff accounts have no second factor (review controls checklist) | ASVS V6 | Owner answer 2026-11-04: **keep 2FA mandatory for the Owner only** (baseline); staff password-only is an accepted risk, mitigated by rate limits, breached-password refusal and session controls | Fixed v1 scope |
+
+| S-34 | Sign-in failures locked the whole account (anyone knowing the email could lock the Owner out; review E-01/F-01/H-05) | Implementation | Review fix 2026-11-04, Owner-approved batch: sign-in never locks the account. After 5 failed sign-ins per (email, client IP) within 15 min that pair gets 429 until the window ends; a correct sign-in clears the pair. From 10 failures per email (all addresses) each attempt is slowed (0.5 s doubling to 4 s), never refused. Failed sign-ins per IP are capped at 100 per 15 min; successes never count. The 15-min lock applies only to re-authentication (2FA enrolment, enrolment tokens, password change) and to 5 wrong TOTP codes. Reset links: at most 3 per email per hour | Security |
+
 **Approved as built (Owner, 2026-10-29: "I have approved every Figma file, step, work and question").** Every item the UI still marked as pending, a demonstration alternative or "No DEC ID" is approved with its current behaviour, and those markers are removed from the app:
 
 | ID shown in the UI | Item | Approved behaviour (as built) |

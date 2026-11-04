@@ -25,7 +25,7 @@ Legend: **O** = Owner decision/approval, **D** = developer with SSH, **H** = Hos
 2. Who owns 80/443 and is 8080 free: `ss -ltnp | grep -E ':(80|443|8080) '`. Which proxy: nginx, Apache, OpenLiteSpeed/CyberPanel, Caddy, Traefik/Coolify **[inspect]**; is it on the host or in Docker?
 3. Docker + Compose v2 installed? Other compose projects? Subnets in use: `docker network inspect $(docker network ls -q) --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}'`; **172.29.10/20/30.0/24 must be free** (else change them in `.env` and `TRUSTED_PROXY_CIDRS`) **[inspect]**
 4. Where the vhosts live and how certificates are issued/renewed for the other sites (certbot, panel, Caddy) **[inspect]**
-5. Firewall (hPanel + `ufw status`) and SSH access method: record, do not change **[inspect]**
+5. Firewall (hPanel + `ufw status`) and SSH access method: record, do not change **[inspect]**. The only addition planned is the worker egress rule (SMTP host:port only, `DOCKER-USER` chain, DEPLOY section 15): the Owner approves it, and the go-live record says whether it is in place.
 6. Hostinger snapshots/automatic backups: available, schedule, price (affects the S-23 recovery story) **[inspect]**
 7. Outbound SMTP to `smtp.gmail.com:465` reachable? `mail`/`sendmail`/`msmtp` present for the host monitor? **[inspect]**
 8. DNS zone for `udigity.com`: Hostinger or elsewhere? Is a CDN/proxy (Cloudflare) in front? If yes, the outer proxy template's CDN note applies **[inspect]**
@@ -42,7 +42,8 @@ Legend: **O** = Owner decision/approval, **D** = developer with SSH, **H** = Hos
 1. Host name: `hrsystem.udigity.com` in `devops/nginx/conf.d/udigity.conf`, env examples, runbooks (G-03). Remaining placeholders are intentional templates (`<owner e-mail>`, `SMTP_FROM=no-reply@example.com`, the CI/smoke dummy hosts).
 2. Behind-proxy topology: nginx on `127.0.0.1:8080`, real-IP handling, pinned subnets, exact `TRUSTED_PROXY_CIDRS=172.29.10.10/32` (G-01/02/04).
 3. Limits, grace periods, digests, SHA-pinned actions, persisted image tag, `deploy.sh`, `host-monitor.sh`, backup growth guards (G-05..G-10).
-4. Push the revision and get CI green once billing is fixed (account-side); otherwise run `devops/scripts/prod-smoke.sh` on a Linux machine on the exact commit to deploy (it needs Docker; on Windows the real-IP check is skipped). (D, O for billing)
+4. Push the revision and get CI green once billing is fixed (account-side); otherwise run `devops/scripts/predeploy-gate.sh all` (typecheck, lint, tests, `npm audit`, gitleaks, Trivy; DEPLOY section 14) and `devops/scripts/prod-smoke.sh` on a Linux machine on the exact commit to deploy (it needs Docker; on Windows the real-IP check is skipped). `deploy.sh` runs the gate itself; a skip needs `--skip-gate "reason"` and is logged. (D, O for billing)
+5. FIX2-OPS hardening in the repo (T-02..T-08, gaps 3-5, 7-9, 13-14): `cap_drop`/read-only on `db` and `nginx`, `--ignore-scripts`, `noexec` tmpfs, security headers from the edge only, `X-Powered-By` off, redacting outer-proxy access logs, non-superuser migration role `udigity_owner` (superuser is `udigity_admin`), single API replica, Dependabot. Review them with the DEPLOY.md sections 14-16.
 
 ## 4. Host setup (D)
 
@@ -54,7 +55,7 @@ Legend: **O** = Owner decision/approval, **D** = developer with SSH, **H** = Hos
 ## 5. Secrets (D generates on the server, O keeps copies; never in chat/tickets)
 
 1. `cp devops/env/*.env.example` -> `*.env`, `chmod 600`.
-2. `SESSION_SECRET`, `TOTP_ENC_KEY` (`openssl rand -hex 32`); three different DB passwords (owner, `udigity_api`, `udigity_backup`).
+2. `SESSION_SECRET`, `TOTP_ENC_KEY` (`openssl rand -hex 32`); four different DB passwords (bootstrap superuser `udigity_admin`, schema owner `udigity_owner`, `udigity_api`, `udigity_backup`). Rotation procedure for the two keys: DEPLOY section 16.
 3. `APP_ORIGIN=PUBLIC_APP_URL=https://hrsystem.udigity.com` (exactly: lower case, no trailing slash; the API refuses to start otherwise). `TRUSTED_PROXY_CIDRS=172.29.10.10/32`. `POLICY_COMPANY_TIMEZONE` (O).
 4. Real e-mail OFF for the first start (`SMTP_HOST` empty, `EMAIL_ALLOW_REAL_SEND=false`).
 5. **O** generates the age key pair on the Owner's machine (`age-keygen`), keeps two offline copies of the private key, sends only `age1...` for `AGE_RECIPIENT`.
@@ -72,7 +73,7 @@ Legend: **O** = Owner decision/approval, **D** = developer with SSH, **H** = Hos
 
 ## 7. Recovery proof (D + O) — required before go-live
 
-1. Copy backups off the server (encrypted) to the Owner's workstation; run restore drill (a) dump and (b) PITR with the private key; record in the DEPLOY drill log. RPO 15 min / RTO 4 h are objectives until this passes.
+1. **Go-live gate.** Copy backups off the server (encrypted) to the Owner's workstation; run restore drill (a) dump and (b) PITR with the private key (exact commands and the expected output to record: DEPLOY section 11); record both in the DEPLOY drill log. RPO 15 min / RTO 4 h are objectives until this passes; go-live does not proceed without both rows.
 2. Decide the off-server copy and/or Hostinger snapshot schedule (0.4, 1.6).
 3. Rehearse `deploy.sh rollback` once on the first update (previous tag kept, pre-update dump taken).
 
