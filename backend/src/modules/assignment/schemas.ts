@@ -7,13 +7,14 @@
  * B8: only this module creates or changes calling assignments (WF-WORK-001 hands Call Center items here).
  */
 import { z } from 'zod';
+import { safeString } from '../../shared/validation.js';
 import { defineMatrixActions } from '../access/schemas.js';
 
 /** authz-matrix §3.7: Owner only, admin (completed 2FA). B3-Q01 / B3-Q15 / DEC-021 are demonstration defaults. */
 export const ACTIONS = defineMatrixActions(['calling.assign', 'calling.reassign', 'calling.unassign', 'calling.autofill'] as const);
 
-const uuid = z.string().uuid();
-const reason = z.string().trim().min(3).max(500);
+const uuid = safeString().uuid();
+const reason = safeString().trim().min(3).max(500);
 
 /** B3-Q03: per open follow-up the Owner chooses; "transfer" is the UI preselection. No server default. */
 export const FollowUpChoice = z.discriminatedUnion('action', [
@@ -32,7 +33,7 @@ export const ListAssignmentsQuery = z
     assigneeId: uuid.optional(),
     status: z.enum(['assigned', 'unassigned', 'inaccessible']).optional(),
     /** BL-01 (additive): business name (contains, case-insensitive) or phone digits. */
-    q: z.string().trim().min(2).max(100).optional(),
+    q: safeString().trim().min(2).max(100).optional(),
     /** BL-01 (additive): only businesses with (`reserved`) or without (`free`) an active reservation. */
     reservation: z.enum(['reserved', 'free']).optional(),
   })

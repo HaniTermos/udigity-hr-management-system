@@ -21,6 +21,8 @@ import { outbox } from '../../shared/outbox.js';
 import { orderByClause, pageClause, toPage, type PageResult } from '../../shared/pagination.js';
 import { SqlParams } from '../../shared/sql.js';
 import { audit, type CommandContext } from '../../shared/tx.js';
+import { getCompanyTimezone } from '../attendance/service.js';
+import { workDateOf } from '../attendance/time.js';
 import { dealCurrencies, deliveryPolicy, DEMO_LABEL, type DeliveryPolicy } from './policy.js';
 import * as repo from './repo.js';
 import type { DealRow } from './repo.js';
@@ -337,7 +339,7 @@ export async function listDeals(db: Queryable, p: Principal, q: DealListQuery): 
     db,
     where,
     params,
-    orderByClause(q, DEAL_SORT, 'createdAt'),
+    orderByClause(q, DEAL_SORT, 'createdAt', 'd.id'),
     pageClause(q, params)
   );
   const [names, biz, info] = await inSequence([
@@ -447,6 +449,15 @@ const financialsOf = (d: DealRow) => ({
 });
 
 /** DEC-018 `deals.currencies`: a currency must be in the configured list (empty list = policy pending). */
+/** C-07: payment / signature dates are facts that already happened: not after company-timezone today. */
+async function assertNotFuture(ctx: CommandContext, date: string | null | undefined, field: string): Promise<void> {
+  if (!date) return;
+  const today = workDateOf(ctx.now, (await getCompanyTimezone(ctx.tx)) ?? '');
+  if (date > today) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Validation failed', { [field]: [`The date cannot be in the future (today is ${today})`] });
+  }
+}
+
 async function assertCurrency(ctx: CommandContext, currency: string | null | undefined, field: string): Promise<void> {
   if (currency === undefined || currency === null) return;
   const currencies = await dealCurrencies(ctx.tx);
@@ -541,7 +552,7 @@ export async function listOpportunities(
   if (q.developerAssigned === false) where.push('d.assigned_developer_id IS NULL');
   where.push(developerConfinement(p, params, deliveryPolicy()));
   where.push(access.scopeFilter(p, 'deal.read', 'deal', { alias: 'd', params }));
-  const { rows, total } = await repo.listDeals(db, where, params, 'ORDER BY d.created_at DESC', pageClause(q, params));
+  const { rows, total } = await repo.listDeals(db, where, params, 'ORDER BY d.created_at DESC, d.id DESC', pageClause(q, params));
   const [names, biz] = await inSequence([
     () => employeeNames(db, rows.map((r) => r.assigned_developer_id)),
     () => businessNames(db, rows.map((r) => r.business_id)),
@@ -581,7 +592,7 @@ export async function listClosedDealSummaries(db: Queryable, p: Principal, limit
   const params = new SqlParams();
   const where = [`d.stage = 'closed'`, developerConfinement(p, params, deliveryPolicy())];
   where.push(access.scopeFilter(p, 'deal.read', 'deal', { alias: 'd', params }));
-  const { rows } = await repo.listDeals(db, where, params, 'ORDER BY d.closed_at DESC NULLS LAST', `LIMIT ${params.add(limit)}`);
+  const { rows } = await repo.listDeals(db, where, params, 'ORDER BY d.closed_at DESC NULLS LAST, d.id DESC', `LIMIT ${params.add(limit)}`);
   return rows.map(summary);
 }
 
@@ -703,6 +714,7 @@ export async function recordSignature(ctx: CommandContext, id: string, body: { v
   }
   if (!isPipeline(d.stage) && d.stage !== 'paid') throw stateConflict();
   await assertVersion(ctx, d, body.version);
+  await assertNotFuture(ctx, body.date, 'date');
   const stage: DealStage = d.stage === 'paid' ? 'signed_and_paid' : 'signed';
   const next = await save(ctx, d, {
     stage,
@@ -735,6 +747,7 @@ export async function recordPayment(
   }
   if (!isPipeline(d.stage) && d.stage !== 'signed') throw stateConflict();
   await assertVersion(ctx, d, body.version);
+  await assertNotFuture(ctx, body.date, 'date');
   // DEC-018 (SET, NEEDS VALUE): an amount needs a configured currency list.
   await assertCurrency(ctx, body.currency, 'currency');
   const stage: DealStage = d.stage === 'signed' ? 'signed_and_paid' : 'paid';
@@ -887,7 +900,17 @@ export async function correctFinancials(ctx: CommandContext, id: string, body: F
   if (contract !== undefined && !sameMoney(contract, d.contract_amount)) set.contract_amount = contract;
   if (Object.keys(set).length === 0) return result(ctx, d); // nothing differs: no-op
   await assertVersion(ctx, d, body.version);
+  await assertNotFuture(ctx, body.signatureDate, 'signatureDate');
+  await assertNotFuture(ctx, body.paymentDate, 'paymentDate');
   const pick = <T>(col: repo.DealColumn, current: T): T => (col in set ? (set[col] as T) : current);
+  // D-04 / D16: a deal closed before agreement references were required keeps its old row (constraint
+  // NOT VALID) but every UPDATE re-checks it. The Owner's correction must therefore supply the missing
+  // agreement reference (closure evidence is corrected, never left out); 400 with a field error, never 500.
+  if (!pick('signature_reference', d.signature_reference)) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Validation failed', {
+      agreementReference: ['This deal was closed before agreement references were required. Add the agreement reference in this correction.'],
+    });
+  }
   assertAmountCurrency(pick('payment_amount', d.payment_amount), pick('payment_currency', d.payment_currency), 'paymentCurrency');
   assertAmountCurrency(pick('contract_amount', d.contract_amount), pick('contract_currency', d.contract_currency), 'contractCurrency');
   if ('payment_currency' in set) await assertCurrency(ctx, set.payment_currency as string | null, 'paymentCurrency');

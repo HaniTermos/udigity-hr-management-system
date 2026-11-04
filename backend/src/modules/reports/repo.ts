@@ -279,7 +279,7 @@ export async function queryExportRows(
            FROM attendance_sessions s
            JOIN employees e ON e.id = s.employee_id
           WHERE ${range('s.check_in_at')}
-          ORDER BY s.check_in_at DESC
+          ORDER BY s.check_in_at DESC, s.id DESC
           LIMIT $1`,
         [max, from, to]
       );
@@ -294,7 +294,7 @@ export async function queryExportRows(
            JOIN businesses b ON b.id = ca.business_id
            JOIN employees e ON e.id = ca.agent_id
           WHERE ${range('ca.attempted_at')}
-          ORDER BY ca.attempted_at DESC
+          ORDER BY ca.attempted_at DESC, ca.id DESC
           LIMIT $1`,
         [max, from, to]
       );
@@ -306,7 +306,7 @@ export async function queryExportRows(
       // explicit *_missing flag, never 0. payment_received = a payment (first payment/deposit) is recorded.
       const { rows } = await db.query(
         `SELECT d.id, b.name AS business_name, d.stage, d.signature_reference AS agreement_reference,
-                d.signature_date, d.payment_date,
+                d.signature_date::text AS signature_date, d.payment_date::text AS payment_date,
                 d.contract_amount, d.contract_currency, (d.contract_amount IS NULL) AS contract_amount_missing,
                 (d.payment_date IS NOT NULL) AS payment_received,
                 d.payment_amount AS payment_received_amount, d.payment_currency AS payment_received_currency,
@@ -316,7 +316,7 @@ export async function queryExportRows(
            JOIN businesses b ON b.id = d.business_id
            LEFT JOIN projects p ON p.deal_id = d.id
           WHERE ${range('d.created_at')}
-          ORDER BY d.created_at DESC
+          ORDER BY d.created_at DESC, d.id DESC
           LIMIT $1`,
         [max, from, to]
       );
@@ -329,7 +329,7 @@ export async function queryExportRows(
            FROM businesses b
            JOIN categories c ON c.id = b.category_id
           WHERE b.archived_at IS NULL AND ${range('b.created_at')}
-          ORDER BY b.created_at DESC
+          ORDER BY b.created_at DESC, b.id DESC
           LIMIT $1`,
         [max, from, to]
       );

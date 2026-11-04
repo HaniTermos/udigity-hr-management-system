@@ -6,6 +6,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { pool, withTransaction } from '../../db/pool.js';
+import { idempotent } from '../platform/idempotency.js';
 import { authenticate } from '../../middleware/auth.js';
 import { requireAction } from '../../shared/access.js';
 import { notFound } from '../../shared/errors.js';
@@ -110,7 +111,7 @@ router.get('/', authenticate, requireAction('employee.list'), async (req: Reques
 });
 
 // POST /api/employees (Owner) → E-01
-router.post('/', authenticate, requireAction('employee.create'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, requireAction('employee.create'), idempotent('employee.create', { required: false }), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = CreateEmployeeSchema.parse(req.body);
     const outcome = await runCommand(req, (ctx) => service.createEmployee(ctx, body));

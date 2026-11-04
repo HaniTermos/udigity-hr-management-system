@@ -5,6 +5,7 @@
  * "Demonstration alternative - not approved (docs/policy-defaults.md)".
  */
 import { z } from 'zod';
+import { isoDate, safeString } from '../../shared/validation.js';
 import { PageQuerySchema } from '../../shared/pagination.js';
 import { defineMatrixActions } from '../access/schemas.js';
 
@@ -38,12 +39,12 @@ export const DEAL_ACTIONS = defineMatrixActions([
 // ---------------------------------------------------------------------------
 // Shared primitives
 // ---------------------------------------------------------------------------
-export const IdParam = z.object({ id: z.string().uuid() }).strict();
+export const IdParam = z.object({ id: safeString().uuid() }).strict();
 const Version = z.number().int().min(1);
-const Reason = z.string().trim().min(3).max(1000);
-const Reference = z.string().trim().min(1).max(200);
+const Reason = safeString().trim().min(3).max(1000);
+const Reference = safeString().trim().min(1).max(200);
 /** yyyy-mm-dd, a company-calendar date (never a timestamp). */
-const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
+const IsoDate = isoDate('Expected a real date as YYYY-MM-DD');
 /** Query-string boolean: only "true" / "false" (z.coerce.boolean would read "false" as true). */
 export const BoolQuery = z.enum(['true', 'false']).transform((v) => v === 'true');
 
@@ -88,7 +89,7 @@ export type ClosureEvidence = 'agreementReference' | 'paymentDate';
 /** GET /api/deals. `assignedToMe` and `needsAttention` are derived filters. */
 export const ListDealsQuery = PageQuerySchema.extend({
   stage: z.enum(DEAL_STAGES).optional(),
-  developerId: z.string().uuid().optional(),
+  developerId: safeString().uuid().optional(),
   assignedToMe: BoolQuery.optional(),
   needsAttention: z.enum(['developer_not_assigned', 'closure_verification_requested']).optional(),
   tab: z.enum(['closed', 'accepted']).optional(),
@@ -99,13 +100,13 @@ export const ListDealsQuery = PageQuerySchema.extend({
   /** Closed in the last N days (Developer closed-deals list). */
   closedWithinDays: z.coerce.number().int().min(1).max(3660).optional(),
   /** FX-BE-C5: deal code or business name contains (case-insensitive), 2..80 chars. */
-  q: z.string().trim().min(2).max(80).optional(),
+  q: safeString().trim().min(2).max(80).optional(),
   /** FX-BE-C5: project status of the deal's project, or `none` (no project yet). */
   projectStatus: z.enum(['scheduled', 'in_progress', 'waiting_for_client', 'blocked', 'delivered', 'completed', 'cancelled', 'none']).optional(),
 }).strict();
 
 /** POST /:id/developer - assign or reassign (E2). Active Developer only. */
-export const AssignDeveloperBody = z.object({ version: Version, developerId: z.string().uuid() }).strict();
+export const AssignDeveloperBody = z.object({ version: Version, developerId: safeString().uuid() }).strict();
 
 /** POST /:id/advance-stage - forward-only pipeline move (D16); a backward move is 409. */
 export const AdvanceStageBody = z.object({ version: Version, to: z.enum(ADVANCE_TARGETS) }).strict();
@@ -118,7 +119,7 @@ export const RecordSignatureBody = z.object({
 }).strict();
 
 const Amount = z.number().nonnegative().max(999_999_999_999.99).multipleOf(0.01);
-const Currency = z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/);
+const Currency = safeString().trim().toUpperCase().regex(/^[A-Z]{3}$/);
 
 /**
  * POST /:id/payment. A first payment or deposit counts (D16). The payment date is evidence; the payment
@@ -165,7 +166,7 @@ export const FinancialCorrectionBody = z.object({
 export type FinancialCorrectionInput = z.infer<typeof FinancialCorrectionBody>;
 
 /** POST /:id/closure-request (ownerVerify mode only). */
-export const ClosureRequestBody = z.object({ version: Version, note: z.string().trim().max(1000).optional() }).strict();
+export const ClosureRequestBody = z.object({ version: Version, note: safeString().trim().max(1000).optional() }).strict();
 /** POST /:id/closure-verify (Owner verifies AND finalizes in one command). */
 export const ClosureVerifyBody = z.object({ version: Version }).strict();
 /** POST /:id/closure-reject */

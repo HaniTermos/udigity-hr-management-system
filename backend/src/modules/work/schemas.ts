@@ -3,6 +3,7 @@
  * Contract: docs/implementation/plan.md §4.1, docs/security/authz-matrix.md §3.9.
  */
 import { z } from 'zod';
+import { boundedInt, isoDate, isoDateOrDateTime, MAX_TARGET_VALUE, safeString } from '../../shared/validation.js';
 import { defineMatrixActions } from '../access/matrix.js';
 import { TARGET_METRICS, type ProgressNote } from './progress.js';
 
@@ -21,13 +22,14 @@ export const WORK_ACTIONS = defineMatrixActions([
  */
 export const CreateTargetSchema = z
   .object({
-    employeeId: z.string().uuid(),
+    employeeId: safeString().uuid(),
     metric: z.enum(TARGET_METRICS),
     period: z.enum(['daily', 'weekly', 'monthly', 'quarterly']),
-    targetValue: z.number().positive(),
-    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    territory: z.string().max(120).optional(),
+    // C-17: a whole number of activities, 1..MAX_TARGET_VALUE (no 0.5, no overflow values).
+    targetValue: boundedInt(1, MAX_TARGET_VALUE),
+    startDate: isoDate(),
+    endDate: isoDate().optional(),
+    territory: safeString().max(120).optional(),
   })
   .strict();
 
@@ -36,10 +38,10 @@ export type CreateTargetInput = z.infer<typeof CreateTargetSchema>;
 export const UpdateTargetSchema = z
   .object({
     version: z.number().int().positive(),
-    targetValue: z.number().positive().optional(),
+    targetValue: boundedInt(1, MAX_TARGET_VALUE).optional(),
     /** The period defines the dates, so it cannot change; accepted only when equal to the current one. */
     period: z.enum(['daily', 'weekly', 'monthly', 'quarterly']).optional(),
-    territory: z.string().max(120).optional(),
+    territory: safeString().max(120).optional(),
   })
   .strict();
 
@@ -47,12 +49,12 @@ export type UpdateTargetInput = z.infer<typeof UpdateTargetSchema>;
 
 export const CreateWorkItemSchema = z
   .object({
-    assigneeId: z.string().uuid(),
-    title: z.string().min(1).max(200),
-    description: z.string().max(2000).optional(),
-    dueDate: z.string().optional(),
-    sourceType: z.string().max(60).optional(),
-    sourceId: z.string().max(64).optional(),
+    assigneeId: safeString().uuid(),
+    title: safeString().min(1).max(200),
+    description: safeString().max(2000).optional(),
+    dueDate: isoDateOrDateTime().optional(),
+    sourceType: safeString().max(60).optional(),
+    sourceId: safeString().max(64).optional(),
   })
   .strict();
 
@@ -61,10 +63,10 @@ export type CreateWorkItemInput = z.infer<typeof CreateWorkItemSchema>;
 export const UpdateWorkItemSchema = z
   .object({
     version: z.number().int().positive(),
-    title: z.string().min(1).max(200).optional(),
-    description: z.string().max(2000).optional(),
+    title: safeString().min(1).max(200).optional(),
+    description: safeString().max(2000).optional(),
     status: z.enum(['open', 'in_progress', 'completed', 'cancelled']).optional(),
-    dueDate: z.string().optional().nullable(),
+    dueDate: isoDateOrDateTime().optional().nullable(),
   })
   .strict();
 
@@ -76,7 +78,7 @@ export const WorkItemsQuerySchema = z
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(1).max(100).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
-    sort: z.string().max(40).optional(),
+    sort: safeString().max(40).optional(),
     order: z.enum(['asc', 'desc']).default('desc'),
     status: z.enum(['open', 'in_progress', 'completed', 'cancelled']).optional(),
     /** `open` = open + in_progress (My Day). */
@@ -89,9 +91,9 @@ export const TargetsQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(1).max(100).default(25),
-    sort: z.string().max(40).optional(),
+    sort: safeString().max(40).optional(),
     order: z.enum(['asc', 'desc']).default('desc'),
-    employeeId: z.string().uuid().optional(),
+    employeeId: safeString().uuid().optional(),
     scope: z.enum(['self', 'all']).optional(),
   })
   .strict();

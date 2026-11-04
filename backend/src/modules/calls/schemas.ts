@@ -7,6 +7,7 @@
  * Approved rule U-01: "Save, keep reservation" is allowed for every outcome except Rejected.
  */
 import { z } from 'zod';
+import { isoDateTime as isoDateTimeStrict, safeString } from '../../shared/validation.js';
 import { defineActions } from '../../shared/access.js';
 import { defineMatrixActions } from '../access/schemas.js';
 import type { RenewResultDto } from '../reservation/schemas.js';
@@ -31,10 +32,10 @@ export const LIST_ACTIONS = defineActions({
   'call_attempt.list_opportunities': { roles: ['owner'], description: 'CC-007 accepted opportunities (Owner view; D15)' },
 });
 
-const uuid = z.string().uuid();
+const uuid = safeString().uuid();
 const version = z.number().int().min(1);
-const isoDateTime = z.string().datetime({ offset: true });
-const text = (max: number) => z.string().trim().max(max);
+const isoDateTime = isoDateTimeStrict();
+const text = (max: number) => safeString().trim().max(max);
 
 export const IdParam = z.object({ id: uuid }).strict();
 export const BusinessIdParam = z.object({ id: uuid }).strict();

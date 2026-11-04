@@ -27,7 +27,7 @@ export async function withProgress(db: Queryable, items: TargetDto[], pctx?: Pro
 export async function listTargets(
   db: Queryable,
   principal: Principal,
-  options: { employeeId?: string; limit?: number; offset?: number } = {}
+  options: { employeeId?: string; limit?: number; offset?: number; sort?: string; order?: 'asc' | 'desc' } = {}
 ): Promise<{ items: TargetDto[]; total: number }> {
   const targetEmployeeId = principal.role === 'owner' ? options.employeeId : principal.employeeId;
   const page = await repo.listTargets(db, { ...options, employeeId: targetEmployeeId });
@@ -67,6 +67,10 @@ export async function createTarget(req: Request, input: CreateTargetInput): Prom
   return runCommand(req, async (ctx) => {
     const pctx = await progressContext(ctx.tx);
     const endDate = resolvePeriod(input, pctx.today);
+    const clash = await repo.findOverlappingTarget(ctx.tx, { employeeId: input.employeeId, metric: input.metric, period: input.period, startDate: input.startDate, endDate });
+    if (clash) {
+      throw new HttpError(409, 'CONFLICT_DUPLICATE', 'This employee already has a target for this measure and period', { existingTargetId: clash });
+    }
     const created = await repo.insertTarget(ctx.tx, { ...input, endDate });
     const [target] = await withProgress(ctx.tx, [created], pctx);
     await audit(ctx, {
@@ -136,7 +140,7 @@ export async function updateTarget(req: Request, id: string, input: UpdateTarget
 export async function listWorkItems(
   db: Queryable,
   principal: Principal,
-  options: { status?: string; openOnly?: boolean; limit?: number; offset?: number } = {}
+  options: { status?: string; openOnly?: boolean; limit?: number; offset?: number; sort?: string; order?: 'asc' | 'desc' } = {}
 ): Promise<{ items: WorkItemDto[]; total: number }> {
   const assigneeId = principal.role === 'owner' ? undefined : principal.employeeId;
   const page = await repo.listWorkItems(db, { ...options, assigneeId });
@@ -169,7 +173,8 @@ async function withMyDayFields(db: Queryable, principal: Principal, items: WorkI
       for (const r of rows) names.set(r.id, r.name);
     }
   }
-  const today = new Date().toISOString().slice(0, 10);
+  // C-13: "today" is the company-timezone date on the platform clock (not the UTC date).
+  const { today } = await progressContext(db);
   return items.map((w) => {
     const due = w.dueDate ? w.dueDate.slice(0, 10) : null;
     const bizName = w.sourceId ? names.get(w.sourceId) : undefined;

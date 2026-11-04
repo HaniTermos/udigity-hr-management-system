@@ -5,6 +5,7 @@
  * Timing values come from the policy registry (reservation.*, DEC-004 "Demonstration alternative — not approved").
  */
 import { z } from 'zod';
+import { safeString } from '../../shared/validation.js';
 import { defineMatrixActions } from '../access/schemas.js';
 
 /** authz-matrix §3.7: acquire/renew/release = Owner + Call Center (Asg, B7); override = Owner admin. */
@@ -15,8 +16,8 @@ export const ACTIONS = defineMatrixActions([
   'reservation.override',
 ] as const);
 
-const uuid = z.string().uuid();
-const reason = z.string().trim().min(3).max(500);
+const uuid = safeString().uuid();
+const reason = safeString().trim().min(3).max(500);
 
 export const ReservationIdParam = z.object({ id: uuid }).strict();
 

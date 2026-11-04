@@ -3,6 +3,7 @@
  * Contract: docs/implementation/plan.md §4.1, docs/security/authz-matrix.md §3.10.
  */
 import { z } from 'zod';
+import { isoDate, safeString } from '../../shared/validation.js';
 import { defineMatrixActions } from '../access/matrix.js';
 
 export const REPORT_ACTIONS = defineMatrixActions([
@@ -14,8 +15,8 @@ export const REPORT_ACTIONS = defineMatrixActions([
 export const DashboardQuerySchema = z
   .object({
     period: z.enum(['today', '7d', '30d', 'custom']).optional().default('7d'),
-    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'from date must be YYYY-MM-DD').optional(),
-    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'to date must be YYYY-MM-DD').optional(),
+    from: isoDate('from date must be a real date as YYYY-MM-DD').optional(),
+    to: isoDate('to date must be a real date as YYYY-MM-DD').optional(),
   })
   .strict();
 
@@ -24,10 +25,10 @@ export const ExportQuerySchema = z
     /** A-18: the four report ids (and their legacy aliases) only. */
     report: z.enum(['rep-1', 'rep-2', 'rep-3', 'rep-4', 'timesheet', 'calling', 'deals', 'businesses']),
     format: z.enum(['csv', 'json']).optional().default('csv'),
-    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'from date must be YYYY-MM-DD').optional(),
-    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'to date must be YYYY-MM-DD').optional(),
+    from: isoDate('from date must be a real date as YYYY-MM-DD').optional(),
+    to: isoDate('to date must be a real date as YYYY-MM-DD').optional(),
     /** R2-02 / EX-2 step-up: a current TOTP code, needed when this session has no step-up in the last 10 min. */
-    totpCode: z.string().trim().regex(/^\d{6}$/).optional(),
+    totpCode: safeString().trim().regex(/^\d{6}$/).optional(),
   })
   .strict();
 

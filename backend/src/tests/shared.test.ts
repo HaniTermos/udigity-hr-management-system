@@ -39,7 +39,10 @@ describe('shared/flags (policy registry)', () => {
 describe('shared/pagination + sql', () => {
   it('builds whitelisted ORDER BY and parameterised LIMIT/OFFSET', () => {
     const q = PageQuerySchema.parse({ page: '3', pageSize: '10', sort: 'name; DROP TABLE x', order: 'asc' });
-    expect(orderByClause(q, { createdAt: 'b.created_at', name: 'b.name' }, 'createdAt')).toBe('ORDER BY b.created_at ASC');
+    // C-11: an unknown sort is a 400, never silently ignored.
+    expect(() => orderByClause(q, { createdAt: 'b.created_at', name: 'b.name' }, 'createdAt')).toThrow(/Validation failed/);
+    const ok = PageQuerySchema.parse({ sort: 'name', order: 'asc' });
+    expect(orderByClause(ok, { createdAt: 'b.created_at', name: 'b.name' }, 'createdAt', 'b.id')).toBe('ORDER BY b.name ASC, b.id ASC');
     const p = new SqlParams();
     p.add('x');
     expect(pageClause(q, p)).toBe('LIMIT $2 OFFSET $3');

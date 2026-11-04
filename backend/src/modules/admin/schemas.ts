@@ -2,6 +2,7 @@
  * MOD-admin — Zod request schemas (.strict()) and VT-3 action declarations. Owner: BE1.
  */
 import { z } from 'zod';
+import { isoDateOrDateTime, safeString } from '../../shared/validation.js';
 import { defineActions, type Action, type ActionPolicy } from '../../shared/access.js';
 import { defineMatrixActions } from '../access/schemas.js';
 import { PageQuerySchema } from '../../shared/pagination.js';
@@ -34,14 +35,14 @@ export const A = {
 } as const;
 
 const SettingValue = z.union([
-  z.string().max(2000),
+  safeString().max(2000),
   z.number().finite(),
   z.boolean(),
-  z.array(z.union([z.string().max(200), z.number().finite()])).max(400),
+  z.array(z.union([safeString().max(200), z.number().finite()])).max(400),
   z.null(), // null = remove the saved value (back to the env default)
 ]);
 
-const ValuesRecord = z.record(z.string().max(80), SettingValue);
+const ValuesRecord = z.record(safeString().max(80), SettingValue);
 
 /**
  * PATCH /api/settings. `values` (any editable key), or FE2's split `company` (company.* keys) and
@@ -53,23 +54,23 @@ export const PatchSettingsSchema = z
     values: ValuesRecord.optional(),
     company: ValuesRecord.optional(),
     policies: ValuesRecord.optional(),
-    reason: z.string().trim().max(500).optional(),
+    reason: safeString().trim().max(500).optional(),
   })
   .strict()
   .transform((b) => ({ version: b.version, reason: b.reason, values: { ...b.policies, ...b.company, ...b.values } }))
   .refine((b) => Object.keys(b.values).length > 0, { message: 'No changes', path: ['values'] });
 
 export const AuditQuerySchema = PageQuerySchema.extend({
-  event: z.string().trim().max(100).regex(/^[a-z0-9_.*]+$/).optional(),
-  actorId: z.string().uuid().optional(),
-  entityType: z.string().trim().max(100).regex(/^[a-z0-9_]+$/).optional(),
-  entityId: z.string().trim().max(255).optional(),
+  event: safeString().trim().max(100).regex(/^[a-z0-9_.*]+$/).optional(),
+  actorId: safeString().uuid().optional(),
+  entityType: safeString().trim().max(100).regex(/^[a-z0-9_]+$/).optional(),
+  entityId: safeString().trim().max(255).optional(),
   /** FE2 name for entityId (business, employee or record reference). */
-  entityRef: z.string().trim().max(255).optional(),
-  /** ISO date-time, or a YYYY-MM-DD date (UTC day start; company-time ranges once timezone is set). */
-  from: z.union([z.string().datetime({ offset: true }), z.string().regex(/^\d{4}-\d{2}-\d{2}$/)]).optional(),
+  entityRef: safeString().trim().max(255).optional(),
+  /** ISO date-time, or a YYYY-MM-DD date (a company-timezone calendar day: start of that day; UTC when no timezone is configured). */
+  from: isoDateOrDateTime().optional(),
   /** Exclusive. A YYYY-MM-DD date means "up to the end of that day". */
-  to: z.union([z.string().datetime({ offset: true }), z.string().regex(/^\d{4}-\d{2}-\d{2}$/)]).optional(),
+  to: isoDateOrDateTime().optional(),
 }).strict();
 
 export type AuditQuery = z.infer<typeof AuditQuerySchema>;

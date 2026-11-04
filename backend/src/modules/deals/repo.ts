@@ -5,6 +5,7 @@
  */
 import type { Queryable } from '../../db/pool.js';
 import { SqlParams } from '../../shared/sql.js';
+import { keepPagePlaceholders } from '../../shared/pagination.js';
 import type { DealStage } from './schemas.js';
 
 export interface DealRow {
@@ -302,7 +303,20 @@ export async function listDeals(
       ${orderBy} ${page}`,
     params.values
   );
-  return { rows, total: rows[0] ? Number(rows[0].total) : 0 };
+  if (rows[0]) return { rows, total: Number(rows[0].total) };
+  return { rows, total: await countWhere(db, where, params, page) };
+}
+
+/**
+ * C-06: `COUNT(*) OVER()` yields nothing on an empty page, so a page past the end would report total 0.
+ * Access filters can add parameters after the LIMIT/OFFSET ones, so the page placeholders stay referenced.
+ */
+async function countWhere(db: Queryable, where: string[], params: SqlParams, page: string): Promise<number> {
+  const { rows } = await db.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM deals d WHERE ${where.length ? where.join(' AND ') : 'TRUE'}${keepPagePlaceholders(page)}`,
+    params.values
+  );
+  return Number(rows[0]?.n ?? 0);
 }
 
 export async function latestNotProceeding(db: Queryable, businessId: string): Promise<DealRow | null> {

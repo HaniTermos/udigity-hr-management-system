@@ -3,6 +3,7 @@
  * authz-matrix §3.2: the directory and every employee command are Owner only (Confirmed), 2FA complete.
  */
 import { z } from 'zod';
+import { safeString } from '../../shared/validation.js';
 import { defineActions } from '../../shared/access.js';
 import { defineMatrixActions } from '../access/schemas.js';
 import { PageQuerySchema } from '../../shared/pagination.js';
@@ -37,14 +38,14 @@ const optionalText = (max: number) =>
     .transform((v) => (v === undefined ? undefined : v === null || v === '' ? null : v))
     .optional();
 
-export const IdParamSchema = z.object({ id: z.string().uuid() }).strict();
+export const IdParamSchema = z.object({ id: safeString().uuid() }).strict();
 
-export const RoleSchema = z.string().trim().min(1).max(50);
+export const RoleSchema = safeString().trim().min(1).max(50);
 
 export const CreateEmployeeSchema = z
   .object({
-    email: z.string().trim().toLowerCase().email().max(254),
-    fullName: z.string().trim().min(1).max(255),
+    email: safeString().trim().toLowerCase().email().max(254),
+    fullName: safeString().trim().min(1).max(255),
     role: RoleSchema,
     phone: optionalText(50),
     department: optionalText(100),
@@ -55,13 +56,13 @@ export const CreateEmployeeSchema = z
 export const UpdateEmployeeSchema = z
   .object({
     version: z.number().int().positive(),
-    email: z.string().trim().toLowerCase().email().max(254).optional(),
-    fullName: z.string().trim().min(1).max(255).optional(),
+    email: safeString().trim().toLowerCase().email().max(254).optional(),
+    fullName: safeString().trim().min(1).max(255).optional(),
     role: RoleSchema.optional(),
     phone: optionalText(50),
     department: optionalText(100),
     jobTitle: optionalText(100),
-    reason: z.string().trim().max(500).optional(),
+    reason: safeString().trim().max(500).optional(),
   })
   .strict();
 
@@ -69,13 +70,13 @@ export const StatusBodySchema = z
   .object({
     isActive: z.boolean(),
     version: z.number().int().positive(),
-    reason: z.string().trim().max(500).optional(),
+    reason: safeString().trim().max(500).optional(),
   })
   .strict();
 
 export const EmployeeListQuerySchema = PageQuerySchema.extend({
-  q: z.string().trim().max(100).optional(),
-  role: z.string().trim().max(50).optional(),
+  q: safeString().trim().max(100).optional(),
+  role: safeString().trim().max(50).optional(),
   status: z.enum(['active', 'deactivated', '']).optional(),
 }).strict();
 

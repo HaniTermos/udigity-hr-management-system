@@ -162,34 +162,39 @@ export async function getDashboardMetrics(
   };
 }
 
+/**
+ * Report catalogue. It lists only what the export really produces (columns and formats). Every export is
+ * limited to the first `EXPORT_LIMITS.rowCap` rows; the catalogue response and the export response headers
+ * (`X-Export-Truncated`, `X-Export-Row-Count`, `X-Export-Row-Cap`) say so, so the UI can tell the user.
+ */
 export function listReports(): ReportItemDto[] {
   return [
     {
       id: 'rep-1',
       title: 'Company Timesheet & Punctuality Export',
       description: 'Daily check-in and checkout facts, total duration, punctuality flags, and approved corrections.',
-      format: 'CSV / JSON (Streamed)',
+      format: 'CSV / JSON',
       badge: 'Payroll Ready',
     },
     {
       id: 'rep-2',
       title: 'Commercial Outreach & Calling Logs',
-      description: 'Complete record of dials, call outcomes, reservation locks, and agent notes.',
+      description: 'One row per call attempt: business, outcome, agent and time.',
       format: 'CSV / JSON',
       badge: 'Operational',
     },
     {
       id: 'rep-3',
       title: 'Closed Commercial Deals & Invoicing Ledger',
-      description: 'Signed agreements, verified deposit facts, project provisioning status, and contract values.',
-      format: 'CSV / PDF Summary',
+      description: 'One row per deal: stage, agreement reference, signature and payment dates, contract amount, payment received and project status.',
+      format: 'CSV / JSON',
       badge: 'Executive',
     },
     {
       id: 'rep-4',
       title: 'Master Business Directory Dump',
-      description: 'Full database of cataloged establishments, normalized phones, and category taxonomy.',
-      format: 'CSV Dataset',
+      description: 'Active (not archived) businesses with branch and category.',
+      format: 'CSV / JSON',
       badge: 'Database',
     },
   ];
@@ -200,7 +205,8 @@ const FORMULA_PREFIX = /^[=+\-@\t\r]/;
 
 export function escapeCsvField(val: unknown): string {
   if (val === null || val === undefined) return '';
-  let str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+  // C-04: a Date is written as its ISO text; JSON.stringify(date) would add literal quote characters.
+  let str = val instanceof Date ? (Number.isNaN(val.getTime()) ? '' : val.toISOString()) : typeof val === 'object' ? JSON.stringify(val) : String(val);
   // R2-01: neutralise formulas with a leading apostrophe (OWASP CSV injection guidance).
   if (typeof val !== 'number' && typeof val !== 'bigint' && FORMULA_PREFIX.test(str)) str = `'${str}`;
   if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
@@ -235,6 +241,14 @@ export interface ExportMeta {
   filename: string;
   rowCount: number;
   truncated: boolean;
+}
+
+/** Thrown by a sink when the client closed the connection mid-export (C-21): audited as aborted by client. */
+export class ClientAbortedError extends Error {
+  constructor() {
+    super('Client closed the export connection');
+    this.name = 'ClientAbortedError';
+  }
 }
 
 /**
@@ -353,6 +367,9 @@ export async function exportReport(
   sink: ExportSink
 ): Promise<ExportMeta> {
   await assertStepUp(req, reportType, totpCode);
+  // C-21: what had been sent when the export stopped (the export transaction itself rolls back).
+  let sentRows = 0;
+  let sentBytes = 0;
   try {
     return await runCommand(req, async (ctx) => {
       if (ctx.actor.kind !== 'employee') {
@@ -421,7 +438,10 @@ export async function exportReport(
       const out = createExportSerializer(fmt);
       if (buffered) {
         for (let i = 0; i < buffered.length; i += EXPORT_CHUNK_ROWS) {
-          await sink.write(out.chunk(buffered.slice(i, i + EXPORT_CHUNK_ROWS)));
+          const text = out.chunk(buffered.slice(i, i + EXPORT_CHUNK_ROWS));
+          await sink.write(text);
+          sentRows += Math.min(EXPORT_CHUNK_ROWS, buffered.length - i);
+          sentBytes += Buffer.byteLength(text);
         }
       } else {
         for (let sent = 0; sent < rowCount; ) {
@@ -429,7 +449,10 @@ export async function exportReport(
           const { rows } = await ctx.tx.query<Record<string, unknown>>(`FETCH FORWARD ${n} FROM export_cursor`);
           if (rows.length === 0) break;
           sent += rows.length;
-          await sink.write(out.chunk(rows));
+          const text = out.chunk(rows);
+          await sink.write(text);
+          sentRows += rows.length;
+          sentBytes += Buffer.byteLength(text);
         }
         await ctx.tx.query('CLOSE export_cursor');
       }
@@ -438,8 +461,10 @@ export async function exportReport(
     });
   } catch (err) {
     const timedOut = (err as { code?: string }).code === '57014'; // query_canceled (statement_timeout)
-    if (!isHttpError(err) || timedOut) {
-      await auditExportOutcome(req, 'report.export_failed', { reportType, format, reason: timedOut ? 'time_cap' : 'error' });
+    if (err instanceof ClientAbortedError) {
+      await auditExportOutcome(req, 'report.export_failed', { reportType, format, reason: 'aborted_by_client', rowsSent: sentRows, bytesSent: sentBytes });
+    } else if (!isHttpError(err) || timedOut) {
+      await auditExportOutcome(req, 'report.export_failed', { reportType, format, reason: timedOut ? 'time_cap' : 'error', rowsSent: sentRows, bytesSent: sentBytes });
     }
     throw err;
   }

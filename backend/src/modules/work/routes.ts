@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { authenticate } from '../../middleware/auth.js';
 import { principalFromRequest, requireAction } from '../../shared/access.js';
 import { pool } from '../../db/pool.js';
+import { idempotent } from '../platform/idempotency.js';
 import { toPage } from '../../shared/pagination.js';
 import * as service from './service.js';
 import { CreateTargetSchema, CreateWorkItemSchema, TargetsQuerySchema, UpdateTargetSchema, UpdateWorkItemSchema, WorkItemsQuerySchema } from './schemas.js';
@@ -24,6 +25,8 @@ targetsRouter.get('/', authenticate, requireAction('target.read'), async (req, r
       employeeId: pagination.scope === 'self' ? principal.employeeId : pagination.employeeId,
       limit: pagination.pageSize,
       offset: (pagination.page - 1) * pagination.pageSize,
+      sort: pagination.sort,
+      order: pagination.order,
     });
     res.json(toPage(items, total, pagination));
   } catch (err) {
@@ -31,7 +34,7 @@ targetsRouter.get('/', authenticate, requireAction('target.read'), async (req, r
   }
 });
 
-targetsRouter.post('/', authenticate, requireAction('target.set'), async (req, res, next) => {
+targetsRouter.post('/', authenticate, requireAction('target.set'), idempotent('target.set', { required: false }), async (req, res, next) => {
   try {
     const input = CreateTargetSchema.parse(req.body);
     const target = await service.createTarget(req, input);
@@ -63,6 +66,8 @@ workItemsRouter.get('/', authenticate, requireAction('work_item.read'), async (r
     const { items, total } = await service.listWorkItems(pool, principal, {
       status: q.status,
       openOnly: q.state === 'open',
+      sort: q.sort,
+      order: q.order,
       limit: pagination.pageSize,
       offset: (pagination.page - 1) * pagination.pageSize,
     });
@@ -72,7 +77,7 @@ workItemsRouter.get('/', authenticate, requireAction('work_item.read'), async (r
   }
 });
 
-workItemsRouter.post('/', authenticate, requireAction('work_item.create'), async (req, res, next) => {
+workItemsRouter.post('/', authenticate, requireAction('work_item.create'), idempotent('work_item.create', { required: false }), async (req, res, next) => {
   try {
     const input = CreateWorkItemSchema.parse(req.body);
     const item = await service.createWorkItem(req, input);

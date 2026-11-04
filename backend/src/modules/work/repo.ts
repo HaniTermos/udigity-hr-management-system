@@ -3,6 +3,7 @@
  * Owned tables: targets, work_items.
  */
 import type { Queryable } from '../../db/pool.js';
+import { orderByClause } from '../../shared/pagination.js';
 import type { CreateTargetInput, CreateWorkItemInput, TargetDto, UpdateTargetInput, UpdateWorkItemInput, WorkItemDto } from './schemas.js';
 
 interface TargetDbRow {
@@ -147,10 +148,36 @@ export async function updateTarget(
   return { target: mapTarget(rows[0]), conflict: false };
 }
 
+const TARGET_SORT: Record<string, string> = { startDate: 't.start_date', endDate: 't.end_date', createdAt: 't.created_at', targetValue: 't.target_value' };
+const WORK_ITEM_SORT: Record<string, string> = { dueDate: 'w.due_date', createdAt: 'w.created_at', status: 'w.status', title: 'w.title' };
+
+/**
+ * C-17: an existing target for the same employee, metric and period type whose dates overlap
+ * [start, end]. Serialised per (employee, metric) so two parallel creates cannot both pass.
+ */
+export async function findOverlappingTarget(
+  db: Queryable,
+  input: { employeeId: string; metric: string; period: string; startDate: string; endDate: string }
+): Promise<string | null> {
+  await db.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`target:${input.employeeId}:${input.metric}`]);
+  const { rows } = await db.query<{ id: string }>(
+    `SELECT id FROM targets
+      WHERE employee_id = $1 AND metric = $2 AND period = $3
+        AND start_date <= $5::date AND end_date >= $4::date
+      LIMIT 1`,
+    [input.employeeId, input.metric, input.period, input.startDate, input.endDate]
+  );
+  return rows[0]?.id ?? null;
+}
+
 export async function listTargets(
   db: Queryable,
-  options: { employeeId?: string; limit?: number; offset?: number } = {}
+  options: { employeeId?: string; limit?: number; offset?: number; sort?: string; order?: 'asc' | 'desc' } = {}
 ): Promise<{ items: TargetDto[]; total: number }> {
+  // C-02: sort whitelist (unknown = 400) and a unique tie-breaker so OFFSET pages never skip or repeat rows.
+  const orderBy = options.sort
+    ? orderByClause({ sort: options.sort, order: options.order ?? 'desc' }, TARGET_SORT, 'startDate', 't.id')
+    : 'ORDER BY t.start_date DESC, t.created_at DESC, t.id DESC';
   const params: unknown[] = [];
   const conditions: string[] = [];
 
@@ -176,7 +203,7 @@ export async function listTargets(
        FROM targets t
        LEFT JOIN employees e ON e.id = t.employee_id
       ${whereClause}
-      ORDER BY t.start_date DESC, t.created_at DESC
+      ${orderBy}
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   );
@@ -277,8 +304,11 @@ export async function updateWorkItem(
 
 export async function listWorkItems(
   db: Queryable,
-  options: { assigneeId?: string; status?: string; openOnly?: boolean; limit?: number; offset?: number } = {}
+  options: { assigneeId?: string; status?: string; openOnly?: boolean; limit?: number; offset?: number; sort?: string; order?: 'asc' | 'desc' } = {}
 ): Promise<{ items: WorkItemDto[]; total: number }> {
+  const orderBy = options.sort
+    ? `${orderByClause({ sort: options.sort, order: options.order ?? 'desc' }, WORK_ITEM_SORT, 'dueDate', 'w.id')}`
+    : 'ORDER BY w.due_date ASC NULLS LAST, w.created_at DESC, w.id DESC';
   const params: unknown[] = [];
   const conditions: string[] = [];
 
@@ -309,7 +339,7 @@ export async function listWorkItems(
        FROM work_items w
        LEFT JOIN employees e ON e.id = w.assignee_id
       ${whereClause}
-      ORDER BY w.due_date ASC NULLS LAST, w.created_at DESC
+      ${orderBy}
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   );

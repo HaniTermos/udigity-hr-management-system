@@ -8,6 +8,7 @@
  * only, OQ-11 no Cancelled project status, OQ-15 Owner reopen of Completed, F2 `projects.autoProvision`.
  */
 import { z } from 'zod';
+import { isoDate, safeString } from '../../shared/validation.js';
 import { PageQuerySchema } from '../../shared/pagination.js';
 import { defineMatrixActions } from '../access/schemas.js';
 import { BoolQuery } from '../deals/schemas.js';
@@ -30,10 +31,10 @@ export const PROJECT_ACTIONS = defineMatrixActions([
   'task.complete',
 ] as const);
 
-export const IdParam = z.object({ id: z.string().uuid() }).strict();
+export const IdParam = z.object({ id: safeString().uuid() }).strict();
 const Version = z.number().int().min(1);
-const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
-const Note = z.string().trim().min(3).max(1000);
+const IsoDate = isoDate('Expected a real date as YYYY-MM-DD');
+const Note = safeString().trim().min(3).max(1000);
 
 // ---------------------------------------------------------------------------
 // Statuses and transition tables (single source for guards and `allowedNextStatuses`)
@@ -86,16 +87,16 @@ export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]
 /** GET /api/projects (SCR-DEV-005 list + Development workload). */
 export const ListProjectsQuery = PageQuerySchema.extend({
   status: z.enum(PROJECT_STATUSES).optional(),
-  developerId: z.string().uuid().optional(),
+  developerId: safeString().uuid().optional(),
   scope: z.enum(['assigned_to_me', 'all']).optional(),
   overdueOnly: BoolQuery.optional(),
-  dealId: z.string().uuid().optional(),
+  dealId: safeString().uuid().optional(),
 }).strict();
 
 /** POST /api/projects - manual provisioning, only while `projects.autoProvision` is false (F2). */
 export const CreateProjectBody = z.object({
-  dealId: z.string().uuid(),
-  name: z.string().trim().min(1).max(200).optional(),
+  dealId: safeString().uuid(),
+  name: safeString().trim().min(1).max(200).optional(),
   startDate: IsoDate.optional(),
   targetDate: IsoDate.optional(),
 }).strict();
@@ -103,7 +104,7 @@ export const CreateProjectBody = z.object({
 /** PATCH /api/projects/:id - name and schedule only. Status moves are the `status` command. */
 export const UpdateProjectBody = z.object({
   version: Version,
-  name: z.string().trim().min(1).max(200).optional(),
+  name: safeString().trim().min(1).max(200).optional(),
   startDate: IsoDate.nullable().optional(),
   targetDate: IsoDate.nullable().optional(),
 }).strict();
@@ -129,7 +130,7 @@ export const CancelProjectBody = z.object({ version: Version, reason: Note }).st
 /** POST /api/projects/:id/developers - Owner sets the current Developer set (OQ-07/OQ-08). */
 export const AssignProjectDevelopersBody = z.object({
   version: Version,
-  developerIds: z.array(z.string().uuid()).max(20),
+  developerIds: z.array(safeString().uuid()).max(20),
 }).strict();
 
 /** POST /api/projects/:id/provision-retry - `:id` is the DEAL id (the project does not exist yet). */
@@ -137,24 +138,24 @@ export const ProvisionRetryBody = z.object({}).strict();
 
 /** GET /api/tasks?projectId= */
 export const ListTasksQuery = z.object({
-  projectId: z.string().uuid(),
+  projectId: safeString().uuid(),
   status: z.enum(TASK_STATUSES).optional(),
 }).strict();
 
 const TaskFields = {
-  title: z.string().trim().min(1).max(200),
-  description: z.string().trim().max(4000),
-  ownerId: z.string().uuid(),
+  title: safeString().trim().min(1).max(200),
+  description: safeString().trim().max(4000),
+  ownerId: safeString().uuid(),
   dueDate: IsoDate,
   startDate: IsoDate,
   isMilestone: z.boolean(),
   clientDependency: z.boolean(),
-  clientDependencyNote: z.string().trim().max(500),
+  clientDependencyNote: safeString().trim().max(500),
 };
 
 /** POST /api/tasks */
 export const CreateTaskBody = z.object({
-  projectId: z.string().uuid(),
+  projectId: safeString().uuid(),
   title: TaskFields.title,
   description: TaskFields.description.optional(),
   ownerId: TaskFields.ownerId.optional(),

@@ -278,7 +278,7 @@ export async function listProjects(db: Queryable, viewer: Principal, q: ProjectL
   where.push(access.scopeFilter(viewer, 'project.read', 'project', { alias: 'p', params }));
   const listParams = new SqlParams();
   listParams.values.push(...params.values);
-  const order = orderByClause(q, PROJECT_SORT, 'createdAt');
+  const order = orderByClause(q, PROJECT_SORT, 'createdAt', 'p.id');
   const page = pageClause(q, listParams);
   const [{ rows, total }, load] = await inSequence([
     () => repo.listProjects(db, where, listParams, order, page),

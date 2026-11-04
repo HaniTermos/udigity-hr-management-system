@@ -29,7 +29,8 @@ const router = Router();
 router.get('/', authenticate, requireAction('report.read'), async (_req, res, next) => {
   try {
     const reports = service.listReports();
-    res.json({ items: reports, total: reports.length });
+    // rowCap: every export returns at most this many rows (newest first); the UI states it up front.
+    res.json({ items: reports, total: reports.length, rowCap: service.EXPORT_LIMITS.rowCap });
   } catch (err) {
     next(err);
   }
@@ -79,11 +80,12 @@ router.post('/export', authenticate, requireAction('report.export'), exportLimit
         // Additive: lets the UI say "first N rows" when the row cap applied.
         res.setHeader('X-Export-Row-Count', String(meta.rowCount));
         res.setHeader('X-Export-Truncated', String(meta.truncated));
+        res.setHeader('X-Export-Row-Cap', String(service.EXPORT_LIMITS.rowCap));
         res.flushHeaders();
       },
       write(chunk) {
         if (!chunk) return Promise.resolve();
-        if (res.destroyed) return Promise.reject(new Error('Client closed the export connection'));
+        if (res.destroyed) return Promise.reject(new service.ClientAbortedError());
         if (res.write(chunk)) return Promise.resolve();
         return new Promise<void>((resolve, reject) => {
           const done = (err?: Error) => {
@@ -93,7 +95,7 @@ router.post('/export', authenticate, requireAction('report.export'), exportLimit
             else resolve();
           };
           const onDrain = () => done();
-          const onClose = () => done(new Error('Client closed the export connection'));
+          const onClose = () => done(new service.ClientAbortedError());
           res.once('drain', onDrain);
           res.once('close', onClose);
         });

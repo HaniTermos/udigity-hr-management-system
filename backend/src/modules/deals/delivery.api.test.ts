@@ -294,6 +294,23 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
   // -------------------------------------------------------------------------------------------
   // E5 + BE3 read ops
   // -------------------------------------------------------------------------------------------
+  // Review 2026-11-04: the C-06 count for an empty page sent the wrong number of parameters when the access
+  // filter adds parameters after LIMIT/OFFSET (Developer / Call Center scopes) and answered 500.
+  it('C-06: a page past the end answers 200 with the real total for scoped roles (no parameter mismatch)', async () => {
+    for (const [agent, path] of [
+      [dv, '/api/projects?page=500'],
+      [dv, '/api/deals?page=500'],
+      [owner, '/api/projects?page=500'],
+      [owner, '/api/deals?page=500'],
+    ] as const) {
+      const res = await call(agent, 'get', path);
+      expect(res.status, `${path} → ${res.status} ${res.body.code}`).toBe(200);
+      expect(res.body.items).toEqual([]);
+      const first = await call(agent, 'get', path.replace('page=500', 'page=1'));
+      expect(res.body.total, path).toBe(first.body.total);
+    }
+  });
+
   describe('createAcceptedOpportunity and read ops (BE3)', () => {
     it('replay returns the same deal; DEC-017 blocks a second open deal; audit counted once', async () => {
       const { businessId, dealId } = await newDeal({ developer: null });
@@ -789,6 +806,34 @@ describe.skipIf(!hasTestDb)('BE4 Increment 5 — delivery (DB)', () => {
       }
     }
     const history = async (id: string) => (await call(owner, 'get', `/api/deals/${id}/history`)).body.items as { type: string; before: Record<string, unknown>; after: Record<string, unknown>; reason: string | null }[];
+
+    it('C-07: payment / signature / correction dates cannot be in the future (400, clear message)', async () => {
+      const { dealId } = await newDeal();
+      const p = await cmd(dv, dealId, 'payment', { date: '2100-01-01' });
+      expect(p.status).toBe(400);
+      expect(p.body.code).toBe('VALIDATION_ERROR');
+      expect(JSON.stringify(p.body.details)).toMatch(/cannot be in the future/);
+      expect((await cmd(dv, dealId, 'signature', { date: '2100-01-01', reference: 'AGR-F' })).status).toBe(400);
+      expect((await cmd(dv, dealId, 'payment', { date: '2026-02-31' })).status).toBe(400); // not a real date
+    });
+
+    it('D-04: a legacy closed deal without an agreement reference needs one in the Owner correction (400, never 500)', async () => {
+      const { dealId } = await closedDealWithProject();
+      await query('ALTER TABLE deals DROP CONSTRAINT deals_closed_evidence');
+      try {
+        await query('UPDATE deals SET signature_reference = NULL WHERE id = $1', [dealId]);
+        const bad = await cmd(owner, dealId, 'financial-correction', { reason: 'Fix amount', paymentReference: 'PAY-9' });
+        expect(bad.status).toBe(400);
+        expect(bad.body.details.agreementReference).toBeTruthy();
+        const ok = await cmd(owner, dealId, 'financial-correction', { reason: 'Add reference', agreementReference: 'AGR-LEGACY', paymentReference: 'PAY-9' });
+        expect(ok.status).toBe(200);
+      } finally {
+        await query(
+          `ALTER TABLE deals ADD CONSTRAINT deals_closed_evidence CHECK (
+             stage <> 'closed' OR (signature_reference IS NOT NULL AND payment_date IS NOT NULL AND closed_at IS NOT NULL AND closed_by_id IS NOT NULL)) NOT VALID`
+        );
+      }
+    });
 
     it('advance-stage: forward with skips, repeat is a no-op, backward refused; history + audit; other Developer denied', async () => {
       const { dealId } = await newDeal();

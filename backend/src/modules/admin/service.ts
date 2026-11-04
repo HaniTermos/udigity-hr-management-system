@@ -259,6 +259,20 @@ export async function setCompanyValue(ctx: CommandContext, key: FlagKey, raw: un
   if (!written) throw versionConflict((await readCompanySettings(ctx.tx)).version);
 }
 
+/**
+ * C-18 / D7: a YYYY-MM-DD `from` / `to` is a company-timezone calendar day (UTC when no timezone is
+ * configured): `from` = that day's 00:00, `to` = the NEXT day's 00:00 (exclusive). The repo then only sees instants.
+ */
 export async function listAudit(db: Queryable, q: AuditQuery) {
-  return listAuditEvents(db, q);
+  const dateOnly = (v?: string) => v !== undefined && v.length === 10;
+  if (!dateOnly(q.from) && !dateOnly(q.to)) return listAuditEvents(db, q);
+  const { getCompanyTimezone } = await import('../attendance/service.js'); // dynamic: attendance imports this module
+  const { zonedToUtc, addDays } = await import('../attendance/time.js');
+  const tz = (await getCompanyTimezone(db)) ?? '';
+  const zone = tz && isValidTimeZone(tz) ? tz : 'UTC';
+  return listAuditEvents(db, {
+    ...q,
+    from: dateOnly(q.from) ? zonedToUtc(q.from as string, '00:00', zone).toISOString() : q.from,
+    to: dateOnly(q.to) ? zonedToUtc(addDays(q.to as string, 1), '00:00', zone).toISOString() : q.to,
+  });
 }

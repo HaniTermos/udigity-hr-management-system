@@ -7,6 +7,7 @@
  * Terminal states never reopen.
  */
 import { z } from 'zod';
+import { safeString } from '../../shared/validation.js';
 import { defineMatrixActions } from '../access/schemas.js';
 import { PageQuerySchema } from '../../shared/pagination.js';
 import { UpdateBusinessSchema } from '../businesses/schemas.js';
@@ -36,11 +37,11 @@ export const ISSUE_TYPES = [
   'Other',
 ] as const;
 
-const trimmed = (max: number) => z.string().trim().max(max);
+const trimmed = (max: number) => safeString().trim().max(max);
 
 export const SubmitCorrectionSchema = z
   .object({
-    businessId: z.string().uuid(),
+    businessId: safeString().uuid(),
     issueType: z.enum(ISSUE_TYPES),
     field: trimmed(120).nullable().optional(),
     description: trimmed(2000).min(1, 'Describe what is wrong'),
@@ -69,7 +70,7 @@ export const CorrectionListQuerySchema = PageQuerySchema.extend({
   /** Requester id or full name. */
   requestedBy: trimmed(120).optional(),
   age: z.enum(['lt1d', 'd1to3', 'gt3d']).optional(),
-  businessId: z.string().uuid().optional(),
+  businessId: safeString().uuid().optional(),
 }).strict();
 
 export type SubmitCorrectionInput = z.infer<typeof SubmitCorrectionSchema>;
