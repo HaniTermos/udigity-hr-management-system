@@ -6,14 +6,14 @@
  */
 import type { Request } from 'express';
 import { z, type ZodTypeAny } from 'zod';
-import { HttpError, notFound } from '../../shared/errors.js';
+import { HttpError } from '../../shared/errors.js';
 
 const IdParam = z.object({ id: z.string().uuid() }).strict();
 
-/** Path id: a malformed id is a 404 (no hint whether anything exists). */
+/** Path id: a malformed id is a 400 VALIDATION_ERROR, like every other module (C-11); an unknown valid id is a 404. */
 export function idOf(req: Request): string {
   const r = IdParam.safeParse(req.params);
-  if (!r.success) throw notFound();
+  if (!r.success) throw new HttpError(400, 'VALIDATION_ERROR', 'Validation failed', { id: ['Invalid id'] });
   return r.data.id;
 }
 

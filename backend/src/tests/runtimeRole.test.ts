@@ -108,6 +108,32 @@ describe.skipIf(!hasTestDb)('Actual Database Connection & Runtime Role Privilege
     await expect(assertRuntimeRole(pool)).rejects.toThrow(/Unsafe database role for production/);
   });
 
+  it('review D-01/D-02 (D20): udigity_app cannot hard-delete business/history rows or rewrite append-only history', async () => {
+    await asAppRole(async (client) => {
+      for (const t of ['businesses', 'deals', 'employees', 'deal_changes', 'project_changes', 'follow_up_changes', 'attendance_sessions',
+        'attendance_days_off', 'employee_schedules', 'ops_alerts', 'categories', 'custom_roles', 'business_edit_history']) {
+        expect(await errorCodeOf(client, `DELETE FROM ${t} WHERE false`), `DELETE ${t}`).toBe('42501');
+      }
+      for (const t of ['deal_changes', 'project_changes', 'meeting_changes', 'follow_up_changes', 'outcome_reopenings',
+        'employee_schedules', 'attendance_settings_versions', 'export_records']) {
+        expect(await errorCodeOf(client, `UPDATE ${t} SET id = id WHERE false`), `UPDATE ${t}`).toBe('42501');
+      }
+      expect(await errorCodeOf(client, `INSERT INTO business_phone_registry (normalized_phone, business_id) VALUES ('+0', gen_random_uuid())`)).toBe('42501');
+      expect(await errorCodeOf(client, 'SELECT count(*) FROM business_phone_registry')).toBeNull();
+      // Paths the app really deletes from keep DELETE (sessions, retention, phone/social edits, role edits).
+      for (const t of ['sessions', 'idempotency_records', 'notification_deliveries', 'reminders', 'outbox_events', 'outbox_consumer_runs',
+        'background_jobs', 'notification_secrets', 'security_tokens', 'contact_reservations', 'worker_heartbeats', 'business_phones',
+        'social_accounts', 'role_permissions', 'two_factor_factors']) {
+        expect(await errorCodeOf(client, `DELETE FROM ${t} WHERE false`), `DELETE ${t}`).toBeNull();
+      }
+    });
+    // Future tables: the default ACL of the migrating role grants no DELETE.
+    const { rows } = await query<{ acl: string }>(
+      `SELECT defaclacl::text AS acl FROM pg_default_acl WHERE defaclobjtype = 'r' AND defaclnamespace = 'public'::regnamespace`
+    );
+    for (const r of rows) expect(r.acl).not.toMatch(/udigity_app=[a-zA-Z]*d/);
+  });
+
   it('verifies udigity_app is prohibited from ALTER, DROP, or disabling triggers on real tables', async () => {
     await asAppRole(async (client) => {
       expect(await errorCodeOf(client, 'ALTER TABLE audit_events DROP COLUMN payload')).toBe('42501');

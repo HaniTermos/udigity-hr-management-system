@@ -572,7 +572,7 @@ describe.skipIf(!hasTestDb)('BE2 Increment 3: businesses, categories, search, co
       }
       expect(await auditCount('business_access.denied', b.id)).toBeGreaterThanOrEqual(2);
       expect((await call(de, 'get', `/api/businesses/${randomUUID()}`)).status).toBe(404);
-      expect((await call(de, 'get', '/api/businesses/not-a-uuid')).status).toBe(404);
+      expect((await call(de, 'get', '/api/businesses/not-a-uuid')).status).toBe(400);
     });
 
     it('Call Center: the assigned agent reads, lists and searches the business; another agent does not', async () => {

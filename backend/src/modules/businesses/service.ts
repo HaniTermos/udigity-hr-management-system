@@ -30,6 +30,8 @@ import { audit, runCommand, type CommandContext } from '../../shared/tx.js';
 import { getSetting } from '../admin/service.js';
 import { hiddenForOthersPredicate, refreshAccessSettings } from '../access/schemas.js';
 import { initCallingState } from '../calls/service.js';
+import * as deals from '../deals/service.js';
+import * as reservations from '../reservation/service.js';
 import { clock } from '../platform/clock.js';
 import {
   collapsePhones,
@@ -214,11 +216,13 @@ interface Block {
   businessId: string;
   matchedOn: 'name' | 'phone';
   matchedValue: string;
+  /** S-27: the phone matched a number the business no longer lists (kept as history; still blocks). */
+  removedPhone?: boolean;
 }
 
 async function detectBlock(db: Queryable, probe: DuplicateProbe, excludeId: string | null): Promise<Block | null> {
   const phone = await repo.findPhoneMatch(db, probe.phones, excludeId);
-  if (phone) return { businessId: phone.business_id, matchedOn: 'phone', matchedValue: phone.normalized_phone };
+  if (phone) return { businessId: phone.business_id, matchedOn: 'phone', matchedValue: phone.normalized_phone, removedPhone: phone.removed };
   if (probe.name && probe.name.normalizedName) {
     const n = probe.name;
     const hit = await repo.findNameMatch(db, nameKey(n.normalizedName, n.normalizedBranch), n.normalizedName, n.normalizedBranch, excludeId);
@@ -235,7 +239,8 @@ async function shapeMatch(db: Queryable, principal: Principal, block: Block): Pr
   let visible = principal.role === 'owner';
   if (!visible) {
     const d = await access.check(db, principal, 'business.read', { type: 'duplicate_preview', id: block.businessId });
-    visible = d.allowed && d.level === 'full' && !row.archived_at;
+    // S-27: a number removed by an edit is history; for non-Owners it reveals existence only (D10).
+    visible = d.allowed && d.level === 'full' && !row.archived_at && !block.removedPhone;
   }
   if (!visible) {
     // D10: exactly these fields — no id, phones, social links, notes or assignee.
@@ -255,6 +260,7 @@ async function shapeMatch(db: Queryable, principal: Principal, block: Block): Pr
     matchedOn: block.matchedOn,
     matchedValue: block.matchedValue,
     phones: row.phones.map((p) => p.normalized),
+    matchedRemovedPhone: Boolean(block.removedPhone),
     archived: Boolean(row.archived_at),
   };
 }
@@ -975,6 +981,29 @@ export async function setBusinessArchived(
     };
     const block = await detectBlock(db, probe, id);
     if (block) throw new DuplicateBlockedError(await shapeMatch(db, principal, block), block.businessId, block.matchedOn);
+  }
+  if (archive) {
+    // C-20 (review 2026-11-04). D20 keeps relationships: assignments, follow-ups, meetings and history stay
+    // attached and come back on restore (access already denies them while archived, D9). Two dependants
+    // would be left in a live state the archive cannot settle on its own, so archiving is refused until the
+    // Owner settles them through their own audited workflow:
+    //  - an open deal (D16 stages before Closed / Not proceeding): close it or mark it Not proceeding first;
+    //  - a live contact reservation (someone is on a call now): wait for it to end or override it first.
+    const openDeal = await deals.findOpenDeal(db, id);
+    if (openDeal) {
+      throw stateConflict('This business has an open deal. Close it or mark it Not proceeding before archiving.', {
+        reason: 'OPEN_DEAL',
+        dealId: openDeal.dealId,
+        stage: openDeal.stage,
+      });
+    }
+    const reservation = await reservations.activeFor(db, id);
+    if (reservation) {
+      throw stateConflict('Someone is calling this business right now. Wait for the call to end or override the reservation before archiving.', {
+        reason: 'ACTIVE_RESERVATION',
+        reservationId: reservation.id,
+      });
+    }
   }
   const next = await repo.setArchived(db, id, version, archive, me);
   if (next === null) throw versionConflict(row.version);

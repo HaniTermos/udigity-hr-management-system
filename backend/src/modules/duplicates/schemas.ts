@@ -18,8 +18,13 @@ export type DuplicateMatch =
       matchedOn: 'name' | 'phone';
       /** The caller's own value that matched (normalised phone or name). */
       matchedValue: string;
-      /** Normalised phones of the match. */
+      /** Normalised CURRENT phones of the match. */
       phones: string[];
+      /**
+       * S-27: the matched number is one the business no longer lists (removed by an edit, kept as history).
+       * It still blocks; it is not in `phones`.
+       */
+      matchedRemovedPhone: boolean;
       archived: boolean;
     }
   | {

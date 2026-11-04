@@ -7,6 +7,7 @@
  * DEC-014/023 Unknown metrics, DEC-015 category authority, C-01 archive only, OI-21 "Other" category.
  */
 import { z } from 'zod';
+import { isoDate as isoDateStrict, safeString } from '../../shared/validation.js';
 import { defineMatrixActions } from '../access/schemas.js';
 import { PageQuerySchema } from '../../shared/pagination.js';
 import type { AccessLevel, ExceptionRow } from '../../shared/access.js';
@@ -34,8 +35,8 @@ export const BUSINESS_ACTIONS = defineMatrixActions([
 // Inputs
 // ---------------------------------------------------------------------------------------------
 
-const trimmed = (max: number) => z.string().trim().max(max);
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
+const trimmed = (max: number) => safeString().trim().max(max);
+const isoDate = isoDateStrict('Use a real date as YYYY-MM-DD');
 
 export const PhoneInputSchema = z
   .object({
@@ -62,7 +63,7 @@ const businessFields = {
   /** Branch / location (DEC-013 NM-B). Optional. */
   branch: trimmed(120).nullable().optional(),
   /** Category id. Either `categoryId` or `category` (name) is required on create. */
-  categoryId: z.string().uuid().optional(),
+  categoryId: safeString().uuid().optional(),
   category: trimmed(80).min(1).optional(),
   phones: z.array(PhoneInputSchema).max(10),
   social: z.array(SocialInputSchema).min(1, 'Add at least one social account').max(20),
@@ -92,7 +93,7 @@ export const UpdateBusinessSchema = z
     website: businessFields.website.optional(),
     notes: businessFields.notes,
     /** Apply this In-review correction request in the same save (SCR-DE-005 → Resolved). */
-    correctionId: z.string().uuid().optional(),
+    correctionId: safeString().uuid().optional(),
     /** Optional resolution note when `correctionId` is set. */
     correctionNote: trimmed(2000).optional(),
     confirmSimilar: z.boolean().optional(),
@@ -107,7 +108,7 @@ export const VersionBodySchema = z
  * Restore body (D20 + Owner decision 2026-10-29). `categoryId` = an ACTIVE category to apply when the business's
  * own category was deactivated while it was archived ("Pick a new category").
  */
-export const RestoreBodySchema = VersionBodySchema.extend({ categoryId: z.string().uuid().optional() }).strict();
+export const RestoreBodySchema = VersionBodySchema.extend({ categoryId: safeString().uuid().optional() }).strict();
 
 export const DuplicateCheckSchema = z
   .object({
@@ -115,7 +116,7 @@ export const DuplicateCheckSchema = z
     branch: trimmed(120).nullable().optional(),
     phones: z.array(PhoneInputSchema).max(10).default([]),
     /** The record being edited (DR-7 self-exclusion). */
-    excludeBusinessId: z.string().uuid().optional(),
+    excludeBusinessId: safeString().uuid().optional(),
   })
   .strict();
 

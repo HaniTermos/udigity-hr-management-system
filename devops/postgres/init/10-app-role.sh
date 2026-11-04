@@ -38,9 +38,17 @@ SELECT to_regclass('public.audit_events') IS NOT NULL AS tables_exist \gset
   REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM udigity_app;
   GRANT SELECT, INSERT ON audit_events TO udigity_app;
   REVOKE INSERT, UPDATE, DELETE ON schema_migrations FROM udigity_app;
+  -- Review D-01/D-02: migration 998 holds the least-privilege policy (no DELETE on business/history
+  -- tables, append-only history tables). Re-apply it so a restore or a re-run never widens the grants.
+  SELECT to_regprocedure('public.udigity_apply_app_grants()') IS NOT NULL AS has_grant_policy \gset
+  \if :has_grant_policy
+    SELECT public.udigity_apply_app_grants();
+  \endif
 \endif
 SELECT format('GRANT CONNECT ON DATABASE %I TO udigity_app', current_database()) \gexec
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO udigity_app;
+-- No DELETE by default (D20 archive-only, review D-02); a migration grants DELETE per table when needed.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE DELETE, TRUNCATE ON TABLES FROM udigity_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE ON TABLES TO udigity_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO udigity_app;
 SQL
 echo "app role ready: $APP_DB_USER (member of udigity_app, not superuser)"

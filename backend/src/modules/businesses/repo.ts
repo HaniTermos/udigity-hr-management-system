@@ -200,8 +200,11 @@ export interface PhoneValues {
 }
 
 /**
- * Replace the phone set: rows whose normalised value stays are updated in place, removed ones are
- * deleted, new ones inserted. The global UNIQUE index on `normalized_phone` is the DR-8 race guard.
+ * Replace the CURRENT phone set: rows whose normalised value stays are updated in place, removed ones
+ * leave the current set, new ones are inserted. S-27 (Owner 2026-11-04): a removed number is not lost —
+ * the trigger of migration 998 keeps it in `business_phone_registry` (removed_at set), where it still
+ * blocks duplicates; re-adding it to the same business takes it back. The UNIQUE index on
+ * `normalized_phone` plus the registry's primary key are the DR-8 race guard.
  */
 export async function replacePhones(db: Queryable, businessId: string, phones: PhoneValues[]): Promise<void> {
   const keep = phones.map((p) => p.normalized);
@@ -234,7 +237,10 @@ export interface SocialValues {
 }
 
 /**
- * Replace the social accounts. Latest metric value only (DEC-014/023): `metrics_recorded_at` is kept when
+ * Replace the social accounts. Review D-11: this stays a delete + re-insert. D13 (approved) stores the latest
+ * values only (full metric history deferred), social links take no part in duplicate blocking, and every
+ * before/after value is kept in the append-only `business_edit_history` row of the edit.
+ * Latest metric value only (DEC-014/023): `metrics_recorded_at` is kept when
  * the same account's metrics are unchanged, set to `now` when they change, NULL when both are Unknown.
  * D13: each metric also has its own observation time (`followers_observed_at`, `last_post_observed_at`),
  * set only when that value is entered or changed, kept while it is unchanged, NULL while it is Unknown.
@@ -340,16 +346,21 @@ export async function listHistory(
 // Duplicate lookups (DR-1..DR-9). They ignore visibility (C3) and include archived records (OI-26).
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * D11 + S-27: exact phone matches run against `business_phone_registry` (migration 998), which holds every
+ * number a business has ever had. A number removed by an edit stays there (`removed`) and keeps blocking
+ * other businesses, like an archived one (D20). Current numbers are reported first.
+ */
 export async function findPhoneMatch(
   db: Queryable,
   normalized: readonly string[],
   excludeBusinessId: string | null
-): Promise<{ business_id: string; normalized_phone: string } | null> {
+): Promise<{ business_id: string; normalized_phone: string; removed: boolean } | null> {
   if (normalized.length === 0) return null;
-  const { rows } = await db.query<{ business_id: string; normalized_phone: string }>(
-    `SELECT business_id, normalized_phone FROM business_phones
+  const { rows } = await db.query<{ business_id: string; normalized_phone: string; removed: boolean }>(
+    `SELECT business_id, normalized_phone, removed_at IS NOT NULL AS removed FROM business_phone_registry
       WHERE normalized_phone = ANY($1::varchar[]) AND ($2::uuid IS NULL OR business_id <> $2::uuid)
-      ORDER BY created_at LIMIT 1`,
+      ORDER BY removed_at IS NOT NULL, first_added_at LIMIT 1`,
     [normalized, excludeBusinessId]
   );
   return rows[0] ?? null;
@@ -379,15 +390,12 @@ export async function findSimilarNames(
   excludeBusinessId: string | null,
   limit = 20
 ): Promise<{ id: string; name: string; branch: string | null; similarity: number; archived: boolean }[]> {
+  // D-06: `businesses_similar_names` (migration 998) filters with the trigram operator `%`, so the GIN index
+  // idx_businesses_name_trgm is used, and keeps the exact `similarity >= threshold` rule (D11: 0.6).
   const { rows } = await db.query<{ id: string; name: string; branch: string | null; similarity: number; archived: boolean }>(
-    `SELECT id, name, branch, round(similarity(normalized_name, $1)::numeric, 3)::float8 AS similarity,
-            archived_at IS NOT NULL AS archived
-       FROM businesses
-      WHERE similarity(normalized_name, $1) >= $2
-        AND normalized_name <> $1
-        AND ($3::uuid IS NULL OR id <> $3::uuid)
-      ORDER BY similarity(normalized_name, $1) DESC, created_at
-      LIMIT $4`,
+    `SELECT match_id AS id, match_name AS name, match_branch AS branch, match_similarity AS similarity,
+            match_archived AS archived
+       FROM businesses_similar_names($1::text, $2::real, $3::uuid, $4::int)`,
     [normalizedName, threshold, excludeBusinessId, limit]
   );
   return rows;

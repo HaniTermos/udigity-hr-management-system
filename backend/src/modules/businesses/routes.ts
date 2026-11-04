@@ -207,6 +207,7 @@ categoriesRouter.get(
 categoriesRouter.post(
   '/',
   categoryManageGuard('category.create'),
+  idempotent('category.create', { required: false }),
   wrap(async (req, res) => {
     const body = parse(CategoryCreateSchema, req.body);
     res.status(201).json(await runCommand(req, (ctx) => service.createCategory(ctx, body.name)));
