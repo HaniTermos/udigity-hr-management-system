@@ -3,22 +3,22 @@
 Sources: `findings/B-frontend.md` (34), `C-backend.md` (21), `D-database.md` (13), `E-security-rbac.md` (12),
 `F-ratelimit-perf.md` (12), `G-devops.md` (19), system map `01-system-map.md`. Full reproduction, evidence and
 location for every ID are in those files; this register groups them by root cause and tracks status.
-Discovery on local `cab5ec9` (+ Owner WIP). **0 Critical. 10 High.** Status column: Open → Fixing → Fixed (verified
+Discovery on local `cab5ec9` (+ Owner WIP). **0 Critical. 10 High — all 10 fixed and verified on `825dfd1`.** Medium: all fixed except the items listed in `REVIEW-SUMMARY.md` §4. Status column: Open → Fixing → Fixed (verified
 on commit) / Decision / Accepted.
 
 ## Release blockers and High
 
 | Root cause | IDs | Severity | Blocker | Batch | Status |
 |---|---|---|---|---|---|
-| Auth rate limit is one per-IP bucket for login/2FA/recovery/reset, counts successes; office NAT locks everyone out at morning login; nginx 10 r/min zone on all `/api/auth/*` | F-01 | High | Yes | 1 | Open |
-| Account lockout is an anonymous DoS lever (5 wrong passwords / 15 min keep any account, incl. Owner, locked) | E-01, F-04 | Medium | Yes (Owner availability) | 1 | Open |
-| Rate-limited users are told "password incorrect" / "code incorrect"; nginx 429 is HTML; no `Retry-After` use | F-02, B-13 | High | Yes | 1 | Open |
-| Every page polls every 4 s (and keeps polling after 403/404); ~15–20 agents behind one IP saturate per-IP/per-session read limits | F-03, B-07 | High | Yes (under real office load) | 3 | Open |
-| Stack assumes it owns ports 80/443 (certbot standalone, stop-nginx renew hooks); the VPS already runs other sites/a proxy (S-28) | G-01 | High | Yes (deploy) | 4 | Open |
-| Behind the existing outer proxy (S-28) nginx overwrites `X-Forwarded-For` → office-IP check broken + all users in one rate-limit bucket | G-02 | High | Yes | 4 | Open |
-| Frontend lint fails on the Owner's uncommitted "Assign developers" work (`ProjectBoard.tsx:798, 815`) + 6 smaller issues in that change | B-01, B-19 | High | Yes (CI) | 3 | Open (Owner: fix it) |
-| Owner has no screen to grant / approve / revoke remote exceptions (approved D3; backend routes exist) | B-02 | High | Yes (policy D3 unusable) | 3 | Open |
-| Assigned Developer has no list of open deals (Deals list is closed-only; Accepted tab disabled) | B-03 | High | Candidate | 3 | Check approved design |
+| Auth rate limit is one per-IP bucket for login/2FA/recovery/reset, counts successes; office NAT locks everyone out at morning login; nginx 10 r/min zone on all `/api/auth/*` | F-01 | High | Yes | 1 | **Fixed** (verified on 825dfd1) |
+| Account lockout is an anonymous DoS lever (5 wrong passwords / 15 min keep any account, incl. Owner, locked) | E-01, F-04 | Medium | Yes (Owner availability) | 1 | **Fixed** (verified on 825dfd1) |
+| Rate-limited users are told "password incorrect" / "code incorrect"; nginx 429 is HTML; no `Retry-After` use | F-02, B-13 | High | Yes | 1 | **Fixed** (verified on 825dfd1) |
+| Every page polls every 4 s (and keeps polling after 403/404); ~15–20 agents behind one IP saturate per-IP/per-session read limits | F-03, B-07 | High | Yes (under real office load) | 3 | **Fixed** (verified on 825dfd1) |
+| Stack assumes it owns ports 80/443 (certbot standalone, stop-nginx renew hooks); the VPS already runs other sites/a proxy (S-28) | G-01 | High | Yes (deploy) | 4 | **Fixed** (verified on 825dfd1) |
+| Behind the existing outer proxy (S-28) nginx overwrites `X-Forwarded-For` → office-IP check broken + all users in one rate-limit bucket | G-02 | High | Yes | 4 | **Fixed** (verified on 825dfd1) |
+| Frontend lint fails on the Owner's uncommitted "Assign developers" work (`ProjectBoard.tsx:798, 815`) + 6 smaller issues in that change | B-01, B-19 | High | Yes (CI) | 3 | **Fixed** (verified on 825dfd1) |
+| Owner has no screen to grant / approve / revoke remote exceptions (approved D3; backend routes exist) | B-02 | High | Yes (policy D3 unusable) | 3 | **Fixed** (verified on 825dfd1) |
+| Assigned Developer has no list of open deals (Deals list is closed-only; Accepted tab disabled) | B-03 | High | Candidate | 3 | **Fixed** (S-29: Accepted tab for the assigned Developer; verified on 825dfd1) |
 
 ## Medium (grouped)
 
