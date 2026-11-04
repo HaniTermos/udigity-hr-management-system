@@ -105,13 +105,45 @@ export interface RelayResult {
   dead: number;
 }
 
-/** Claim committed events and deliver each to its consumers (each in its own transaction). */
-export async function relayOutboxOnce(): Promise<RelayResult> {
+/** F-12: a loop pass stops starting new work after this long (claims not started are given back). */
+export const LOOP_BUDGET_MS = 20_000;
+
+/**
+ * Claim committed events and deliver each to its consumers (each in its own transaction).
+ * C-08: an event that used all RELAY.maxAttempts claims (for example one that crashes the worker) goes dead
+ * with an ops alert instead of being claimed again.
+ */
+export async function relayOutboxOnce(opts: { budgetMs?: number } = {}): Promise<RelayResult> {
   const result: RelayResult = { claimed: 0, done: 0, retried: 0, dead: 0 };
-  const claimed = await repo.claimOutboxEvents(pool, clock.now(), RELAY.leaseSeconds, RELAY.batchSize);
+  const started = Date.now();
+  const deadline = started + (opts.budgetMs ?? Number.POSITIVE_INFINITY);
+  for (const e of await repo.deadenOverCapOutbox(pool, clock.now(), RELAY.maxAttempts)) {
+    result.dead++;
+    console.error(`[outbox] event ${e.id} (${e.name}) dead after ${e.attempts} attempts (no result recorded)`);
+    await raiseOpsAlert('outbox.dead', `event ${e.name} ${e.id} failed ${e.attempts} times`);
+  }
+  const claimed = await repo.claimOutboxEvents(pool, clock.now(), RELAY.leaseSeconds, RELAY.batchSize, RELAY.maxAttempts);
   result.claimed = claimed.length;
 
-  for (const row of claimed) {
+  for (let i = 0; i < claimed.length; i++) {
+    const row = claimed[i];
+    if (Date.now() > deadline) {
+      await repo.releaseOutboxClaims(pool, claimed.slice(i).map((r) => ({ id: r.id, lease: r.lease_until })));
+      break;
+    }
+    try {
+      await relayOne(row, result);
+    } catch (err) {
+      // A failure outside the consumers (database error while reading/recording): the lease expires and the
+      // capped claim logic above retries it or dead-ends it.
+      console.error(`[outbox] event ${row.id} could not be processed: ${errorSummary(err)}`);
+    }
+  }
+  return result;
+}
+
+async function relayOne(row: repo.OutboxRow, result: RelayResult): Promise<void> {
+  {
     const event: DeliveredEvent = {
       id: row.id,
       name: row.name as DeliveredEvent['name'],
@@ -142,12 +174,12 @@ export async function relayOutboxOnce(): Promise<RelayResult> {
 
     const now = clock.now();
     if (failure === null) {
-      await repo.markOutboxDone(pool, event.id, now);
-      result.done++;
+      // D-07: only the run that still holds the lease records the outcome.
+      if (await repo.markOutboxDone(pool, event.id, now, row.lease_until)) result.done++;
     } else {
       const dead = row.attempts >= RELAY.maxAttempts;
       const next = new Date(now.getTime() + backoffSeconds(row.attempts, RELAY.backoffBaseSeconds, RELAY.backoffCapSeconds) * 1000);
-      await repo.markOutboxRetry(pool, event.id, next, failure, dead);
+      if (!(await repo.markOutboxRetry(pool, event.id, next, failure, dead, row.lease_until))) return;
       if (dead) {
         result.dead++;
         console.error(`[outbox] event ${event.id} (${event.name}) dead after ${row.attempts} attempts`);
@@ -157,7 +189,6 @@ export async function relayOutboxOnce(): Promise<RelayResult> {
       }
     }
   }
-  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +223,7 @@ export const JOB_RETRY = { baseSeconds: 30, capSeconds: 3600 } as const;
 
 async function execute(handler: PlatformJobHandler, job: { id: string; payload: Record<string, unknown>; attempt: number }) {
   const run = (ctx: CommandContext) => handler.run(ctx, job);
+  // D-05: cleanup/retention jobs commit per batch (autocommit client), so locks and snapshots stay short.
   if (handler.transactional === false) return runSystemNoTx(handler.kind, run);
   return runSystemTx(handler.kind, run);
 }
@@ -202,24 +234,37 @@ export interface JobRunResult {
   dead: number;
 }
 
-/** Claim and run due job rows (optionally only some kinds). */
-export async function runDueJobs(kinds?: JobKind[], limit = 20): Promise<JobRunResult> {
-  const registered = getJobHandlers().map((h) => h.kind);
-  const wanted = kinds ? registered.filter((k) => kinds.includes(k)) : registered;
+/**
+ * Claim and run due job rows (optionally only some kinds).
+ * - D-07: jobs are claimed one at a time right before they run, each with its own handler's lease, and the
+ *   outcome is recorded only while that lease is still ours.
+ * - C-08: a job that used all its attempts (for example one that crashes the worker) goes dead with an alert.
+ * - F-12: no new job starts after `opts.budgetMs`.
+ */
+export async function runDueJobs(kinds?: JobKind[], limit = 20, opts: { budgetMs?: number } = {}): Promise<JobRunResult> {
+  const handlers = getJobHandlers().filter((h) => !kinds || kinds.includes(h.kind));
+  const wanted = handlers.map((h) => h.kind as string);
+  const leases = handlers.map((h) => Math.max(30, h.leaseSeconds));
   const result: JobRunResult = { ran: 0, failed: 0, dead: 0 };
-  const maxLease = Math.max(30, ...getJobHandlers().map((h) => h.leaseSeconds));
-  const claimed = await repo.claimJobs(pool, wanted, clock.now(), maxLease, limit);
-  for (const row of claimed) {
+  const deadline = Date.now() + (opts.budgetMs ?? Number.POSITIVE_INFINITY);
+  for (const j of await repo.deadenOverCapJobs(pool, wanted, clock.now())) {
+    result.dead++;
+    console.error(`[jobs] ${j.kind} job ${j.id} dead after ${j.attempts} attempts (no result recorded)`);
+    await raiseOpsAlert(`job.dead:${j.kind}`, `job ${j.kind} ${j.id} failed ${j.attempts} times`);
+  }
+  for (let i = 0; i < limit && Date.now() <= deadline; i++) {
+    const [row] = await repo.claimJobs(pool, wanted, leases, clock.now(), 1);
+    if (!row) break;
     const handler = handlerFor(row.kind);
     if (!handler) continue;
     try {
       await execute(handler, { id: row.id, payload: row.payload ?? {}, attempt: row.attempts });
-      await repo.markJobDone(pool, row.id, clock.now());
-      result.ran++;
+      if (await repo.markJobDone(pool, row.id, clock.now(), row.lease_until)) result.ran++;
+      else console.error(`[jobs] ${row.kind} job ${row.id} finished after its lease was lost; result not recorded`);
     } catch (err) {
       const dead = row.attempts >= row.max_attempts;
       const next = new Date(clock.now().getTime() + backoffSeconds(row.attempts, JOB_RETRY.baseSeconds, JOB_RETRY.capSeconds) * 1000);
-      await repo.markJobRetry(pool, row.id, next, errorSummary(err), dead);
+      if (!(await repo.markJobRetry(pool, row.id, next, errorSummary(err), dead, row.lease_until))) continue;
       if (dead) {
         result.dead++;
         console.error(`[jobs] ${row.kind} job ${row.id} dead after ${row.attempts} attempts`);

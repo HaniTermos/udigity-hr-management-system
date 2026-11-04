@@ -3,6 +3,7 @@
  * Contract: docs/implementation/plan.md §4.1, docs/security/authz-matrix.md §3.9.
  */
 import { z } from 'zod';
+import { safeString } from '../../shared/validation.js';
 import { defineMatrixActions } from '../access/matrix.js';
 
 export const NOTIFICATION_ACTIONS = defineMatrixActions([
@@ -12,8 +13,8 @@ export const NOTIFICATION_ACTIONS = defineMatrixActions([
   'reminder.send_again',
 ] as const);
 
-export const MarkReadParamSchema = z.object({ id: z.string().uuid() }).strict();
-export const ReminderParamSchema = z.object({ id: z.string().uuid() }).strict();
+export const MarkReadParamSchema = z.object({ id: safeString().uuid() }).strict();
+export const ReminderParamSchema = z.object({ id: safeString().uuid() }).strict();
 
 export interface NotificationDto {
   id: string;

@@ -13,11 +13,14 @@ import { config } from './config/index.js';
 import { pool } from './db/pool.js';
 import { initModules } from './modules/index.js';
 import { assertEmailConfigSafe, describeEmailConfig, emailDeliveryWarning, loadEmailConfig } from './modules/notifications/emailConfig.js';
-import { beat, companyTimezone, errorSummary, relayOutboxOnce, runDueJobs, schedulerTick, WORKER_ID } from './modules/platform/service.js';
+import { beat, companyTimezone, errorSummary, LOOP_BUDGET_MS, relayOutboxOnce, runDueJobs, schedulerTick, WORKER_ID } from './modules/platform/service.js';
 import { assertRuntimeRole } from './shared/runtimeRole.js';
 import { exitOnCrash } from './shared/crash.js';
 
 const POLL_MS = 2000;
+/** F-12: the heartbeat has its own timer, so a slow consumer or SMTP send never makes the worker look dead. */
+const HEARTBEAT_MS = 30_000;
+let heartbeatTimer: NodeJS.Timeout | null = null;
 
 let stopping = false;
 let timer: NodeJS.Timeout | null = null;
@@ -25,13 +28,13 @@ let running: Promise<void> | null = null;
 
 async function iteration(): Promise<void> {
   try {
-    await relayOutboxOnce();
+    await relayOutboxOnce({ budgetMs: LOOP_BUDGET_MS });
   } catch (err) {
     console.error(`[worker] relay error: ${errorSummary(err)}`);
   }
   try {
     await schedulerTick(await companyTimezone());
-    await runDueJobs();
+    await runDueJobs(undefined, 20, { budgetMs: LOOP_BUDGET_MS });
   } catch (err) {
     console.error(`[worker] jobs error: ${errorSummary(err)}`);
   }
@@ -52,6 +55,7 @@ async function shutdown(signal: string): Promise<void> {
   stopping = true;
   console.info(`[worker] ${signal} received: finishing current iteration`);
   if (timer) clearTimeout(timer);
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
   if (running) await running.catch(() => undefined);
   await pool.end().catch(() => undefined);
   process.exit(0);
@@ -70,6 +74,10 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
   exitOnCrash('worker');
+  heartbeatTimer = setInterval(() => {
+    beat().catch((err) => console.error(`[worker] heartbeat error: ${errorSummary(err)}`));
+  }, HEARTBEAT_MS);
+  heartbeatTimer.unref();
   schedule();
 }
 

@@ -68,7 +68,8 @@ router.get('/me/sessions', authenticate, requireAction(A.read), h(async (req, re
 
 router.post('/check-in', authenticate, requireAction(A.checkIn), idempotent('attendance.check_in', { required: false }), h(async (req, res) => {
   CheckInSchema.parse(req.body ?? {});
-  const outcome = await runCommand(req, (ctx) => service.checkIn(ctx));
+  const pre = await service.preResolveOffice(pool); // C-09: DNS before the transaction and the employee lock
+  const outcome = await runCommand(req, (ctx) => service.checkIn(ctx, pre));
   // The failed attempt is audited in the committed transaction; then 422 (AC-ATT-005).
   if (outcome.kind === 'office_failed') {
     throw ruleViolation(
@@ -84,7 +85,8 @@ router.post('/check-in', authenticate, requireAction(A.checkIn), idempotent('att
 router.post('/check-out', authenticate, requireAction(A.checkOut), idempotent('attendance.check_out', { required: false }), h(async (req, res) => {
   const body = CheckOutSchema.parse(req.body ?? {});
   // D5: a failed office check closes provisionally (pinned); there is no blocked outcome any more.
-  const outcome = await runCommand(req, (ctx) => service.checkOut(ctx, body));
+  const pre = await service.preResolveOffice(pool); // C-09
+  const outcome = await runCommand(req, (ctx) => service.checkOut(ctx, body, pre));
   res.json({ session: outcome.session, outcome: outcome.outcome, label: DEMO_LABEL });
 }));
 

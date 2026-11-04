@@ -38,6 +38,8 @@ export interface JobHandler {
   maxAttempts: number;
   /** Lease length; a crashed run becomes claimable again after it. */
   leaseSeconds: number;
+  /** false: run on an autocommit client (each statement/batch commits on its own; D-05). Default: one transaction. */
+  transactional?: boolean;
   run(ctx: CommandContext, job: { id: string; payload: Record<string, unknown>; attempt: number }): Promise<void>;
 }
 

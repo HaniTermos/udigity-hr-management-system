@@ -581,8 +581,29 @@ export async function setEmployeeSchedule(ctx: CommandContext, employeeId: strin
 }
 
 /** The D2 office check with the dynamic-DNS hostnames resolved (cached, fail closed after 60 min). */
-async function officeCheckNow(clientIp: string | null | undefined, s: Schedule) {
-  const dns = s.officeHostnames.length > 0 ? await resolveOfficeHostnames(s.officeHostnames) : { ips: [], unresolved: [] };
+/** C-09: office hostnames resolved BEFORE the command transaction (and its employee lock) opens. */
+export interface OfficePreResolve {
+  hostnames: string[];
+  ips: string[];
+  unresolved: string[];
+}
+
+/** Resolve the saved office hostnames (cached, 2 s cap per host) on the pool, outside any transaction. */
+export async function preResolveOffice(db: Queryable): Promise<OfficePreResolve> {
+  const { schedule } = await currentSchedule(db);
+  const hostnames = [...schedule.officeHostnames];
+  if (hostnames.length === 0) return { hostnames, ips: [], unresolved: [] };
+  return { hostnames, ...(await resolveOfficeHostnames(hostnames)) };
+}
+
+async function officeCheckNow(clientIp: string | null | undefined, s: Schedule, pre?: OfficePreResolve) {
+  let dns: { ips: string[]; unresolved: string[] } = { ips: [], unresolved: [] };
+  if (s.officeHostnames.length > 0) {
+    // Use the pre-resolved answer when the saved hostnames are still the same; otherwise (settings changed
+    // in between, or no pre-resolution) resolve now.
+    const same = pre && pre.hostnames.length === s.officeHostnames.length && pre.hostnames.every((h, i) => h === s.officeHostnames[i]);
+    dns = same ? pre : await resolveOfficeHostnames(s.officeHostnames);
+  }
   return { ...officeCheck(clientIp, s, dns.ips), hostnamesUnresolved: dns.unresolved.length > 0 };
 }
 
@@ -659,7 +680,7 @@ export type CheckInOutcome =
   | { kind: 'office_failed'; mode: VerificationMode; hostnamesUnresolved: boolean };
 
 /** POST /check-in. The failed attempt is audited and committed; the route then answers 422. */
-export async function checkIn(ctx: CommandContext): Promise<CheckInOutcome> {
+export async function checkIn(ctx: CommandContext, pre?: OfficePreResolve): Promise<CheckInOutcome> {
   const employeeId = actorIdOf(ctx);
   await repo.lockEmployeeAttendance(ctx.tx, employeeId);
   const open = await repo.openSessionOf(ctx.tx, employeeId);
@@ -668,7 +689,7 @@ export async function checkIn(ctx: CommandContext): Promise<CheckInOutcome> {
   }
   const now = clock.now();
   const info = await currentSchedule(ctx.tx);
-  const check = await officeCheckNow(ctx.clientIp, info.schedule);
+  const check = await officeCheckNow(ctx.clientIp, info.schedule, pre);
   // D1: no check-in (not even under a remote exception) until an Owner-saved, complete version exists.
   if (check.result === 'not_configured') throw notConfigured(info.schedule);
   const workDate = workDateOf(now, info.schedule.timezone);
@@ -735,7 +756,7 @@ function assertWorkSummary(text: string, field: string): void {
  * D5: a session flagged "missing checkout" or from an earlier work date is never self-closed; the
  * employee sends a correction request instead (409 CORRECTION_REQUIRED).
  */
-export async function checkOut(ctx: CommandContext, input: CheckOutInput): Promise<CheckOutOutcome> {
+export async function checkOut(ctx: CommandContext, input: CheckOutInput, pre?: OfficePreResolve): Promise<CheckOutOutcome> {
   const employeeId = actorIdOf(ctx);
   await repo.lockEmployeeAttendance(ctx.tx, employeeId);
   const open = await repo.openSessionOf(ctx.tx, employeeId, true);
@@ -744,7 +765,7 @@ export async function checkOut(ctx: CommandContext, input: CheckOutInput): Promi
 
   const now = clock.now();
   const info = await currentSchedule(ctx.tx);
-  const check = await officeCheckNow(ctx.clientIp, info.schedule);
+  const check = await officeCheckNow(ctx.clientIp, info.schedule, pre);
   if (check.result === 'not_configured') throw notConfigured(info.schedule);
   const sessionSchedule = withOverride(await scheduleResolver(ctx.tx, info)(open), await employeeOverrideOn(ctx.tx, employeeId, open.work_date));
   if (open.work_date < workDateOf(now, info.schedule.timezone) || missingCheckoutOf(open, sessionSchedule, now)) {
@@ -1393,6 +1414,8 @@ async function ownerSummaryPatch(ctx: CommandContext, s: repo.SessionRow, workCo
 export async function adjustSession(ctx: CommandContext, id: string, input: AdjustInput) {
   const s0 = await repo.sessionById(ctx.tx, id);
   if (!s0) throw notFound();
+  // E-03 (D4): nobody adjusts their own attendance record, whatever role grants the action.
+  if (s0.employee_id === actorIdOf(ctx)) throw selfDecision('You cannot adjust your own attendance session');
   await repo.lockEmployeeAttendance(ctx.tx, s0.employee_id);
   const s = (await repo.sessionById(ctx.tx, id, true))!;
   if (s.version !== input.version) throw versionConflict(s.version, await reloadSession(ctx, s.id)); // BL-09
@@ -1452,6 +1475,8 @@ export async function adjustSession(ctx: CommandContext, id: string, input: Adju
 export async function resolveReview(ctx: CommandContext, id: string, input: ResolveReviewInput) {
   const s0 = await repo.sessionById(ctx.tx, id);
   if (!s0) throw notFound();
+  // E-03 (D4): nobody resolves the review of their own session.
+  if (s0.employee_id === actorIdOf(ctx)) throw selfDecision('You cannot resolve the review of your own attendance session');
   await repo.lockEmployeeAttendance(ctx.tx, s0.employee_id);
   const s = (await repo.sessionById(ctx.tx, id, true))!;
   if (s.state === 'closed' && s.review_resolved_at) return { session: await reloadSession(ctx, s.id), label: DEMO_LABEL };
@@ -1514,6 +1539,8 @@ export async function resolveReview(ctx: CommandContext, id: string, input: Reso
 
 /** POST /sessions (Owner retroactive session, N-2). */
 export async function createRetroactive(ctx: CommandContext, input: RetroactiveInput) {
+  // E-03 (D4): nobody creates a retroactive session for themselves.
+  if (input.employeeId === actorIdOf(ctx)) throw selfDecision('You cannot create a retroactive session for yourself');
   const emp = await repo.employeeExists(ctx.tx, input.employeeId);
   if (!emp) throw notFound();
   await repo.lockEmployeeAttendance(ctx.tx, input.employeeId);
@@ -1931,8 +1958,9 @@ export async function runExceptionCheck(
 //   `attendance.maxBreaksPerSession` breaks per session (409 BREAK_LIMIT_REACHED).
 // - Times are server time only; a break never starts before the session check-in and is closed
 //   automatically at check-out (audited `attendance.break.auto_closed`).
-// - Allowance `attendance.breakAllowanceMinutes` per session: exceeding it is allowed but audited
-//   (`attendance.excessive_break_detected`) and shown as `isExcessive`.
+// - Allowance `attendance.breakAllowanceMinutes` per session (C-19): no new break starts once it is used up
+//   (409 BREAK_ALLOWANCE_USED); a running break may overrun, which is audited
+//   (`attendance.excessive_break_detected`) and shown as `isExcessive`; check-out closes it.
 // - Reads are own-record only through access.check('attendance_session') (the Owner reads all).
 
 async function breakPolicy(db: Queryable): Promise<{ allowanceSeconds: number; maxBreaks: number }> {
@@ -1967,6 +1995,14 @@ export async function startBreak(ctx: CommandContext, input: StartBreakInput): P
   const sessionBreaks = await repo.listBreaksForSession(ctx.tx, open.id);
   if (sessionBreaks.length >= policy.maxBreaks) {
     throw stateConflict(`At most ${policy.maxBreaks} breaks per session`, { reason: 'BREAK_LIMIT_REACHED', limit: policy.maxBreaks });
+  }
+  // C-19 / S-25: the total break allowance is enforced too. Once the minutes are used up no new break starts
+  // (a running break may still overrun and is flagged when it ends; check-out closes it, auto_closed).
+  if (policy.allowanceSeconds > 0 && breakTotals(sessionBreaks, clock.now()) >= policy.allowanceSeconds) {
+    throw stateConflict(`The break allowance of ${Math.round(policy.allowanceSeconds / 60)} minutes for this session is used up`, {
+      reason: 'BREAK_ALLOWANCE_USED',
+      allowanceMinutes: Math.round(policy.allowanceSeconds / 60),
+    });
   }
 
   const now = clock.now();

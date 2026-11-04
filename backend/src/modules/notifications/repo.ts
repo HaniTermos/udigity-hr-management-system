@@ -121,7 +121,13 @@ export async function lockKey(db: Queryable, key: string): Promise<void> {
 }
 
 /** Claim due email deliveries (SKIP LOCKED + lease). Increments attempt_count. */
-export async function claimDueEmailDeliveries(db: Queryable, now: Date, leaseSeconds: number, limit: number): Promise<DeliveryRow[]> {
+export async function claimDueEmailDeliveries(
+  db: Queryable,
+  now: Date,
+  leaseSeconds: number,
+  limit: number,
+  maxAttempts: number
+): Promise<DeliveryRow[]> {
   const { rows } = await db.query<DeliveryRow>(
     `UPDATE notification_deliveries d
         SET attempt_count = d.attempt_count + 1,
@@ -130,13 +136,31 @@ export async function claimDueEmailDeliveries(db: Queryable, now: Date, leaseSec
       WHERE d.id IN (
         SELECT id FROM notification_deliveries
          WHERE channel = 'email' AND state IN ('pending', 'retry_pending') AND next_attempt_at <= $1
+           AND attempt_count < $4
            AND (lease_until IS NULL OR lease_until < $1)
          ORDER BY next_attempt_at
          LIMIT $3
          FOR UPDATE SKIP LOCKED)
       RETURNING d.id, d.dedupe_key, d.event_id, d.family, d.template, d.channel, d.recipient_id,
                 d.source_type, d.source_id, d.state, d.attempt_count, d.created_at`,
-    [now, leaseSeconds, limit]
+    [now, leaseSeconds, limit, maxAttempts]
+  );
+  return rows;
+}
+
+/**
+ * C-08: email rows that used every allowed attempt and whose lease expired (the worker crashed or timed out
+ * mid-send, repeatedly). Not claimed again; the caller marks them failed.
+ */
+export async function overCapEmailDeliveries(db: Queryable, now: Date, maxAttempts: number, limit: number): Promise<DeliveryRow[]> {
+  const { rows } = await db.query<DeliveryRow>(
+    `SELECT d.id, d.dedupe_key, d.event_id, d.family, d.template, d.channel, d.recipient_id,
+            d.source_type, d.source_id, d.state, d.attempt_count, d.created_at
+       FROM notification_deliveries d
+      WHERE d.channel = 'email' AND d.state IN ('pending', 'retry_pending') AND d.attempt_count >= $2
+        AND (d.lease_until IS NULL OR d.lease_until < $1)
+      ORDER BY d.next_attempt_at LIMIT $3`,
+    [now, maxAttempts, limit]
   );
   return rows;
 }

@@ -59,8 +59,9 @@ const dailyDigestJob: PlatformJobHandler = {
 const opsAlertsJob: PlatformJobHandler = {
   kind: 'notifications.ops_alerts',
   schedule: { spec: 'every:60' },
+  transactional: false, // D-08: SMTP sends never run inside an open transaction
   maxAttempts: 3,
-  leaseSeconds: 60,
+  leaseSeconds: 180,
   async run() {
     await sendOpsAlerts();
   },

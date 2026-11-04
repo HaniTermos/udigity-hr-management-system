@@ -8,7 +8,8 @@ import { defineActions, type Action, type ActionPolicy } from '../../shared/acce
 import { PageQuerySchema } from '../../shared/pagination.js';
 import { defineMatrixActions } from '../access/schemas.js';
 import type { Role } from '../../middleware/auth.js';
-import { VERIFICATION_MODES, WEEKDAYS, isValidDate, type Punctuality } from './time.js';
+import { VERIFICATION_MODES, WEEKDAYS, type Punctuality } from './time.js';
+import { isoDate, isoDateTime, safeString } from '../../shared/validation.js';
 
 /** authz-matrix §3.3, declared FROM the matrix so roles cannot drift. */
 export const ATTENDANCE_ACTIONS = defineMatrixActions([
@@ -75,10 +76,10 @@ export const A = {
 // Request schemas
 // ---------------------------------------------------------------------------
 
-const isoInstant = z.string().datetime({ offset: true });
-const localDate = z.string().refine(isValidDate, 'Must be a date YYYY-MM-DD');
-const reasonText = z.string().trim().min(1, 'Reason is required').max(1000);
-const optText = (max: number) => z.string().trim().max(max).optional();
+const isoInstant = isoDateTime();
+const localDate = isoDate('Must be a real date YYYY-MM-DD');
+const reasonText = safeString().trim().min(1, 'Reason is required').max(1000);
+const optText = (max: number) => safeString().trim().max(max).optional();
 
 export const IdParamSchema = z.object({ id: z.string().uuid() }).strict();
 
@@ -89,7 +90,7 @@ export const CheckOutSchema = z
     version: z.number().int().positive().optional(),
     summary: z
       .object({
-        workCompleted: z.string().trim().max(4000).default(''),
+        workCompleted: safeString().trim().max(4000).default(''),
         outstandingTasks: optText(4000),
         blockers: optText(4000),
         notes: optText(4000),
@@ -149,7 +150,7 @@ export const CorrectionsQuerySchema = PageQuerySchema.extend({
 export type CorrectionsQuery = z.infer<typeof CorrectionsQuerySchema>;
 
 export const VersionReasonSchema = z
-  .object({ version: z.number().int().positive(), reason: z.string().trim().max(1000).optional() })
+  .object({ version: z.number().int().positive(), reason: safeString().trim().max(1000).optional() })
   .strict();
 
 export const RejectCorrectionSchema = z
@@ -164,7 +165,7 @@ export const RejectCorrectionSchema = z
 export const WithdrawSchema = z.object({ version: z.number().int().positive() }).strict();
 
 /** D6: an Owner-completed "Work completed" (accepted only while the summary is missing). */
-const ownerSummary = z.string().trim().max(4000).optional();
+const ownerSummary = safeString().trim().max(4000).optional();
 
 export const AdjustSchema = z
   .object({
@@ -193,7 +194,7 @@ export const ResolveReviewSchema = z
     checkOutUnknown: z.boolean().optional(),
     workCompleted: ownerSummary,
     /** D4: required when the resolution changes the checkout or completes the summary (service rule). */
-    reason: z.string().trim().max(1000).optional(),
+    reason: safeString().trim().max(1000).optional(),
   })
   .strict()
   .refine((b) => !(b.checkOutAt !== undefined && b.checkOutUnknown === true), {
@@ -235,14 +236,14 @@ export const PutSettingsSchema = z
   .object({
     /** The current versionNo the client saw (0 when no version has been saved yet). */
     version: z.number().int().min(0),
-    timezone: z.string().trim().min(1).max(64).optional(),
+    timezone: safeString().trim().min(1).max(64).optional(),
     workingDays: z.array(weekday).min(1).max(7).optional(),
     shiftStart: hhmm.optional(),
     graceMinutes: z.number().int().min(0).max(240).optional(),
     verificationMode: z.enum(VERIFICATION_MODES).optional(),
-    officeIps: z.array(z.string().trim().min(1).max(64)).max(50).optional(),
+    officeIps: z.array(safeString().trim().min(1).max(64)).max(50).optional(),
     /** Owner decision 2026-10-29: dynamic-DNS names of the office router (no static IP), e.g. office.ddns.net. */
-    officeHostnames: z.array(z.string().trim().min(1).max(253)).max(5).optional(),
+    officeHostnames: z.array(safeString().trim().min(1).max(253)).max(5).optional(),
     holidays: z.array(localDate).max(400).optional(),
     /** D1: the Owner confirms the holiday list (possibly empty). Must end up true on every save. */
     holidaysConfirmed: z.boolean().optional(),
@@ -250,13 +251,13 @@ export const PutSettingsSchema = z
     breakAllowanceMinutes: z.number().int().min(0).max(480).optional(),
     maxBreaksPerSession: z.number().int().min(1).max(20).optional(),
     missingCheckoutFlagHours: z.number().int().min(0).max(72).optional(),
-    reason: z.string().trim().max(500).optional(),
+    reason: safeString().trim().max(500).optional(),
   })
   .strict();
 export type PutSettingsInput = z.infer<typeof PutSettingsSchema>;
 
 export const TestOfficeCheckSchema = z
-  .object({ officeIps: z.array(z.string().trim().min(1).max(64)).max(50).optional() })
+  .object({ officeIps: z.array(safeString().trim().min(1).max(64)).max(50).optional() })
   .strict();
 
 export const REMOTE_STATUSES = ['requested', 'granted', 'rejected', 'revoked'] as const;
@@ -303,7 +304,7 @@ export const PutEmployeeScheduleSchema = z
     shiftStart: hhmm.nullable().optional(),
     workingDays: z.array(weekday).min(1).max(7).nullable().optional(),
     useCompanyDefault: z.boolean().optional(),
-    reason: z.string().trim().max(500).optional(),
+    reason: safeString().trim().max(500).optional(),
   })
   .strict()
   .refine((b) => b.useCompanyDefault === true || b.shiftStart !== undefined || b.workingDays !== undefined, {
@@ -504,14 +505,14 @@ export interface ReviewItemDto {
 export const StartBreakSchema = z
   .object({
     breakType: z.enum(['paid', 'unpaid']).default('unpaid'),
-    notes: z.string().trim().max(500).optional(),
+    notes: safeString().trim().max(500).optional(),
   })
   .strict();
 export type StartBreakInput = z.infer<typeof StartBreakSchema>;
 
 export const EndBreakSchema = z
   .object({
-    notes: z.string().trim().max(500).optional(),
+    notes: safeString().trim().max(500).optional(),
   })
   .strict();
 export type EndBreakInput = z.infer<typeof EndBreakSchema>;

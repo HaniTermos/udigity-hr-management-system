@@ -24,9 +24,15 @@ export type VerificationMode = (typeof VERIFICATION_MODES)[number];
 /** D6: "Work completed" needs at least this many non-whitespace characters (not switchable off). */
 export const SUMMARY_MIN_CHARS = 10;
 
-/** D6: characters that count toward the summary minimum (all whitespace removed). */
+/**
+ * C-12: white space, format characters (zero-width space/joiner, BOM, word joiner, bidi marks), control and
+ * unassigned characters, and the blank-looking Hangul/Braille fillers do not count as visible characters.
+ */
+const INVISIBLE = /[\p{White_Space}\p{Cf}\p{Cc}\p{Cn}\p{Co}\u3164\u115F\u1160\u2800\uFFA0\u180E]/gu;
+
+/** D6: number of visible characters (code points, so an emoji is one) counting toward the summary minimum. */
 export function summaryCharCount(text: string): number {
-  return text.replace(/\s+/g, '').length;
+  return Array.from(text.replace(INVISIBLE, '')).length;
 }
 
 /** The effective attendance schedule (a settings version, or the env pre-fill suggestions). */

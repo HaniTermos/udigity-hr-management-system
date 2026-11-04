@@ -43,15 +43,18 @@ const definition: ModuleDefinition = {
       },
     });
     // J-12 (F-14): retention purge by the retention.* windows. Every 6 h (works without company.timezone).
-    registerJob({
+    // D-05: transactional: false, so every batch of the purge commits on its own (short locks).
+    const retentionJob: PlatformJobHandler = {
       kind: 'platform.retention_purge',
       schedule: { spec: 'every:21600' },
+      transactional: false,
       maxAttempts: 3,
       leaseSeconds: 900,
       async run(ctx) {
         await retentionPurge(ctx.tx, ctx.now);
       },
-    });
+    };
+    registerJob(retentionJob);
   },
 };
 

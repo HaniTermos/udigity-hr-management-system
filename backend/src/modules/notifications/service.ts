@@ -1324,10 +1324,21 @@ async function retrySchedule(): Promise<number[]> {
 
 export async function dispatchDueDeliveries(): Promise<DispatchResult> {
   const out: DispatchResult = { claimed: 0, accepted: 0, captured: 0, retry: 0, failed: 0, suppressed: 0, skipped: 0 };
-  const claimed = await repo.claimDueEmailDeliveries(pool, clock.now(), DISPATCH.leaseSeconds, DISPATCH.batchSize);
+  const retries = await retrySchedule();
+  // C-08: attempts allowed = first send + one per retry delay. A row that used them all without a recorded
+  // result (a send that crashes the worker) is failed visibly instead of being claimed forever.
+  const maxAttempts = retries.length + 1;
+  for (const stuck of await repo.overCapEmailDeliveries(pool, clock.now(), maxAttempts, DISPATCH.batchSize)) {
+    try {
+      await finish(stuck, { state: 'failed', error: 'no result recorded after the maximum number of attempts (worker crashed or timed out)' }, null);
+      out.failed++;
+    } catch (err) {
+      console.error(`[notifications] could not fail stuck delivery ${stuck.id}: ${errorSummary(err)}`);
+    }
+  }
+  const claimed = await repo.claimDueEmailDeliveries(pool, clock.now(), DISPATCH.leaseSeconds, DISPATCH.batchSize, maxAttempts);
   out.claimed = claimed.length;
   if (claimed.length === 0) return out;
-  const retries = await retrySchedule();
   const transport = getEmailTransport();
   // smtp success = accepted by the provider; log / memory success = captured (never delivered).
   // D18 delivery states: queued (pending / retry_pending), provider-accepted, failed, test-captured. "Delivered"
@@ -1371,6 +1382,19 @@ export async function dispatchDueDeliveries(): Promise<DispatchResult> {
       }
     } catch (err) {
       console.error(`[notifications] dispatch error for delivery ${d.id}: ${errorSummary(err)}`);
+      // C-08: never leave the row pending behind a lease. Retry with the normal backoff, then fail visibly.
+      try {
+        const now = clock.now();
+        if (d.attempt_count <= retries.length) {
+          await finish(d, { state: 'retry_pending', error: errorSummary(err), nextAttemptAt: new Date(now.getTime() + retries[d.attempt_count - 1] * 1000) }, null);
+          out.retry++;
+        } else {
+          await finish(d, { state: 'failed', error: errorSummary(err) }, null);
+          out.failed++;
+        }
+      } catch (err2) {
+        console.error(`[notifications] could not record dispatch failure for delivery ${d.id}: ${errorSummary(err2)}`);
+      }
     }
   }
   return out;

@@ -2,7 +2,9 @@
  * J-06 `identity.session_cleanup` and J-12 `platform.retention_purge` (F-14, FX-BE).
  *
  * Both jobs are idempotent and bounded: each statement deletes at most BATCH rows per pass and a run
- * makes at most MAX_PASSES passes per table, so a run never holds long locks. Retention windows come
+ * makes at most MAX_PASSES passes per table, so a run never holds long locks.
+ * D-05: both jobs run on an autocommit client (see platform/service.ts execute), so every batch is its own
+ * short transaction; a failure keeps what earlier batches already deleted (all statements are idempotent). Retention windows come
  * from the C3 `retention.*` CFG flags (Demonstration alternative — not approved, docs/policy-defaults.md).
  *
  * Never purged here: audit_events (append-only), business data, call attempts, attendance, deals.
@@ -124,7 +126,12 @@ export async function retentionPurge(db: Queryable, now: Date): Promise<Retentio
     [jobsCutoff]
   );
   // Secrets: the ciphertext is cleared as soon as it is expired; the row goes after the window.
-  await db.query(`UPDATE notification_secrets SET ciphertext = NULL WHERE ciphertext IS NOT NULL AND expires_at < $1`, [now]);
+  await purge(
+    db,
+    `UPDATE notification_secrets SET ciphertext = NULL WHERE ref_id IN (
+       SELECT ref_id FROM notification_secrets WHERE ciphertext IS NOT NULL AND expires_at < $1 LIMIT $2)`,
+    [now]
+  );
   const notificationSecrets = await purge(
     db,
     `DELETE FROM notification_secrets WHERE ref_id IN (
