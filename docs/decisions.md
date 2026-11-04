@@ -117,6 +117,9 @@ Earlier text stays where it lived; this log records what the baseline changes. "
 
 | S-26 | "Four roles; no custom-role management" (DEC-032, Fixed v1 scope) | Baseline | Owner answer 2026-10-29: custom roles **back on** — the Owner creates roles with chosen permissions (Owner-only, 2FA) and assigns them; custom roles follow the same visibility rules and can never hold Owner-only actions; roles are deactivated, not hard-deleted | Fixed v1 scope |
 
+| S-27 | Business edit hard-deletes removed phones, freeing them for duplicates (review D-11) | Implementation | Owner answer 2026-11-04: a phone removed by an edit is **kept as history and still blocks duplicates**, like archived businesses (D20) | D11, D20 |
+| S-28 | Public hostname (brief 2026-11-04 said `systemmanagement.udigity.com`) | Review brief | Owner answer 2026-11-04: **`https://hrsystem.udigity.com`**; the server is a Hostinger VPS that already runs other sites/a proxy on 80/443, so the app runs behind that proxy | Deployment |
+
 **Approved as built (Owner, 2026-10-29: "I have approved every Figma file, step, work and question").** Every item the UI still marked as pending, a demonstration alternative or "No DEC ID" is approved with its current behaviour, and those markers are removed from the app:
 
 | ID shown in the UI | Item | Approved behaviour (as built) |
