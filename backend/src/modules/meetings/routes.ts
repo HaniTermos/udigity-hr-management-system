@@ -7,6 +7,9 @@ import { Router } from 'express';
 import { pool } from '../../db/pool.js';
 import { authenticate } from '../../middleware/auth.js';
 import { access, assertAllowed, principalFromRequest, requireAction } from '../../shared/access.js';
+import { notFound } from '../../shared/errors.js';
+import { findOpenForBusiness } from '../deals/repo.js';
+import { getDealSummary } from '../deals/service.js';
 import { runCommand } from '../../shared/tx.js';
 import { auditOwnerHiddenRead } from '../access/schemas.js';
 import { idempotent } from '../platform/idempotency.js';
@@ -38,11 +41,39 @@ router.get('/', authenticate, requireAction('meeting.read'), async (req, res, ne
 /**
  * FX-BE-C3: the attendee picker for anyone who may schedule (Owner, Call Center, Developer), so the
  * schedule drawer no longer needs the Owner-only GET /api/employees. Registered before `/:id`.
+ *
+ * Review 2026-11-04 E-07 (matrix §3.2 "Directory is Owner only"): the Owner gets every active employee.
+ * Everyone else gets only the people relevant to the meeting: the Owners, themselves and, for the
+ * deal (`dealId`, or the open deal of `businessId`, which the caller must be able to schedule on), its
+ * assigned Developer and the business's current Call Center agent. A deal with no Developer yet also
+ * lists the active Developers (scheduling one assigns them, as GET /api/deals/developers already shows).
+ * Response shape unchanged: `{ items: [{ id, fullName, role }], total }`.
  */
 router.get('/attendee-options', authenticate, requireAction('meeting.create'), async (req, res, next) => {
   try {
     const q = AttendeeOptionsQuery.parse(req.query);
-    const rows = await repo.attendeeOptions(pool, q);
+    const principal = principalFromRequest(req);
+    let limitTo: { ids: string[]; roles: string[] } | undefined;
+    if (principal.role !== 'owner') {
+      limitTo = { ids: [principal.employeeId], roles: ['owner'] };
+      let deal: Awaited<ReturnType<typeof getDealSummary>> = null;
+      if (q.dealId) {
+        deal = await getDealSummary(pool, q.dealId);
+        if (!deal || (q.businessId && q.businessId !== deal.businessId)) throw notFound();
+      } else if (q.businessId) {
+        assertAllowed(await access.check(pool, principal, 'business.read', { type: 'business', id: q.businessId }));
+        const open = await findOpenForBusiness(pool, q.businessId);
+        deal = open ? await getDealSummary(pool, open.id) : null;
+      }
+      if (deal) {
+        assertAllowed(await access.check(pool, principal, 'meeting.create', { type: 'deal', id: deal.id }));
+        if (deal.assignedDeveloperId) limitTo.ids.push(deal.assignedDeveloperId);
+        else if (principal.role === 'call_center') limitTo.roles.push('developer');
+        const agent = await repo.currentAssigneeOf(pool, deal.businessId);
+        if (agent) limitTo.ids.push(agent);
+      }
+    }
+    const rows = await repo.attendeeOptions(pool, q, limitTo);
     res.json({ items: rows.map((r) => ({ id: r.id, fullName: r.full_name, role: r.role })), total: rows.length });
   } catch (e) {
     next(e);

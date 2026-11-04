@@ -21,9 +21,15 @@ export const MEETING_ACTIONS = defineMatrixActions([
 
 export const IdParam = z.object({ id: z.string().uuid() }).strict();
 
-/** GET /api/meetings/attendee-options (FX-BE-C3): the staff picker for whoever may schedule. */
+/**
+ * GET /api/meetings/attendee-options (FX-BE-C3): the staff picker for whoever may schedule.
+ * Review 2026-11-04 E-07: non-Owners get only the people relevant to the meeting (see routes.ts), so
+ * pass the deal (`dealId`) or the business (`businessId`, its open deal) the meeting is for.
+ */
 export const AttendeeOptionsQuery = z
   .object({
+    dealId: z.string().uuid().optional(),
+    businessId: z.string().uuid().optional(),
     q: z.string().trim().max(80).optional(),
     role: z.string().trim().min(1).max(64).optional(),
     pageSize: z.coerce.number().int().min(1).max(100).default(100),

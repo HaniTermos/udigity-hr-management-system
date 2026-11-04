@@ -61,6 +61,8 @@ describe.skipIf(!hasTestDb)('Identity API against TEST_DATABASE_URL', { timeout:
     const ready = await request(app).get('/readyz');
     expect(ready.status).toBe(200);
     expect(ready.body.error).toBeUndefined();
+    // C-15: generic body only (no configuration or database detail).
+    expect(ready.body).toEqual({ status: 'ready' });
   });
 
   it('generic failure for unknown email, wrong password and deactivated account', async () => {
@@ -157,6 +159,127 @@ describe.skipIf(!hasTestDb)('Identity API against TEST_DATABASE_URL', { timeout:
     expect(again.body.code).toBe('RESET_LINK_INVALID');
     expect((await request(app).get('/api/auth/me').set('Cookie', before.cookie)).status).toBe(401);
     expect((await login(emp.email, 'a brand new passphrase')).status).toBe(200);
+  });
+
+  // ---------------------------------------------------------------- review 2026-11-04 (FIX-SEC)
+  /** Runs `fn` with X-Forwarded-For honoured, so requests can come from different client addresses. */
+  async function withTrustedProxy<T>(fn: () => Promise<T>): Promise<T> {
+    const before = app.get('trust proxy');
+    app.set('trust proxy', true);
+    try {
+      return await fn();
+    } finally {
+      app.set('trust proxy', before);
+    }
+  }
+  const loginFrom = (ip: string, email: string, password: string) =>
+    request(app).post('/api/auth/login').set('Origin', ORIGIN).set('X-Forwarded-For', ip).send({ email, password });
+
+  it('E-01/F-04: failures from one address never lock the account; the right password from another address signs in', async () => {
+    const emp = await uniqueEmployee('call_center');
+    await withTrustedProxy(async () => {
+      for (let i = 0; i < config.lockout.maxFailures; i++) {
+        expect((await loginFrom('203.0.113.50', emp.email, 'Wrong-password-000')).status).toBe(401);
+      }
+      const pairLocked = await loginFrom('203.0.113.50', emp.email, PASSWORD);
+      expect(pairLocked.status).toBe(429);
+      expect(pairLocked.body.code).toBe('RATE_LIMITED');
+      expect(Number(pairLocked.headers['retry-after'])).toBeGreaterThan(0);
+      const elsewhere = await loginFrom('198.51.100.60', emp.email, PASSWORD);
+      expect(elsewhere.status).toBe(200);
+    });
+    const { rows } = await query<{ locked_until: Date | null; failed_count: number }>(
+      'SELECT locked_until, failed_count FROM credentials WHERE employee_id = $1',
+      [emp.id]
+    );
+    expect(rows[0].locked_until).toBeNull();
+  });
+
+  it('F-01: successful sign-ins never count toward the per-IP limit (office NAT)', async () => {
+    const emp = await uniqueEmployee('developer');
+    await withTrustedProxy(async () => {
+      for (let i = 0; i < 25; i++) expect((await loginFrom('192.0.2.77', emp.email, PASSWORD)).status).toBe(200);
+    });
+  });
+
+  it('E-05: wrong current passwords on /password/change count toward the lockout (429 RATE_LIMITED once locked)', async () => {
+    const emp = await uniqueEmployee('data_entry');
+    const s = await login(emp.email);
+    const change = (currentPassword: string) =>
+      request(app)
+        .post('/api/auth/password/change')
+        .set('Cookie', s.cookie)
+        .set('Origin', ORIGIN)
+        .set('X-CSRF-Token', s.csrf)
+        .send({ currentPassword, newPassword: 'A-new-password-456!' });
+    for (let i = 0; i < config.lockout.maxFailures - 1; i++) expect((await change('Not-the-password-1')).status).toBe(401);
+    const { rows } = await query<{ failed_count: number }>('SELECT failed_count FROM credentials WHERE employee_id = $1', [emp.id]);
+    expect(rows[0].failed_count).toBe(config.lockout.maxFailures - 1);
+    const locking = await change('Not-the-password-1'); // this failure sets the lock
+    expect(locking.status).toBe(429);
+    expect(locking.body.code).toBe('RATE_LIMITED');
+    const locked = await change(PASSWORD); // even the right password waits for the lock
+    expect(locked.status).toBe(429);
+    expect(locked.body.code).toBe('RATE_LIMITED');
+    expect(locked.headers['retry-after']).toBeDefined();
+  });
+
+  it('E-04 + E-09: a password change revokes open reset links and rotates the session token (session stays usable)', async () => {
+    const emp = await uniqueEmployee('developer');
+    const s = await login(emp.email);
+    const r = await request(app).post('/api/auth/password-reset/request').set('Origin', ORIGIN).send({ email: emp.email });
+    expect(r.status).toBe(202);
+    const open = await query(`SELECT 1 FROM security_tokens WHERE employee_id = $1 AND purpose = 'password_reset' AND used_at IS NULL AND superseded_at IS NULL`, [emp.id]);
+    expect(open.rowCount).toBe(1);
+
+    const changed = await request(app)
+      .post('/api/auth/password/change')
+      .set('Cookie', s.cookie)
+      .set('Origin', ORIGIN)
+      .set('X-CSRF-Token', s.csrf)
+      .send({ currentPassword: PASSWORD, newPassword: 'A-new-password-789!' });
+    expect(changed.status).toBe(200);
+    const after = await query(`SELECT 1 FROM security_tokens WHERE employee_id = $1 AND purpose = 'password_reset' AND used_at IS NULL AND superseded_at IS NULL`, [emp.id]);
+    expect(after.rowCount).toBe(0);
+
+    const rotated = sessionCookieFrom(changed);
+    expect(rotated).not.toBe('');
+    expect(rotated).not.toBe(s.cookie);
+    expect((await request(app).get('/api/auth/me').set('Cookie', s.cookie)).status).toBe(401); // old cookie dead
+    const me = await request(app).get('/api/auth/me').set('Cookie', rotated);
+    expect(me.status).toBe(200);
+    expect(me.body.csrfToken).toBe(s.csrf); // same session: CSRF token unchanged
+  });
+
+  it('F-05 + E-06: reset requests are capped per email silently and answer known and unknown emails alike', async () => {
+    const emp = await uniqueEmployee('developer');
+    const ask = async (email: string) => {
+      const t0 = Date.now();
+      const res = await request(app).post('/api/auth/password-reset/request').set('Origin', ORIGIN).send({ email });
+      return { res, ms: Date.now() - t0 };
+    };
+    const known = await ask(emp.email);
+    const unknown = await ask(`nobody.${Date.now()}@test.local`);
+    expect(known.res.status).toBe(202);
+    expect(unknown.res.body).toEqual(known.res.body);
+    // E-06: both answers wait for the same floor (500 ms), so the DB work of the known path is not visible.
+    expect(known.ms).toBeGreaterThanOrEqual(480);
+    expect(unknown.ms).toBeGreaterThanOrEqual(480);
+
+    for (let i = 0; i < 5; i++) expect((await ask(emp.email)).res.status).toBe(202);
+    const issued = await query(`SELECT count(*)::int AS n FROM security_tokens WHERE employee_id = $1 AND purpose = 'password_reset'`, [emp.id]);
+    expect(issued.rows[0].n).toBe(3); // RESET_REQUESTS_PER_EMAIL_PER_HOUR
+  });
+
+  it('F-08: an invalid reset link is refused without hashing (fast) and keeps the generic code', async () => {
+    const t0 = Date.now();
+    const res = await request(app)
+      .post('/api/auth/password-reset/complete')
+      .set('Origin', ORIGIN)
+      .send({ token: 'a'.repeat(64), newPassword: 'whatever passphrase' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('RESET_LINK_INVALID');
+    expect(Date.now() - t0).toBeLessThan(2000);
   });
 
   it('audit rows cannot be updated or deleted', async () => {

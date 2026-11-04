@@ -470,20 +470,35 @@ describe('custom roles: rule table and route gate (§3.11)', () => {
     expect(can({ employeeId: U, role: HR, sessionState: 'active' }, 'employee.create' as Action)).toBe(false);
   });
 
-  it("a grantable admin row needs the holder's verified second factor (fail closed until identity registers one)", async () => {
+  it('E-02 / S-26: the former grantable admin rows are refused even with a stored grant and a verified second factor', async () => {
     // The attendance module (which declares this row) is not imported here: declare it from the matrix.
     if (!getActionPolicy('attendance.overview.read' as Action)) defineMatrixActions(['attendance.overview.read']);
     grants[HR] = { 'attendance.overview.read': 'global' };
-    const closed = await run('attendance.overview.read', HR);
-    expect(closed.nexted).toBe(false);
-    expect(closed.body?.code).toBe('OWNER_2FA_REQUIRED');
     registerSecondFactorVerifier((u) => u.sessionId === 's');
     try {
-      expect((await run('attendance.overview.read', HR)).nexted).toBe(true);
-      expect((await run('attendance.overview.read', HR, 'pending_2fa_verification')).body?.code).toBe('OWNER_2FA_REQUIRED');
+      const r = await run('attendance.overview.read', HR);
+      expect(r.nexted).toBe(false);
+      expect(r.body?.code).toBe('FORBIDDEN_ROLE');
     } finally {
       registerSecondFactorVerifier(() => false);
+      delete grants[HR];
     }
+    for (const a of ['employee.list', 'employee.read', 'employee.read_open_items', 'attendance.correction.review', 'attendance.adjust',
+      'attendance.retroactive_create', 'attendance.remote_exception.grant', 'attendance.failed_checkout.review', 'attendance.overview.read']) {
+      expect(grantRefusal(a), a).toMatch(/Owner-only administrative/);
+      expect(AUTHZ_MATRIX[a].grantable, a).toBeFalsy();
+    }
+  });
+
+  it('E-08 / D15: a custom role with deal.read/meeting.read at any scope never sees an unassigned accepted opportunity', () => {
+    for (const ds of ['global', 'self', 'department', 'assigned_only'] as const) {
+      for (const action of ['deal.read', 'meeting.read'] as Action[]) {
+        const { fr } = frag(HR, action, ds);
+        expect(fr.relation, `${ds} ${action}`).toContain("af.deal_stage IS DISTINCT FROM 'accepted_opportunity' OR $1::uuid = ANY(af.deal_developer_ids)");
+      }
+    }
+    // Business surfaces are unchanged (D15 is about the opportunity, not the business record).
+    expect(frag(HR, 'business.read', 'global').fr.relation).toBe('TRUE');
   });
 
   it('the four system roles are never widened by a grant', async () => {
@@ -530,7 +545,7 @@ describe('custom roles: rule table and route gate (§3.11)', () => {
 
   it('grantRefusal: matrix membership, nobody rows and unmarked admin rows', () => {
     expect(grantRefusal('business.read')).toBeUndefined();
-    expect(grantRefusal('attendance.overview.read')).toBeUndefined();
+    expect(grantRefusal('attendance.overview.read')).toMatch(/Owner-only administrative/); // S-26 (E-02)
     expect(grantRefusal('nope.action')).toMatch(/not an action/);
     expect(grantRefusal('business.delete')).toMatch(/nobody/);
     expect(grantRefusal('audit.update')).toMatch(/nobody/);

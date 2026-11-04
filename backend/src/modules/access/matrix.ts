@@ -42,8 +42,13 @@ const row = (section: string, roles: readonly Role[], note?: string, admin?: boo
   ...(admin ? { admin: true } : {}),
 });
 
-/** An admin row that §3.11 lets a custom role hold (review/read work an HR-type role needs; no escalation). */
-const grantableRow = (section: string, note?: string): MatrixRow => ({ ...row(section, [O], note, true), grantable: true });
+/**
+ * Review 2026-11-04 E-02 / S-26 (Owner, 2026-10-29: custom roles "can never hold Owner-only actions"):
+ * the nine admin rows §3.11 once marked grantable are Owner-only again. No row carries `grantable`, so
+ * `grantRefusal` refuses them on create/update and the role cache drops any stored grant at load.
+ */
+const ownerOnlyRow = (section: string, note = ''): MatrixRow =>
+  row(section, [O], `${note ? `${note}; ` : ''}S-26: never grantable to a custom role`, true);
 
 /** authz-matrix.md §3 as data. Keys are the matrix action names. */
 export const AUTHZ_MATRIX: Readonly<Record<string, MatrixRow>> = Object.freeze({
@@ -56,13 +61,13 @@ export const AUTHZ_MATRIX: Readonly<Record<string, MatrixRow>> = Object.freeze({
   'employee.manage_own_recovery_codes': row('3.1', [O], 'AU-9 own recovery codes, step-up TOTP; BL-06', true),
 
   // §3.2 employees and profile
-  'employee.list': grantableRow('3.2', 'Directory is Owner only; §3.11 grantable (read)'),
-  'employee.read': grantableRow('3.2', '§3.11 grantable (read)'),
+  'employee.list': ownerOnlyRow('3.2', 'Directory is Owner only'),
+  'employee.read': ownerOnlyRow('3.2'),
   'employee.create': row('3.2', [O], undefined, true),
   'employee.update': row('3.2', [O], 'Role change ends sessions', true),
   'employee.deactivate': row('3.2', [O], 'Not self; not the last active Owner', true),
   'employee.activate': row('3.2', [O], 'DEMO OQ-14', true),
-  'employee.read_open_items': grantableRow('3.2', 'OWN-003 open-work impact; BL-06 (BE1-R4); §3.11 grantable (read)'),
+  'employee.read_open_items': ownerOnlyRow('3.2', 'OWN-003 open-work impact; BL-06 (BE1-R4)'),
   'profile.read': row('3.2', ALL, 'Own'),
   'profile.update': row('3.2', ALL, 'Own; DEMO OQ-13'),
   'role.list': row('3.2', [O], 'List system and custom roles', true),
@@ -77,12 +82,12 @@ export const AUTHZ_MATRIX: Readonly<Record<string, MatrixRow>> = Object.freeze({
   'attendance.check_out': row('3.3', ALL, 'Own'),
   'attendance.read': row('3.3', ALL, 'Owner all, others own'),
   'attendance.correction.request': row('3.3', ALL, 'Own; DEMO attendance.employeeRequests'),
-  'attendance.correction.review': grantableRow('3.3', '§3.11 grantable'),
-  'attendance.adjust': grantableRow('3.3', 'Reason required; DEMO N-2; §3.11 grantable'),
-  'attendance.retroactive_create': grantableRow('3.3', 'Reason required; §3.11 grantable'),
-  'attendance.remote_exception.grant': grantableRow('3.3', 'DEMO DEC-010; §3.11 grantable'),
-  'attendance.failed_checkout.review': grantableRow('3.3', 'DEMO attendance.failedCheckout; §3.11 grantable'),
-  'attendance.overview.read': grantableRow('3.3', 'OWN-004 monitoring; BL-06 (BE1-R4); §3.11 grantable (read)'),
+  'attendance.correction.review': ownerOnlyRow('3.3'),
+  'attendance.adjust': ownerOnlyRow('3.3', 'Reason required; DEMO N-2'),
+  'attendance.retroactive_create': ownerOnlyRow('3.3', 'Reason required'),
+  'attendance.remote_exception.grant': ownerOnlyRow('3.3', 'DEMO DEC-010'),
+  'attendance.failed_checkout.review': ownerOnlyRow('3.3', 'DEMO attendance.failedCheckout'),
+  'attendance.overview.read': ownerOnlyRow('3.3', 'OWN-004 monitoring; BL-06 (BE1-R4)'),
   'attendance.remote_exception.request': row('3.3', ALL, 'Own; DEMO DEC-010 attendance.remoteSelfRequest; BL-06 (BE1-R4)'),
   // Owner decision 2026-10-29 (supersedes DEC-033 "no break tracking"): breaks are back, grants as before
   // (a959fef). The CFG flag attendance.breaksEnabled can still switch the routes off (404).

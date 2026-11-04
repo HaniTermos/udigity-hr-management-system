@@ -6,8 +6,23 @@ import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
 import { config } from '../../config/index.js';
 import { authenticate } from '../../middleware/auth.js';
-import { createAuthRateLimiter } from '../../middleware/requestGuards.js';
 import { AuditLogOptions, recordAuditEvent } from '../admin/audit.js';
+import {
+  RESET_REQUESTS_PER_EMAIL_PER_HOUR,
+  RESET_REQUEST_MIN_MS,
+  accountDelayMs,
+  createEmployeeAuthLimiter,
+  createLoginIpLimiter,
+  createLoginPairLimiter,
+  createResetCompleteLimiter,
+  createResetRequestLimiter,
+  emailKey,
+  loginAccountFailures,
+  padTo,
+  resetRequestsPerEmail,
+  sendRateLimited,
+  sleep,
+} from './limits.js';
 import { queuePasswordResetEmail } from '../notifications/service.js';
 import {
   LockoutState,
@@ -42,7 +57,16 @@ const router = Router();
 // (docs/policy-defaults.md). Owner 2FA itself is Confirmed (architecture-b §6).
 const authenticator = baseAuthenticator.clone({ window: 1 });
 
-const authLimiter = createAuthRateLimiter();
+// Review 2026-11-04 F-01: one bucket per step (limits.ts), failed attempts only where a success is
+// possible. In-memory: single API replica required (F-06, limits.ts header).
+const loginPairLimiter = createLoginPairLimiter();
+const loginIpLimiter = createLoginIpLimiter();
+const twoFactorLimiter = createEmployeeAuthLimiter('auth-2fa');
+const recoveryLimiter = createEmployeeAuthLimiter('auth-recovery');
+const twoFactorAdminLimiter = createEmployeeAuthLimiter('auth-2fa-admin');
+const passwordChangeLimiter = createEmployeeAuthLimiter('auth-password-change');
+const resetRequestLimiter = createResetRequestLimiter();
+const resetCompleteLimiter = createResetCompleteLimiter();
 
 // Constant-work dummy hash so unknown accounts take as long as known ones.
 // Same cost as real hashes, so a compare against it takes as long as a real one (timing).
@@ -117,10 +141,15 @@ function publicUser(u: { id: string; email: string; full_name?: string; fullName
 // ---------------------------------------------------------------------------
 // POST /api/auth/login (SEQ-01)
 // ---------------------------------------------------------------------------
-router.post('/login', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/login', loginPairLimiter, loginIpLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, password } = LoginSchema.parse(req.body);
     const clientIp = clientIpOf(req);
+    // E-01/F-04: account-wide failures (all addresses) slow every attempt for this email, never refuse it.
+    // Keyed by the submitted email, so unknown and known accounts behave the same.
+    const accountKey = emailKey(email);
+    const delay = accountDelayMs(loginAccountFailures.count(accountKey));
+    if (delay > 0) await sleep(delay);
     const now = new Date();
 
     type Outcome =
@@ -168,32 +197,18 @@ router.post('/login', authLimiter, async (req: Request, res: Response, next: Nex
         return { ok: false };
       }
 
-      const lockout = lockoutFrom(credential);
-      if (isLocked(lockout, now)) {
-        await bcrypt.compare(password, DUMMY_HASH);
-        await audit('login.failed', {
-          actorId: employee.id,
-          actorRole: employee.role,
-          entityType: 'employee',
-          entityId: employee.id,
-          payload: { reason: 'locked' },
-        });
-        return { ok: false };
-      }
-
+      // E-01: sign-in failures no longer set the account-wide DB lock (that lock let anyone who knew an
+      // email keep the account, the Owner's included, locked). Guessing is bounded by the (email, IP) and
+      // per-IP buckets plus the per-account delay above. `credentials.locked_until` now guards only the
+      // in-session re-authentication steps (verifyCurrentPassword).
       const passwordOk = await bcrypt.compare(password, credential.password_hash);
       if (!passwordOk) {
-        const nextState = registerFailure(lockout, now, config.lockout);
-        await client.query(
-          'UPDATE credentials SET failed_count = $2, failed_window_started_at = $3, locked_until = $4 WHERE employee_id = $1',
-          [employee.id, nextState.failedCount, nextState.windowStartedAt, nextState.lockedUntil]
-        );
         await audit('login.failed', {
           actorId: employee.id,
           actorRole: employee.role,
           entityType: 'employee',
           entityId: employee.id,
-          payload: { reason: 'password_mismatch', lockedNow: isLocked(nextState, now) },
+          payload: { reason: 'password_mismatch' },
         });
         return { ok: false };
       }
@@ -256,7 +271,11 @@ router.post('/login', authLimiter, async (req: Request, res: Response, next: Nex
       return { ok: true, session, user: publicUser(employee) };
     });
 
-    if (!outcome.ok) return res.status(401).json(GENERIC_LOGIN_FAILURE);
+    if (!outcome.ok) {
+      loginAccountFailures.add(accountKey);
+      return res.status(401).json(GENERIC_LOGIN_FAILURE);
+    }
+    loginAccountFailures.clear(accountKey);
 
     setSessionCookies(res, outcome.session);
     const requires2FA = outcome.session.state !== 'active';
@@ -386,7 +405,16 @@ async function verifyCurrentPassword(client: PoolClient, employeeId: string, pas
   }
   const lockout = lockoutFrom(cred);
   if (isLocked(lockout, now)) return 'locked';
-  if (await bcrypt.compare(password, cred.password_hash)) return 'ok';
+  if (await bcrypt.compare(password, cred.password_hash)) {
+    // A correct re-authentication starts the counter afresh (sign-in no longer touches it, E-01).
+    if (cred.failed_count > 0 || cred.failed_window_started_at || cred.locked_until) {
+      await client.query(
+        'UPDATE credentials SET failed_count = 0, failed_window_started_at = NULL, locked_until = NULL WHERE employee_id = $1',
+        [employeeId]
+      );
+    }
+    return 'ok';
+  }
   const nextState = registerFailure(lockout, now, config.lockout);
   await client.query(
     'UPDATE credentials SET failed_count = $2, failed_window_started_at = $3, locked_until = $4 WHERE employee_id = $1',
@@ -570,7 +598,7 @@ function sendFactorOutcome(req: Request, res: Response, outcome: FactorOutcome) 
 }
 
 // POST /api/auth/2fa/verify
-router.post('/2fa/verify', authLimiter, authenticate, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/2fa/verify', authenticate, twoFactorLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (req.user!.sessionState !== 'pending_2fa_verification') {
       return res.status(409).json({ error: 'No verification is pending for this session', code: '2FA_NOT_PENDING' });
@@ -583,7 +611,7 @@ router.post('/2fa/verify', authLimiter, authenticate, async (req: Request, res: 
 });
 
 // POST /api/auth/2fa/recover — AU-9: sign in with a single-use recovery code instead of the TOTP code.
-router.post('/2fa/recover', authLimiter, authenticate, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/2fa/recover', authenticate, recoveryLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (req.user!.sessionState !== 'pending_2fa_verification') {
       return res.status(409).json({ error: 'No verification is pending for this session', code: '2FA_NOT_PENDING' });
@@ -598,7 +626,7 @@ router.post('/2fa/recover', authLimiter, authenticate, async (req: Request, res:
 // POST /api/auth/2fa/enroll/start — AU-8: an Owner without a factor needs, besides the password used
 // at login, (1) a one-time enrollment token issued out of band (operator CLI or another Owner) and
 // (2) a fresh re-authentication with the current password. Returns a new TOTP secret (not yet active).
-router.post('/2fa/enroll/start', authLimiter, authenticate, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/2fa/enroll/start', authenticate, twoFactorLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = req.user!;
     if (user.sessionState !== 'pending_2fa_enrollment') {
@@ -661,7 +689,7 @@ router.post('/2fa/enroll/start', authLimiter, authenticate, async (req: Request,
 
 // POST /api/auth/2fa/enroll/confirm — first valid code activates the factor and the session;
 // consumes the enrollment token and returns the first recovery codes (shown once).
-router.post('/2fa/enroll/confirm', authLimiter, authenticate, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/2fa/enroll/confirm', authenticate, twoFactorLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (req.user!.sessionState !== 'pending_2fa_enrollment') {
       return res.status(409).json({ error: 'Enrollment is not pending for this session', code: '2FA_NOT_PENDING' });
@@ -677,9 +705,9 @@ router.post('/2fa/enroll/confirm', authLimiter, authenticate, async (req: Reques
 // batch (the old batch stops working). Step-up: a current TOTP code is required.
 router.post(
   '/2fa/recovery-codes',
-  authLimiter,
   authenticate,
   requireAction('employee.manage_own_recovery_codes'),
+  twoFactorAdminLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = req.user!;
@@ -724,9 +752,9 @@ router.post(
 // and handed over out of band.
 router.post(
   '/2fa/enrollment-tokens',
-  authLimiter,
   authenticate,
   requireAction('employee.issue_2fa_enrollment_token'),
+  twoFactorAdminLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = req.user!;
@@ -890,24 +918,26 @@ const ChangePasswordSchema = z.object({
   newPassword: NewPasswordSchema,
 });
 
-router.post('/password/change', authenticate, requireAction('auth.password.change'), authLimiter, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/password/change', authenticate, requireAction('auth.password.change'), passwordChangeLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = req.user!;
     const { currentPassword, newPassword } = ChangePasswordSchema.parse(req.body);
     const clientIp = clientIpOf(req);
+    const now = new Date();
 
-    const { rows } = await query<{ password_hash: string }>(
-      `SELECT password_hash FROM credentials WHERE employee_id = $1`,
-      [user.id]
-    );
-    if (!rows[0] || !(await bcrypt.compare(currentPassword, rows[0].password_hash))) {
+    // E-05: the current-password check counts toward the re-authentication lockout. Own transaction,
+    // so a wrong guess is committed even though the change is refused.
+    const pw = await withTransaction((client) => verifyCurrentPassword(client, user.id, currentPassword, now));
+    if (pw === 'locked') return sendRateLimited(res, config.lockout.lockMinutes * 60);
+    if (pw !== 'ok') {
       return res.status(401).json({ error: 'The current password is not correct.', code: 'INVALID_CREDENTIALS' });
     }
 
     const newHash = await bcrypt.hash(newPassword, config.password.bcryptRounds);
-    await withTransaction(async (client) => {
+    const rotated = await withTransaction(async (client) => {
       await client.query(
-        `UPDATE credentials SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE employee_id = $2`,
+        `UPDATE credentials SET password_hash = $1, failed_count = 0, failed_window_started_at = NULL, locked_until = NULL,
+           updated_at = CURRENT_TIMESTAMP WHERE employee_id = $2`,
         [newHash, user.id]
       );
       const { rows: revokedRows } = await client.query<{ id: string }>(
@@ -918,6 +948,20 @@ router.post('/password/change', authenticate, requireAction('auth.password.chang
          RETURNING id`,
         [user.id, user.sessionId]
       );
+      // E-04: a reset or set-up link issued before the change must not overwrite the new password.
+      const superseded = await client.query(
+        `UPDATE security_tokens SET superseded_at = CURRENT_TIMESTAMP
+         WHERE employee_id = $1 AND purpose IN ('password_reset', 'credential_setup')
+           AND used_at IS NULL AND superseded_at IS NULL`,
+        [user.id]
+      );
+      // E-09: new token for THIS session (same session id, so expiry, 2FA state and the CSRF token are
+      // unchanged); a stolen copy of the old cookie stops working.
+      const token = generateToken();
+      const { rows: sessionRows } = await client.query<{ expires_at: Date }>(
+        'UPDATE sessions SET token_hash = $2 WHERE id = $1 RETURNING expires_at',
+        [user.sessionId, hashToken(config.session.secret, token)]
+      );
       await recordAuditEvent(client, {
         eventName: 'password.changed',
         actorId: user.id,
@@ -927,12 +971,18 @@ router.post('/password/change', authenticate, requireAction('auth.password.chang
         sessionId: user.sessionId,
         requestId: req.requestId,
         clientIp,
-        payload: { otherSessionsRevoked: revokedRows.length },
+        payload: {
+          otherSessionsRevoked: revokedRows.length,
+          resetLinksRevoked: superseded.rowCount ?? 0,
+          sessionTokenRotated: true,
+        },
         sourceWorkflow: 'SCR-SHR-006',
       });
+      return { token, expiresAt: new Date(sessionRows[0].expires_at) };
     });
 
-    return res.status(200).json({ message: 'Password changed successfully' });
+    setSessionCookies(res, { token: rotated.token, csrfToken: user.csrfToken, expiresAt: rotated.expiresAt });
+    return res.status(200).json({ message: 'Password changed successfully', csrfToken: user.csrfToken });
   } catch (error) {
     return next(error);
   }
@@ -966,13 +1016,18 @@ const RESET_REQUEST_ACK = {
   message: 'If an active account exists for that email, a reset link has been sent.',
 } as const;
 
-router.post('/password-reset/request', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/password-reset/request', resetRequestLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  const startedAt = Date.now();
   try {
     const { email } = ResetRequestSchema.parse(req.body);
     const clientIp = clientIpOf(req);
     const now = new Date();
 
-    await withTransaction(async (client) => {
+    // F-05: at most N links per email per hour; further requests are answered the same way and do
+    // nothing (counted for unknown emails too, so the cap reveals nothing).
+    const withinCap = resetRequestsPerEmail.add(emailKey(email)) <= RESET_REQUESTS_PER_EMAIL_PER_HOUR;
+
+    if (withinCap) await withTransaction(async (client) => {
       const { rows } = await client.query<{ id: string; email: string; role: string }>(
         `SELECT e.id, e.email, e.role FROM employees e
          JOIN credentials c ON c.employee_id = e.id
@@ -1013,6 +1068,9 @@ router.post('/password-reset/request', authLimiter, async (req: Request, res: Re
       });
     });
 
+    // E-06: known and unknown emails answer after the same minimum time (the known path does the DB
+    // work above; without the floor its extra ~30 ms revealed that the account exists).
+    await padTo(startedAt, RESET_REQUEST_MIN_MS);
     return res.status(202).json(RESET_REQUEST_ACK);
   } catch (error) {
     // Validation errors still get the generic acknowledgement shape, so nothing is revealed.
@@ -1020,22 +1078,32 @@ router.post('/password-reset/request', authLimiter, async (req: Request, res: Re
   }
 });
 
-router.post('/password-reset/complete', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { token, newPassword } = ResetCompleteSchema.parse(req.body);
-    const clientIp = clientIpOf(req);
-    const newHash = await bcrypt.hash(newPassword, config.password.bcryptRounds);
-
-    const ok = await withTransaction(async (client) => {
-      // 'credential_setup' (E-01, new employee) uses the same single-use link and page as a reset.
-      const { rows } = await client.query<{ id: string; employee_id: string; role: string; purpose: string }>(
-        `SELECT st.id, st.employee_id, e.role, st.purpose
+// 'credential_setup' (E-01, new employee) uses the same single-use link and page as a reset.
+const OPEN_RESET_TOKEN_SQL = `SELECT st.id, st.employee_id, e.role, st.purpose
          FROM security_tokens st JOIN employees e ON e.id = st.employee_id
          WHERE st.token_hash = $1 AND st.purpose IN ('password_reset', 'credential_setup')
            AND st.used_at IS NULL AND st.superseded_at IS NULL AND st.expires_at > CURRENT_TIMESTAMP
-           AND e.is_active = true
+           AND e.is_active = true`;
+
+router.post('/password-reset/complete', resetCompleteLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { token, newPassword } = ResetCompleteSchema.parse(req.body);
+    const clientIp = clientIpOf(req);
+    const tokenHash = hashToken(config.session.secret, token);
+
+    // F-08: no bcrypt work for an invalid link. Cheap pre-check, then hash, then the locked re-check
+    // inside the transaction (the token can still be used or superseded in between).
+    const pre = await query(OPEN_RESET_TOKEN_SQL, [tokenHash]);
+    if (!pre.rows[0]) {
+      return res.status(400).json({ error: 'This link has expired or was already used', code: 'RESET_LINK_INVALID' });
+    }
+    const newHash = await bcrypt.hash(newPassword, config.password.bcryptRounds);
+
+    const ok = await withTransaction(async (client) => {
+      const { rows } = await client.query<{ id: string; employee_id: string; role: string; purpose: string }>(
+        `${OPEN_RESET_TOKEN_SQL}
          FOR UPDATE OF st`,
-        [hashToken(config.session.secret, token)]
+        [tokenHash]
       );
       const row = rows[0];
       if (!row) return false;

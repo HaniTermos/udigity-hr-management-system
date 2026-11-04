@@ -388,7 +388,9 @@ describe.skipIf(!hasTestDb)('BE1 Increment 2 (DB)', () => {
       expect(wrong.body.code).toBe('INVALID_CREDENTIALS');
       const ok = await call(a, 'post', '/api/auth/password/change', { currentPassword: PASSWORD, newPassword: 'N3w-Password-123!' });
       expect(ok.status, role).toBe(200);
-      expect((await call(a, 'get', '/api/auth/me')).status).toBe(200);
+      // E-09 (review 2026-11-04): the change rotates this session's token; the old cookie stops working.
+      expect((await call(a, 'get', '/api/auth/me')).status).toBe(401);
+      expect((await call({ cookie: cookieFrom(ok), csrf: a.csrf }, 'get', '/api/auth/me')).status).toBe(200);
       expect((await call(b, 'get', '/api/auth/me')).status).toBe(401);
       expect((await login(e.email)).res.status).toBe(401);
       expect((await login(e.email, 'N3w-Password-123!')).res.status).toBe(200);
@@ -516,7 +518,7 @@ describe.skipIf(!hasTestDb)('BE1 Increment 2 (DB)', () => {
       const byDay = await call(owner, 'get', `/api/audit-events?from=${new Date().toISOString().slice(0, 10)}&pageSize=1`);
       expect(byDay.status).toBe(200);
       expect((await call(owner, 'get', '/api/audit-events?actorId=not-a-uuid')).status).toBe(400);
-      expect((await call(owner, 'get', '/api/audit-events?sort=1;drop')).status).toBe(200); // whitelist fallback
+      expect((await call(owner, 'get', '/api/audit-events?sort=1;drop')).status).toBe(400); // C-11: unknown sort is a 400
       // No update/delete route exists.
       expect((await call(owner, 'patch', `/api/audit-events/${r.body.items[0].id}`, {})).status).toBe(404);
       expect((await call(owner, 'delete', `/api/audit-events/${r.body.items[0].id}`)).status).toBe(404);

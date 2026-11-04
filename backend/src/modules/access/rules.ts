@@ -303,6 +303,12 @@ export function buildRuleFragments(input: RuleInput): RuleFragments {
       } else {
         break;
       }
+      // Review 2026-11-04 E-08 / D15 (approved): an accepted opportunity (pre-closure deal) and its
+      // meetings belong to the assigned Developer and the Owner only. No custom-role scope (global
+      // included) widens that: deal/meeting surfaces see closed deals, or a deal the holder is assigned to.
+      if (input.resourceType === 'deal' || input.resourceType === 'meeting' || /^(deal|meeting)\./.test(input.action)) {
+        relation = `(${relation} AND (${af}.deal_stage IS DISTINCT FROM '${DEAL_STAGE_ACCEPTED}' OR ${u()} = ANY(${af}.deal_developer_ids)))`;
+      }
       scope = 'TRUE';
       windowForRole =
         ds === 'assigned_only'

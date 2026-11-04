@@ -40,6 +40,7 @@ const { config } = await import('../config/index.js');
 const { hashToken, deriveCsrfToken, totpStep } = await import('../modules/identity/security.js');
 const { createAuthenticate } = await import('../middleware/auth.js');
 const { createOriginCheck, createAuthRateLimiter } = await import('../middleware/requestGuards.js');
+const { FixedWindowCounter, accountDelayMs, createLoginIpLimiter, createLoginPairLimiter, ipBucket } = await import('../modules/identity/limits.js');
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ID = '22222222-2222-4222-8222-222222222222';
@@ -245,18 +246,39 @@ describe('POST /api/auth/login', () => {
     expect(deactivated.body.code).toBe('INVALID_CREDENTIALS');
   });
 
-  it('locks the account on the 5th failure and refuses even the right password while locked', async () => {
+  it('E-01: a sign-in failure never sets the account lock, and a stored lock does not refuse the right password', async () => {
     script({}, cred({ failed_count: 4, failed_window_started_at: new Date(Date.now() - 60_000) }));
-    const res = await request(app).post('/api/auth/login').send({ email: 'agent@test.local', password: 'nope nope nope' });
+    const res = await request(app).post('/api/auth/login').send({ email: 'agent2@test.local', password: 'nope nope nope' });
     expect(res.status).toBe(401);
-    const upd = fake.db.find(/UPDATE credentials SET failed_count = \$2/)[0];
-    expect(upd.params[3]).toBeInstanceOf(Date);
+    expect(fake.db.find(/UPDATE credentials SET failed_count = \$2/)).toHaveLength(0);
 
     fake.db.reset();
+    fake.db.on(/INSERT INTO sessions/, () => ({ rows: [{ id: NEW_SID }] }));
     script({}, cred({ locked_until: new Date(Date.now() + 10 * 60_000) }));
-    const locked = await request(app).post('/api/auth/login').send({ email: 'agent@test.local', password: PASSWORD });
-    expect(locked.status).toBe(401);
-    expect(fake.db.find(/INSERT INTO sessions/)).toHaveLength(0);
+    const ok = await request(app).post('/api/auth/login').send({ email: 'agent2@test.local', password: PASSWORD });
+    expect(ok.status).toBe(200);
+    expect(fake.db.find(/INSERT INTO sessions/)).toHaveLength(1);
+  });
+
+  it('F-01: the (email, IP) pair is refused with 429 RATE_LIMITED + Retry-After after the failure limit, before any DB work', async () => {
+    const email = 'pair.limit@test.local';
+    for (let i = 0; i < config.lockout.maxFailures; i++) {
+      fake.db.reset();
+      script({ email }, cred());
+      expect((await request(app).post('/api/auth/login').send({ email, password: 'wrong wrong wrong' })).status).toBe(401);
+    }
+    fake.db.reset();
+    script({ email }, cred());
+    const limited = await request(app).post('/api/auth/login').send({ email, password: PASSWORD });
+    expect(limited.status).toBe(429);
+    expect(limited.body.code).toBe('RATE_LIMITED');
+    expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
+    expect(fake.db.calls).toHaveLength(0);
+    // Another account from the same address is unaffected.
+    fake.db.reset();
+    fake.db.on(/INSERT INTO sessions/, () => ({ rows: [{ id: NEW_SID }] }));
+    script({}, cred());
+    expect((await request(app).post('/api/auth/login').send({ email: 'agent@test.local', password: PASSWORD })).status).toBe(200);
   });
 
   it('puts an Owner without a factor into the enrollment state, not active', async () => {
@@ -367,6 +389,67 @@ describe('Origin check and rate limit middleware', () => {
     const third = await request(a).post('/login');
     expect(third.status).toBe(429);
     expect(third.body.code).toBe('RATE_LIMITED');
+  });
+});
+
+describe('auth buckets (review 2026-11-04 F-01, E-01)', () => {
+  // A stand-in login handler behind the real limiters: password "right" succeeds, anything else is 401.
+  function loginApp(pairMax = 3, ipMax = 5) {
+    const a = express();
+    a.set('trust proxy', true);
+    a.use(express.json());
+    a.post('/login', createLoginPairLimiter(pairMax, 15), createLoginIpLimiter(ipMax, 15), (req, res) =>
+      req.body.password === 'right' ? res.json({ ok: true }) : res.status(401).json({ code: 'INVALID_CREDENTIALS' })
+    );
+    return a;
+  }
+  const post = (a: express.Express, ip: string, email: string, password: string) =>
+    request(a).post('/login').set('X-Forwarded-For', ip).send({ email, password });
+
+  it('25 successful sign-ins from one office address are never limited (successes do not count)', async () => {
+    const a = loginApp(3, 5);
+    for (let i = 0; i < 25; i++) expect((await post(a, '10.0.0.1', `user${i % 5}@x.test`, 'right')).status).toBe(200);
+  });
+
+  it('E-01: failures lock only the (account, IP) pair; the right password from another address still works', async () => {
+    const a = loginApp(3, 100);
+    for (let i = 0; i < 3; i++) expect((await post(a, '203.0.113.9', 'owner@x.test', 'guess')).status).toBe(401);
+    const locked = await post(a, '203.0.113.9', 'owner@x.test', 'right');
+    expect(locked.status).toBe(429);
+    expect(locked.body.code).toBe('RATE_LIMITED');
+    expect(locked.headers['retry-after']).toBeDefined();
+    expect((await post(a, '198.51.100.7', 'owner@x.test', 'right')).status).toBe(200);
+    expect((await post(a, '203.0.113.9', 'someone.else@x.test', 'right')).status).toBe(200);
+  });
+
+  it('per-IP ceiling counts failures across accounts (spraying), not successes', async () => {
+    const a = loginApp(100, 4);
+    for (let i = 0; i < 4; i++) expect((await post(a, '203.0.113.20', `v${i}@x.test`, 'guess')).status).toBe(401);
+    expect((await post(a, '203.0.113.20', 'v9@x.test', 'right')).status).toBe(429);
+    expect((await post(a, '203.0.113.21', 'v9@x.test', 'right')).status).toBe(200);
+  });
+
+  it('IPv6 addresses share one bucket per /64; IPv4-mapped addresses are unwrapped', () => {
+    expect(ipBucket('2001:db8:1:2::1')).toBe(ipBucket('2001:db8:1:2:ffff:1:2:3'));
+    expect(ipBucket('2001:db8:1:2::1')).not.toBe(ipBucket('2001:db8:1:3::1'));
+    expect(ipBucket('::ffff:203.0.113.9')).toBe('203.0.113.9');
+    expect(ipBucket('203.0.113.9')).toBe('203.0.113.9');
+  });
+
+  it('per-account delay: none below the threshold, then doubling to a cap', () => {
+    expect(accountDelayMs(9, 10)).toBe(0);
+    expect(accountDelayMs(10, 10)).toBe(500);
+    expect(accountDelayMs(11, 10)).toBe(1000);
+    expect(accountDelayMs(40, 10)).toBe(4000);
+  });
+
+  it('FixedWindowCounter counts per key inside the window and resets after it', () => {
+    const c = new FixedWindowCounter(1000);
+    expect(c.add('a', 0)).toBe(1);
+    expect(c.add('a', 10)).toBe(2);
+    expect(c.count('a', 999)).toBe(2);
+    expect(c.count('a', 1000)).toBe(0);
+    expect(c.add('a', 1000)).toBe(1);
   });
 });
 

@@ -157,9 +157,17 @@ export async function listMeetings(db: Queryable, where: string[], params: SqlPa
  * Staff picker for meeting attendees (FX-BE-C3). Active employees only, id + name + role (no e-mail,
  * phone or security fields). `employees` is read-only here.
  */
-export async function attendeeOptions(db: Queryable, q: { q?: string; role?: string; pageSize: number }): Promise<{ id: string; full_name: string; role: string }[]> {
+export async function attendeeOptions(
+  db: Queryable,
+  q: { q?: string; role?: string; pageSize: number },
+  /** E-07: when set, only these people, plus every active employee holding one of `roles`. */
+  limitTo?: { ids: string[]; roles: string[] }
+): Promise<{ id: string; full_name: string; role: string }[]> {
   const params = new SqlParams();
   const where = ['e.is_active = true'];
+  if (limitTo) {
+    where.push(`(e.id = ANY(${params.add(limitTo.ids)}::uuid[]) OR e.role = ANY(${params.add(limitTo.roles)}::text[]))`);
+  }
   if (q.q) where.push(`e.full_name ILIKE ${params.add('%' + q.q.replace(/[\\%_]/g, (c) => '\\' + c) + '%')} ESCAPE '\\'`);
   if (q.role) where.push(`e.role = ${params.add(q.role)}`);
   const { rows } = await db.query<{ id: string; full_name: string; role: string }>(
@@ -167,4 +175,13 @@ export async function attendeeOptions(db: Queryable, q: { q?: string; role?: str
     params.values
   );
   return rows;
+}
+
+/** E-07: the business's current Call Center assignee (read-only lookup of the open assignment row). */
+export async function currentAssigneeOf(db: Queryable, businessId: string): Promise<string | null> {
+  const { rows } = await db.query<{ assignee_id: string }>(
+    'SELECT assignee_id FROM calling_assignments WHERE business_id = $1 AND ended_at IS NULL LIMIT 1',
+    [businessId]
+  );
+  return rows[0]?.assignee_id ?? null;
 }

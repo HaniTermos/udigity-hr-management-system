@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { query, Queryable } from '../db/pool.js';
 import { config } from '../config/index.js';
+import { countAuthenticatedRead } from '../shared/rateLimit.js';
 import {
   MUTATING_METHODS,
   SessionState,
@@ -172,7 +173,8 @@ export function createAuthenticate(deps: AuthDeps) {
         [session.session_id, now, nextIdleExpiry(now, config.session)]
       );
 
-      return next();
+      // F-07: the read budget is per employee, charged now that the session is known.
+      return countAuthenticatedRead(req, res, next, path);
     } catch (error) {
       return next(error);
     }

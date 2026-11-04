@@ -103,7 +103,11 @@ describe.skipIf(!hasTestDb)('Custom roles (migration 014, matrix §3.11)', () =>
     expect(byAction.get('business.delete')).toMatchObject({ grantable: false });
     expect(byAction.get('business.read')).toMatchObject({ requiresAdmin: false, grantable: true });
     expect(byAction.get('business.read')?.allowedScopes).toEqual(['self', 'department', 'global', 'assigned_only']);
-    expect(byAction.get('attendance.overview.read')).toMatchObject({ requiresAdmin: true, grantable: true, allowedScopes: ['global'] });
+    // Review 2026-11-04 E-02 / S-26: the former §3.11 grantable admin rows are Owner-only.
+    for (const a of ['employee.list', 'employee.read', 'employee.read_open_items', 'attendance.correction.review', 'attendance.adjust',
+      'attendance.retroactive_create', 'attendance.remote_exception.grant', 'attendance.failed_checkout.review', 'attendance.overview.read']) {
+      expect(byAction.get(a), a).toMatchObject({ requiresAdmin: true, grantable: false, allowedScopes: [] });
+    }
   });
 
   it('system roles are listed and described by the matrix, never by role_permissions', async () => {
@@ -145,7 +149,14 @@ describe.skipIf(!hasTestDb)('Custom roles (migration 014, matrix §3.11)', () =>
     }
   });
 
-  it('creates a custom role with validated grants (a grantable admin row included); duplicate id → 409', async () => {
+  it('S-26 (E-02): an Owner-only admin row is refused on create (400), whatever the scope', async () => {
+    for (const action of ['attendance.overview.read', 'employee.list', 'attendance.adjust']) {
+      const r = await call(owner, 'post', '/api/access/roles', { id: `x_${uniq().replace(/\W/g, '')}`, name: 'X', permissions: [{ action, dataScope: 'global' }] });
+      expect(r.status, action).toBe(400);
+    }
+  });
+
+  it('creates a custom role with validated grants; duplicate id → 409', async () => {
     const res = await call(owner, 'post', '/api/access/roles', {
       id: roleId,
       name: 'Human Resources',
@@ -155,12 +166,11 @@ describe.skipIf(!hasTestDb)('Custom roles (migration 014, matrix §3.11)', () =>
         { action: 'business.read', dataScope: 'self' },
         { action: 'deal.read', dataScope: 'global' },
         { action: 'attendance.read', dataScope: 'department' },
-        { action: 'attendance.overview.read', dataScope: 'global' },
       ],
     });
     expect(res.status).toBe(201);
     expect(res.body.role).toMatchObject({ id: roleId, isSystem: false });
-    expect(res.body.role.permissions).toHaveLength(5);
+    expect(res.body.role.permissions).toHaveLength(4);
     expect(dynamicRoleCache.grantFor(roleId, 'business.list')).toBe('self');
 
     const dup = await call(owner, 'post', '/api/access/roles', { id: roleId, name: 'Again', permissions: [] });
@@ -170,7 +180,7 @@ describe.skipIf(!hasTestDb)('Custom roles (migration 014, matrix §3.11)', () =>
     expect(audit.rows).toHaveLength(1);
   });
 
-  it('a holder gets exactly its grants: non-granted → FORBIDDEN_ROLE; granted → through; grantable admin row → second factor required', async () => {
+  it('a holder gets exactly its grants: non-granted → FORBIDDEN_ROLE; granted → through; a stored Owner-only row is ignored', async () => {
     const hr = await employee(roleId);
     const me = await call(hr, 'get', '/api/auth/me');
     expect(me.status).toBe(200);
@@ -180,11 +190,15 @@ describe.skipIf(!hasTestDb)('Custom roles (migration 014, matrix §3.11)', () =>
     expect((await call(hr, 'get', '/api/search?q=anything')).body.code).toBe('FORBIDDEN_ROLE'); // not granted
     expect((await call(hr, 'get', `/api/deals/${ZERO}`)).status).toBe(404); // granted: past the role gate
 
-    // Grantable admin row: granted, but the holder's session has no verified second factor (identity
-    // enrols Owners only today) → fail closed with the 2FA code, never FORBIDDEN_ROLE, never 200.
+    // E-02 / S-26: an Owner-only row stored before the fix (written directly here) is ignored at check
+    // time: the cache drops it at load and the route answers FORBIDDEN_ROLE.
+    await query(`INSERT INTO role_permissions (role_id, action, data_scope) VALUES ($1, 'attendance.overview.read', 'global') ON CONFLICT DO NOTHING`, [roleId]);
+    await dynamicRoleCache.reload();
+    expect(dynamicRoleCache.grantFor(roleId, 'attendance.overview.read')).toBeNull();
     const overview = await call(hr, 'get', '/api/attendance/overview');
     expect(overview.status).toBe(403);
-    expect(overview.body.code).toBe('OWNER_2FA_REQUIRED');
+    expect(overview.body.code).toBe('FORBIDDEN_ROLE');
+    await query(`DELETE FROM role_permissions WHERE role_id = $1 AND action = 'attendance.overview.read'`, [roleId]);
   });
 
   it('data_scope is enforced by the engine: `self` lists own-created businesses only; `global` lists every visible one', async () => {

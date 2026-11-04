@@ -40,34 +40,34 @@ app.get('/healthz', (_req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// C-15: the contract is the STATUS CODE (200 ready / 503 unready; the compose healthcheck and
+// prod-smoke.sh read only that). The body is generic so an anonymous caller learns nothing about the
+// configuration; the reason goes to the server log. nginx also answers 404 for it at the edge.
+const UNREADY = { status: 'unready' } as const;
+let lastUnreadyReason: string | null = null;
+function unready(res: express.Response, reason: string) {
+  // Log on change only, so a polling healthcheck does not flood the log.
+  if (reason !== lastUnreadyReason) console.error(`Readiness check failed: ${reason}`);
+  lastUnreadyReason = reason;
+  res.status(503).json(UNREADY);
+}
+
 app.get('/readyz', async (_req, res) => {
   try {
     await query('SELECT 1');
     if (config.isProduction) {
       // Same resolver as every module (Owner-saved value, else POLICY_COMPANY_TIMEZONE, else the alias).
       const problem = companyTimezoneProblem(await getSetting(pool, 'company.timezone'));
-      if (problem) {
-        res.status(503).json({
-          status: 'unready',
-          error: `Essential configuration missing: ${problem}`,
-        });
-        return;
-      }
+      if (problem) return unready(res, `essential configuration missing: ${problem}`);
       // D2: the office check needs the trusted reverse-proxy list (no implicit hop count in production).
-      if (!config.trustedProxyCidrs) {
-        res.status(503).json({ status: 'unready', error: 'Essential configuration missing: TRUSTED_PROXY_CIDRS' });
-        return;
-      }
+      if (!config.trustedProxyCidrs) return unready(res, 'essential configuration missing: TRUSTED_PROXY_CIDRS');
       // UDI-6: a role change after start-up (grants widened, wrong DATABASE_URL) also fails readiness.
-      if ((await runtimeRoleProblems(pool)).length > 0) {
-        res.status(503).json({ status: 'unready', error: 'Unsafe database role (see the server log)' });
-        return;
-      }
+      if ((await runtimeRoleProblems(pool)).length > 0) return unready(res, 'unsafe database role (runtime role check)');
     }
-    res.status(200).json({ status: 'ready', database: 'connected' });
+    lastUnreadyReason = null;
+    res.status(200).json({ status: 'ready' });
   } catch (error) {
-    console.error('Readiness check failed:', (error as Error).message);
-    res.status(503).json({ status: 'unready', database: 'disconnected' });
+    unready(res, `database: ${(error as Error).message}`);
   }
 });
 
