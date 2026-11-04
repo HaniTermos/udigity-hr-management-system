@@ -7,8 +7,8 @@
 # Checks (values are NEVER printed, only key names):
 #   backend.env   required keys present and valid (mirrors backend/src/config/index.ts, emailConfig.ts and
 #                 shared/flags.ts), placeholders replaced, unknown keys flagged, real-email safety switch
-#   postgres.env  owner (POSTGRES_USER) and limited runtime role (APP_DB_USER) with different passwords;
-#                 backend.env DATABASE_URL must use the runtime role, migrate.env the owner (DEV-R5)
+#   postgres.env  bootstrap superuser (POSTGRES_USER), schema owner (OWNER_DB_USER) and limited runtime role (APP_DB_USER)
+#                 with different passwords; backend.env DATABASE_URL must use the runtime role, migrate.env the owner (DEV-R5, gap 8)
 #   migrate.env   owner credentials for the one-shot migrate job; must NOT be in backend.env
 #   frontend.env  required keys present, cookie names match the backend
 #   backup.env    optional; validated when present
@@ -94,6 +94,12 @@ if [ ! -f "$B" ]; then err "backend.env not found (copy backend.env.example)"; e
     err "backend.env: SESSION_SECRET must be >= 32 random characters (openssl rand -hex 32)"
   elif [ "$(printf '%s' "$S" | fold -w1 | sort -u | wc -l)" -lt 10 ]; then
     err "backend.env: SESSION_SECRET has too few distinct characters (not random; openssl rand -hex 32)"
+  fi
+
+  SP="$(get "$B" SESSION_SECRET_PREVIOUS)"
+  if [ -n "$SP" ]; then
+    { [ "${#SP}" -lt 32 ] || [ "$SP" = "$S" ]; } && err "backend.env: SESSION_SECRET_PREVIOUS must be the previous SESSION_SECRET (>= 32 characters) and differ from SESSION_SECRET"
+    warn "backend.env: SESSION_SECRET_PREVIOUS is set (secret rotation window): remove it after the window and restart (DEPLOY.md, key rotation)"
   fi
 
   T="$(get "$B" TOTP_ENC_KEY)"
@@ -199,8 +205,13 @@ fi
 
 if [ ! -f "$P" ]; then err "postgres.env not found (copy postgres.env.example)"; else
   check_perms "$P"; check_unknown "$P" "$EX_DIR/postgres.env.example"
-  for k in POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD APP_DB_USER APP_DB_PASSWORD; do require "$P" $k; done
+  for k in POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD OWNER_DB_USER OWNER_DB_PASSWORD APP_DB_USER APP_DB_PASSWORD; do require "$P" $k; done
   PW="$(get "$P" POSTGRES_PASSWORD)"; OU="$(get "$P" POSTGRES_USER)"
+  OWU="$(get "$P" OWNER_DB_USER)"; OWP="$(get "$P" OWNER_DB_PASSWORD)"
+  [ -n "$OWU" ] && { [ "$OWU" = "$OU" ] && err "postgres.env: OWNER_DB_USER must differ from POSTGRES_USER (migrations must not run as the superuser, gap 8)";     [ "$OWU" = "$(get "$P" APP_DB_USER)" ] && err "postgres.env: OWNER_DB_USER must differ from APP_DB_USER";     case "$OWU" in udigity_app|postgres) err "postgres.env: OWNER_DB_USER must not be $OWU";; esac; }
+  [ -n "$OWP" ] && [ "$OWP" = "$PW" ] && err "postgres.env: OWNER_DB_PASSWORD must differ from POSTGRES_PASSWORD"
+  [ -n "$OWP" ] && [ "$OWP" = "$(get "$P" APP_DB_PASSWORD)" ] && err "postgres.env: OWNER_DB_PASSWORD must differ from APP_DB_PASSWORD"
+  is_placeholder "$OWP" || [ "${#OWP}" -ge 20 ] || warn "postgres.env: OWNER_DB_PASSWORD is short (< 20 chars)"
   APW="$(get "$P" APP_DB_PASSWORD)"; AU="$(get "$P" APP_DB_USER)"
   [ -n "$AU" ] && [ "$AU" = "$OU" ] && err "postgres.env: APP_DB_USER must differ from POSTGRES_USER (the app must not run as the owner/superuser)"
   [ "$AU" = "udigity_app" ] && err "postgres.env: APP_DB_USER must not be udigity_app (that is the NOLOGIN group role of migration 012)"
@@ -227,8 +238,8 @@ if [ ! -f "$M" ]; then err "migrate.env not found (copy migrate.env.example; own
   if is_placeholder "$MU"; then err "migrate.env: MIGRATION_DATABASE_URL is required (empty or still the placeholder)"
   elif [ -f "$P" ]; then
     rest="${MU#*://}"; cred="${rest%%@*}"; mpw="${cred#*:}"; muser="${cred%%:*}"
-    [ "$muser" = "$(get "$P" POSTGRES_USER)" ] || err "migrate.env: MIGRATION_DATABASE_URL user must be POSTGRES_USER (the owner)"
-    [ "$mpw" = "$(get "$P" POSTGRES_PASSWORD)" ] || err "migrate.env: MIGRATION_DATABASE_URL password differs from POSTGRES_PASSWORD (or needs URL-encoding)"
+    [ "$muser" = "$(get "$P" OWNER_DB_USER)" ] || err "migrate.env: MIGRATION_DATABASE_URL user must be OWNER_DB_USER (the non-superuser schema owner), not the superuser"
+    [ "$mpw" = "$(get "$P" OWNER_DB_PASSWORD)" ] || err "migrate.env: MIGRATION_DATABASE_URL password differs from OWNER_DB_PASSWORD (or needs URL-encoding)"
   fi
 fi
 
@@ -270,8 +281,8 @@ if [ -f "$K" ]; then
   require "$K" BACKUP_DB_PASSWORD
   BU="$(get "$K" BACKUP_DB_USER)"; BU="${BU:-udigity_backup}"; BPW="$(get "$K" BACKUP_DB_PASSWORD)"
   if [ -f "$P" ]; then
-    case "$BU" in "$(get "$P" POSTGRES_USER)"|"$(get "$P" APP_DB_USER)"|udigity_app) err "backup.env: BACKUP_DB_USER must be its own role (not the owner or the app role)";; esac
-    [ -n "$BPW" ] && { [ "$BPW" = "$(get "$P" POSTGRES_PASSWORD)" ] || [ "$BPW" = "$(get "$P" APP_DB_PASSWORD)" ]; } \
+    case "$BU" in "$(get "$P" POSTGRES_USER)"|"$(get "$P" OWNER_DB_USER)"|"$(get "$P" APP_DB_USER)"|udigity_app) err "backup.env: BACKUP_DB_USER must be its own role (not the owner or the app role)";; esac
+    [ -n "$BPW" ] && { [ "$BPW" = "$(get "$P" POSTGRES_PASSWORD)" ] || [ "$BPW" = "$(get "$P" OWNER_DB_PASSWORD)" ] || [ "$BPW" = "$(get "$P" APP_DB_PASSWORD)" ]; } \
       && err "backup.env: BACKUP_DB_PASSWORD must differ from the owner and app passwords"
   fi
   bt="$(get "$K" BACKUP_TIME)"; [ -z "$bt" ] || [[ "$bt" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || err "backup.env: BACKUP_TIME must be HH:MM (24 h)"

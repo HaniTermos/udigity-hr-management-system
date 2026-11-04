@@ -72,6 +72,15 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+    # T-02 / gap 9: the stock entrypoint starts as root, chowns /wal and PGDATA, then drops to postgres (gosu). Keep only
+    # what that needs; the server process itself runs as postgres with no capability. The root FS is read-only; the
+    # data, WAL archive, socket directory and /tmp are the only writable paths.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=64m
+      - /var/run/postgresql:mode=3777,uid=70,gid=70,nosuid,nodev
     security_opt:
       - no-new-privileges:true
     shm_size: 256m
@@ -83,6 +92,9 @@ services:
     stop_grace_period: 60s
     logging: *logging
 
+  # GAP 5: exactly ONE API replica. The login/lockout/per-session limiters and the in-memory caches live in the process, so a
+  # second replica would double every limit and split the counters. Do not add `--scale backend=N` or `deploy.replicas > 1`;
+  # the nginx upstream `backend` resolves to the single container (devops/DEPLOY.md section 14).
   backend:
     build:
       context: .
@@ -98,10 +110,12 @@ services:
     user: "1000:1000"
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:noexec,nosuid,nodev,size=64m
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
+    deploy:
+      replicas: 1
     # 512m: Express + a pool of 20 + the heaviest report export (streamed). 30 s grace lets in-flight requests finish.
     mem_limit: 512m
     cpus: 1.0
@@ -135,7 +149,7 @@ services:
     user: "1000:1000"
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:noexec,nosuid,nodev,size=64m
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
@@ -160,7 +174,7 @@ services:
     user: "1000:1000"
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:noexec,nosuid,nodev,size=64m
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
@@ -207,7 +221,7 @@ services:
     user: "1000:1000"
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:noexec,nosuid,nodev,size=64m
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
@@ -243,7 +257,7 @@ services:
     init: true
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:noexec,nosuid,nodev,size=64m
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
@@ -290,6 +304,15 @@ services:
       internal:
         ipv4_address: ${NGINX_INTERNAL_IP:-172.29.10.10}
       public: {}
+    # T-02 / gap 9: the master runs as root only to read the config and drop workers to `nginx` (CHOWN/SETUID/SETGID);
+    # nothing else. NET_BIND_SERVICE keeps `listen 80` working on hosts whose Docker does not lower the unprivileged-port floor.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:noexec,nosuid,nodev,size=64m
+      - /var/run:noexec,nosuid,nodev,size=1m
+      - /tmp:noexec,nosuid,nodev,size=16m
     security_opt:
       - no-new-privileges:true
     mem_limit: 128m

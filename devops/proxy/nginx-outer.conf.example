@@ -5,12 +5,31 @@
 # instead, use the file as it is. NEVER use `certbot --standalone` and never stop this nginx: it serves the other sites.
 # The Udigity stack listens on 127.0.0.1:8080 (HTTP_PORT in /opt/udigity/.env) and is not reachable from outside.
 
+# Gap 3 (V14.2-a): invitation and password-reset links are GET /reset-password?token=<secret> (and /set-password?...). This
+# vhost sees them first, so ITS access log must not keep the secret. The two maps blank the value of token=, code= and key= in
+# the request line and in the Referer; the log format below is used by BOTH server blocks. The map goes in the http context
+# (a sites-enabled / conf.d file is included there). Unique variable names so they cannot clash with the other sites.
+map $request_uri $udg_log_uri {
+  default $request_uri;
+  "~^(?<h>[^?]*\?(?:[^#]*&)?(?:token|code|key)=)[^&#]*(?<t>.*)$" "${h}[redacted]${t}";
+}
+map $http_referer $udg_log_referer {
+  default $http_referer;
+  "~^(?<h>[^?]*\?(?:[^#]*&)?(?:token|code|key)=)[^&#]*(?<t>.*)$" "${h}[redacted]${t}";
+}
+log_format udigity_redacted '$remote_addr - [$time_local] "$request_method $udg_log_uri $server_protocol" $status $body_bytes_sent '
+                            '"$udg_log_referer" "$http_user_agent" rt=$request_time';
+# Where nginx also writes the ERROR log: a failed upstream can print the full request line there (token included).
+# Keep it at `warn` or above and rotated; or add this to the 443 block:  error_log /var/log/nginx/hrsystem-error.log crit;
+
 server {
   listen 80;
   listen [::]:80;
   server_name hrsystem.udigity.com;
+  access_log /var/log/nginx/hrsystem.access.log udigity_redacted;
   location /.well-known/acme-challenge/ { root /var/www/certbot; }
-  location / { return 301 https://$host$request_uri; }
+  # T-06: literal host in the redirect, never $host (a catch-all vhost could otherwise redirect to a foreign Host).
+  location / { return 301 https://hrsystem.udigity.com$request_uri; }
 }
 
 server {
@@ -22,13 +41,14 @@ server {
   ssl_certificate     /etc/letsencrypt/live/hrsystem.udigity.com/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/hrsystem.udigity.com/privkey.pem;
   ssl_protocols TLSv1.2 TLSv1.3;
+  access_log /var/log/nginx/hrsystem.access.log udigity_redacted;   # gap 3: never the default `combined` log for this host
 
   client_max_body_size 10m;
 
   location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_http_version 1.1;
-    proxy_set_header Host $host;                            # must stay hrsystem.udigity.com: the inner nginx drops other hosts
+    proxy_set_header Host hrsystem.udigity.com;             # literal (T-06): the inner nginx drops every other Host
     # OVERWRITE (not append) with the TCP peer: if this host sits behind Cloudflare or another CDN, see the note at the end.
     proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto https;

@@ -7,6 +7,24 @@
 
 hrsystem.udigity.com {
   encode zstd gzip
+  # Gap 3 (V14.2-a): reset/invitation links carry ?token=<secret>; blank token/code/key in the logged URI and drop the Referer.
+  # Validate with `caddy validate` (the filter encoder is part of Caddy 2.x core).
+  log {
+    output file /var/log/caddy/hrsystem.access.log
+    format filter {
+      wrap json
+      fields {
+        request>uri query {
+          replace token REDACTED
+          replace code REDACTED
+          replace key REDACTED
+        }
+        request>headers>Referer delete
+        request>headers>Cookie delete
+        request>headers>Authorization delete
+      }
+    }
+  }
   reverse_proxy 127.0.0.1:8080 {
     # Caddy keeps the original Host header by default (the inner nginx needs hrsystem.udigity.com).
     header_up X-Forwarded-For {remote_host}      # overwrite with the TCP peer instead of appending to a client-supplied list

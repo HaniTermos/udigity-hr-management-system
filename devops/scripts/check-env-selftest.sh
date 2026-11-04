@@ -6,11 +6,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$HERE/check-env.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 export STRICT_PERMS=0
-OWN="own$(openssl rand -hex 12)"; APP="app$(openssl rand -hex 12)"
+ADM="adm$(openssl rand -hex 12)"; OWN="own$(openssl rand -hex 12)"; APP="app$(openssl rand -hex 12)"
 cat > "$T/postgres.env" <<E
 POSTGRES_DB=udigity
-POSTGRES_USER=udigity_owner
-POSTGRES_PASSWORD=$OWN
+POSTGRES_USER=udigity_admin
+POSTGRES_PASSWORD=$ADM
+OWNER_DB_USER=udigity_owner
+OWNER_DB_PASSWORD=$OWN
 APP_DB_USER=udigity_api
 APP_DB_PASSWORD=$APP
 E
@@ -48,8 +50,12 @@ expect 1 "unedited examples are rejected" "$HERE/../env"
 mut() { rm -rf "$T.m"; cp -r "$T" "$T.m"; "$@"; }
 mut sed -i "s#udigity_api:$APP@#udigity_owner:$OWN@#" "$T.m/backend.env"; expect 1 "DATABASE_URL as the owner role is rejected" "$T.m"
 mut sed -i "s#udigity_api:$APP@#udigity_api:wrong@#" "$T.m/backend.env"; expect 1 "DATABASE_URL password mismatch is rejected" "$T.m"
-mut sed -i "s#^APP_DB_USER=.*#APP_DB_USER=udigity_owner#" "$T.m/postgres.env"; expect 1 "APP_DB_USER equal to POSTGRES_USER is rejected" "$T.m"
-mut sed -i "s#^APP_DB_PASSWORD=.*#APP_DB_PASSWORD=$OWN#" "$T.m/postgres.env"; expect 1 "same password for both roles is rejected" "$T.m"
+mut sed -i "s#^APP_DB_USER=.*#APP_DB_USER=udigity_admin#" "$T.m/postgres.env"; expect 1 "APP_DB_USER equal to POSTGRES_USER is rejected" "$T.m"
+mut sed -i "s#^APP_DB_USER=.*#APP_DB_USER=udigity_owner#" "$T.m/postgres.env"; expect 1 "APP_DB_USER equal to OWNER_DB_USER is rejected" "$T.m"
+mut sed -i "s#^OWNER_DB_USER=.*#OWNER_DB_USER=udigity_admin#" "$T.m/postgres.env"; expect 1 "OWNER_DB_USER equal to the superuser is rejected (gap 8)" "$T.m"
+mut sed -i "s#^OWNER_DB_PASSWORD=.*#OWNER_DB_PASSWORD=$ADM#" "$T.m/postgres.env"; expect 1 "owner password equal to the superuser password is rejected" "$T.m"
+mut sed -i "s#udigity_owner:$OWN@#udigity_admin:$ADM@#" "$T.m/migrate.env"; expect 1 "MIGRATION_DATABASE_URL as the superuser is rejected (gap 8)" "$T.m"
+mut sed -i "s#^APP_DB_PASSWORD=.*#APP_DB_PASSWORD=$OWN#" "$T.m/postgres.env"; expect 1 "same password for owner and app roles is rejected" "$T.m"
 mut rm "$T.m/migrate.env"; expect 1 "missing migrate.env is rejected" "$T.m"
 mut sed -i "/^TRUSTED_PROXY_CIDRS=/d" "$T.m/backend.env"; expect 1 "missing TRUSTED_PROXY_CIDRS is rejected (D2)" "$T.m"
 mut bash -c "echo POLICY_ATTENDANCE_VERIFICATION_MODE=disabled >> '$T.m/backend.env'"; expect 1 "allow-all office mode is rejected (D2)" "$T.m"

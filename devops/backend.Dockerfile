@@ -10,7 +10,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY backend/package.json backend/package.json
 COPY frontend/package.json frontend/package.json
-RUN npm ci -w backend --include-workspace-root=false --no-audit --no-fund
+# T-03: --ignore-scripts everywhere: no production dependency has an install script (checked against package-lock.json
+# hasInstallScript: only dev tooling esbuild, fsevents, unrs-resolver do; tsc and next build need none). Re-check on dependency changes.
+RUN npm ci -w backend --include-workspace-root=false --ignore-scripts --no-audit --no-fund
 
 # ---- build: compile TypeScript; tsc does not copy .sql, so copy migrations next to dist/db ----
 FROM deps AS build
@@ -25,7 +27,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY backend/package.json backend/package.json
 COPY frontend/package.json frontend/package.json
-RUN npm ci -w backend --include-workspace-root=false --omit=dev --no-audit --no-fund \
+RUN npm ci -w backend --include-workspace-root=false --omit=dev --ignore-scripts --no-audit --no-fund \
  && npm cache clean --force
 
 # ---- runtime ----

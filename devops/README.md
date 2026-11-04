@@ -63,7 +63,12 @@ docker build -f devops/frontend.Dockerfile -t udigity-frontend .
 - Multi-stage, base images pinned by digest (`node:22-alpine@sha256:...`, `postgres:17-alpine@sha256:...`, `nginx:1.27-alpine@sha256:...`;
   refresh monthly with `docker buildx imagetools inspect <tag>`), runs as `node` (uid 1000), `tini` as PID 1, HEALTHCHECK built in.
 - Backend: `tsc` output plus `dist/db/migrations/*.sql` (tsc does not copy SQL). Migrate with
-  the compose `migrate` job (`--profile tools run --rm migrate`, owner credentials from `devops/env/migrate.env`).
+  the compose `migrate` job (`--profile tools run --rm migrate`, credentials of the NON-superuser schema owner `udigity_owner` from
+  `devops/env/migrate.env`; the bootstrap superuser `udigity_admin` is used by nothing but the init scripts and admin shells).
+- Supply chain: `npm ci --ignore-scripts` in every Dockerfile (no production dependency has an install script); `tmpfs` mounts are
+  `noexec,nosuid,nodev`; `db` and `nginx` run with `cap_drop: [ALL]` plus the minimum, a read-only root FS and `no-new-privileges`.
+  Before each deploy `devops/scripts/predeploy-gate.sh` (typecheck, lint, tests, npm audit, gitleaks, Trivy) must pass (`DEPLOY.md` 14).
+  `.github/dependabot.yml` opens weekly grouped update PRs (14-day cooldown).
 - Frontend: Next **standalone** output (`output: 'standalone'`); the build fails if it is missing. `INTERNAL_API_URL` and every
   `NEXT_PUBLIC_*` value are fixed at **build** time (build args from `/opt/udigity/.env`; values in `frontend.env` do not reach the browser).
 - `.dockerignore` keeps `.env*`, `docs/`, `node_modules`, build output and `.git` out of the context.

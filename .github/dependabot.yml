@@ -1,0 +1,41 @@
+# T-08: automated update PRs (npm + GitHub Actions), weekly, minor/patch grouped into ONE PR per ecosystem and directory.
+# Majors arrive as separate PRs. `cooldown` holds every new release back for 14 days (same rule the owner applies by hand:
+# nothing younger than two weeks goes into the lockfile), security updates are not delayed by it. Exact-pinned runtime
+# packages (next, nodemailer) are bumped by Dependabot as exact versions too. Every PR still has to pass the CI gate.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    cooldown: { default-days: 14 }
+    groups:
+      npm-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    cooldown: { default-days: 14 }
+    groups:
+      npm-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: npm
+    directory: /backend
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    cooldown: { default-days: 14 }
+    groups:
+      npm-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: npm
+    directory: /e2e
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    cooldown: { default-days: 14 }
+    groups:
+      npm-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    cooldown: { default-days: 14 }
+    groups:
+      actions-minor-patch: { update-types: [minor, patch] }

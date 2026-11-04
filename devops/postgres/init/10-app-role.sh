@@ -1,7 +1,8 @@
 #!/bin/sh
 # Create (or refresh) the limited runtime role for the API and worker (DEV-R5 / AT-2, migration 012).
 #
-#   POSTGRES_USER  = udigity_owner : superuser + table owner; used ONLY for migrations and backups
+#   POSTGRES_USER  = udigity_admin : bootstrap superuser (init scripts, dumps, hands-on admin); never used by the app or migrations
+#   OWNER_DB_USER  = udigity_owner : NOSUPERUSER schema owner that runs the migrations (05-owner-role.sh, gap 8)
 #   udigity_app    = NOLOGIN group  : the grants of migration 012 (DML everywhere, audit_events SELECT+INSERT only)
 #   APP_DB_USER    = udigity_api    : LOGIN member of udigity_app; the role DATABASE_URL connects as. Not a superuser.
 #
@@ -12,11 +13,15 @@
 set -eu
 
 : "${POSTGRES_USER:?}" "${POSTGRES_DB:?}" "${APP_DB_USER:?APP_DB_USER is required in postgres.env}" "${APP_DB_PASSWORD:?APP_DB_PASSWORD is required in postgres.env}"
-[ "$APP_DB_USER" != "$POSTGRES_USER" ] || { echo "APP_DB_USER must differ from POSTGRES_USER (the owner/superuser)" >&2; exit 1; }
+[ "$APP_DB_USER" != "$POSTGRES_USER" ] || { echo "APP_DB_USER must differ from POSTGRES_USER (the bootstrap superuser)" >&2; exit 1; }
+# The owner role that creates the tables (migrations); default privileges and the grant policy are applied FOR that role.
+OWNER_DB_USER="${OWNER_DB_USER:-udigity_owner}"; export OWNER_DB_USER
+[ "$APP_DB_USER" != "$OWNER_DB_USER" ] || { echo "APP_DB_USER must differ from OWNER_DB_USER" >&2; exit 1; }
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<'SQL'
 \getenv app_user APP_DB_USER
 \getenv app_pw APP_DB_PASSWORD
+\getenv owner_user OWNER_DB_USER
 
 -- Group role (migration 012 creates it too when missing; creating it here first keeps the order independent).
 SELECT 'CREATE ROLE udigity_app NOLOGIN NOINHERIT'
@@ -40,15 +45,18 @@ SELECT to_regclass('public.audit_events') IS NOT NULL AS tables_exist \gset
   REVOKE INSERT, UPDATE, DELETE ON schema_migrations FROM udigity_app;
   -- Review D-01/D-02: migration 998 holds the least-privilege policy (no DELETE on business/history
   -- tables, append-only history tables). Re-apply it so a restore or a re-run never widens the grants.
+  -- Gap 8: run it AS the owner role (SET ROLE), so the ALTER DEFAULT PRIVILEGES inside it name the migrator, not the superuser.
   SELECT to_regprocedure('public.udigity_apply_app_grants()') IS NOT NULL AS has_grant_policy \gset
   \if :has_grant_policy
+    SET ROLE :"owner_user";
     SELECT public.udigity_apply_app_grants();
+    RESET ROLE;
   \endif
 \endif
 SELECT format('GRANT CONNECT ON DATABASE %I TO udigity_app', current_database()) \gexec
 -- No DELETE by default (D20 archive-only, review D-02); a migration grants DELETE per table when needed.
-ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE DELETE, TRUNCATE ON TABLES FROM udigity_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE ON TABLES TO udigity_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO udigity_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_user" IN SCHEMA public REVOKE DELETE, TRUNCATE ON TABLES FROM udigity_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_user" IN SCHEMA public GRANT SELECT, INSERT, UPDATE ON TABLES TO udigity_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_user" IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO udigity_app;
 SQL
 echo "app role ready: $APP_DB_USER (member of udigity_app, not superuser)"

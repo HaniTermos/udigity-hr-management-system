@@ -42,7 +42,7 @@ if [ "${1:-}" = pitr ]; then
   WALDIR="${3:?wal dir required}"; TARGET="${4:-}"
   checksum "$BASE"
   D=/var/lib/postgresql/data/pgdata
-  SU="${PITR_DB_USER:-udigity_owner}"    # the physical copy keeps production's roles: connect as its owner (POSTGRES_USER)
+  SU="${PITR_DB_USER:-udigity_admin}"    # the physical copy keeps production's roles: connect as the bootstrap superuser (POSTGRES_USER)
   log "starting throwaway postgres:17-alpine ($NAME, no host port, server not started yet)"
   docker run -d --name "$NAME" --user postgres --entrypoint sleep postgres:17-alpine infinity >/dev/null
   log "decrypting and unpacking the base backup"

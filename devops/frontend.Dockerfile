@@ -12,7 +12,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY backend/package.json backend/package.json
 COPY frontend/package.json frontend/package.json
-RUN npm ci -w frontend --include-workspace-root=false --no-audit --no-fund
+# T-03: --ignore-scripts (no dependency the build needs has an install script; see backend.Dockerfile).
+RUN npm ci -w frontend --include-workspace-root=false --ignore-scripts --no-audit --no-fund
 
 FROM deps AS build
 # Rewrites in next.config are resolved at BUILD time: this must be the backend address inside the

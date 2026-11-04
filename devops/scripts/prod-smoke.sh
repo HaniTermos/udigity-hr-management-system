@@ -36,12 +36,15 @@ cleanup() {
 trap cleanup EXIT
 
 echo "== dummy secrets (temp dir, not the repo) =="
-DBPW="smoke$(openssl rand -hex 8)"      # owner (migrations)
+ADMPW="smoke$(openssl rand -hex 8)"     # bootstrap superuser
+DBPW="smoke$(openssl rand -hex 8)"      # schema owner (migrations, non-superuser)
 APPPW="smoke$(openssl rand -hex 8)"     # limited runtime role
 cat > "$TMP/env/postgres.env" <<E
 POSTGRES_DB=udigity
-POSTGRES_USER=udigity_owner
-POSTGRES_PASSWORD=$DBPW
+POSTGRES_USER=udigity_admin
+POSTGRES_PASSWORD=$ADMPW
+OWNER_DB_USER=udigity_owner
+OWNER_DB_PASSWORD=$DBPW
 APP_DB_USER=udigity_api
 APP_DB_PASSWORD=$APPPW
 E
@@ -103,6 +106,11 @@ psqlq() { "${DC[@]}" exec -T db psql -U udigity_api -d udigity -Atc "$1" 2>&1; }
 DEL="$(psqlq "delete from audit_events where false")"
 echo "$DEL" | grep -qi "permission denied" && pass "runtime role cannot DELETE from audit_events" || fail "runtime role can DELETE from audit_events (psql said: $DEL)"
 [ "$(psqlq "select has_table_privilege(current_user,'audit_events','INSERT') and has_table_privilege(current_user,'audit_events','SELECT')")" = t ] && pass "runtime role has INSERT+SELECT on audit_events" || fail "audit_events INSERT/SELECT grant missing"
+# Gap 8: the migrations ran as the NON-superuser schema owner, which now owns the tables.
+adminq() { "${DC[@]}" exec -T db psql -U udigity_admin -d udigity -Atc "$1" 2>&1; }
+[ "$(adminq "select rolsuper from pg_roles where rolname='udigity_owner'")" = f ] && pass "migration/owner role is not a superuser" || fail "owner role is a superuser (or missing)"
+[ "$(adminq "select count(*) from pg_tables where schemaname='public' and tableowner<>'udigity_owner'")" = 0 ] && pass "every public table is owned by the schema-owner role" || fail "a public table is owned by another role"
+[ "$(adminq "select pg_get_userbyid(datdba) from pg_database where datname='udigity'")" = udigity_owner ] && pass "database owner is the schema-owner role" || fail "database owner is not udigity_owner"
 "${DC[@]}" exec -T worker node -e "require('dns').lookup('example.com',e=>process.exit(e?1:0))" >/dev/null 2>&1 && pass "worker resolves external hosts (egress)" || fail "worker has no external DNS/egress"
 "${DC[@]}" exec -T backend node -e "require('dns').lookup('example.com',e=>process.exit(e?0:1))" >/dev/null 2>&1 && pass "backend has no external egress" || fail "backend can reach the internet"
 [ "$(internal /healthz | tr -d '\r\n')" = 200 ] && pass "/healthz 200 (internal)" || fail "/healthz internal"
@@ -146,7 +154,7 @@ echo "== backup service (throwaway age key) =="
 "${DC[@]}" up -d backup >/dev/null 2>&1
 B=0; for _ in $(seq 1 36); do "${DC[@]}" exec -T backup sh -c 'test -f /backups/.last-success && ls /backups/base/base-*.tar.gz.age >/dev/null 2>&1' && { B=1; break; }; sleep 5; done
 [ "$B" = 1 ] && pass "backup: nightly dump and base backup written" || { fail "backup: no dump/base backup within 3 min"; "${DC[@]}" logs --tail=30 backup; }
-"${DC[@]}" exec -T db psql -U udigity_owner -d udigity -Atc "select pg_switch_wal()" >/dev/null 2>&1
+"${DC[@]}" exec -T db psql -U udigity_admin -d udigity -Atc "select pg_switch_wal()" >/dev/null 2>&1
 W=0; for _ in $(seq 1 24); do "${DC[@]}" exec -T backup sh -c 'ls /backups/wal/*.age >/dev/null 2>&1' && { W=1; break; }; sleep 5; done
 [ "$W" = 1 ] && pass "backup: WAL segment encrypted into /backups/wal" || fail "backup: no encrypted WAL file"
 "${DC[@]}" exec -T backup sh -c 'cd /backups/daily && sha256sum -c ./*.sha256 >/dev/null 2>&1' && pass "backup: dump checksum verifies" || fail "backup: dump checksum"
