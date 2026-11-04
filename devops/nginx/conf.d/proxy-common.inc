@@ -1,10 +1,12 @@
 proxy_http_version 1.1;
 proxy_set_header Host $host;
-# Overwrite (do not append) X-Forwarded-For: the backend trusts exactly one proxy hop (TRUST_PROXY=true),
-# so the office-IP check (ADR-016) sees the real client address and a client cannot spoof it.
+# $remote_addr is already the REAL client address here (realip module, nginx.conf): X-Forwarded-For is overwritten with it,
+# not appended, so the backend (TRUSTED_PROXY_CIDRS = this container only) sees exactly one hop and a client cannot spoof
+# the office-IP check (ADR-016).
 proxy_set_header X-Forwarded-For $remote_addr;
 proxy_set_header X-Real-IP $remote_addr;
-proxy_set_header X-Forwarded-Proto $scheme;
+# The public site is HTTPS only; TLS ends at the host's proxy, so this container only ever sees plain HTTP.
+proxy_set_header X-Forwarded-Proto https;
 proxy_set_header X-Forwarded-Host $host;
 proxy_set_header Upgrade $http_upgrade;
 proxy_set_header Connection $connection_upgrade;

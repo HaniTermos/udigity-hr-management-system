@@ -1,7 +1,7 @@
 # Udigity DevOps runbook
 
 Owner of this folder: DevOps (DEV-1). Files: `docker-compose.yml` (dev helper), `docker-compose.test.yml` (test DB),
-`docker-compose.prod.yml` (single-VPS production: db, backend, worker, frontend, nginx), `devops/*.Dockerfile`, `devops/nginx/`, `devops/env/*.env.example`,
+`docker-compose.prod.yml` (production behind the server's existing proxy: db, backend, worker, frontend, nginx on 127.0.0.1:8080, backup), `devops/*.Dockerfile`, `devops/nginx/`, `devops/env/*.env.example`,
 `devops/backup/`, `.github/workflows/ci.yml`.
 
 Hard rules: never commit or print real `.env` / `devops/env/*.env` files; never touch the local PostgreSQL 17
@@ -60,46 +60,35 @@ docker build -f devops/backend.Dockerfile  -t udigity-backend  .
 docker build -f devops/frontend.Dockerfile -t udigity-frontend .
 ```
 
-- Multi-stage, `node:22-alpine`, runs as `node` (uid 1000), `tini` as PID 1, HEALTHCHECK built in.
+- Multi-stage, base images pinned by digest (`node:22-alpine@sha256:...`, `postgres:17-alpine@sha256:...`, `nginx:1.27-alpine@sha256:...`;
+  refresh monthly with `docker buildx imagetools inspect <tag>`), runs as `node` (uid 1000), `tini` as PID 1, HEALTHCHECK built in.
 - Backend: `tsc` output plus `dist/db/migrations/*.sql` (tsc does not copy SQL). Migrate with
   the compose `migrate` job (`--profile tools run --rm migrate`, owner credentials from `devops/env/migrate.env`).
-- Frontend (fallback image verified 2026-10-23: 685 MB, uid 1000, /login 200): uses Next **standalone** output once `next.config.mjs` sets `output: 'standalone'` (REQUEST DEV-R3);
-  until then the image falls back to `next start` with pruned node_modules. `INTERNAL_API_URL` and every
-  `NEXT_PUBLIC_*` value are fixed at **build** time (build args).
+- Frontend: Next **standalone** output (`output: 'standalone'`); the build fails if it is missing. `INTERNAL_API_URL` and every
+  `NEXT_PUBLIC_*` value are fixed at **build** time (build args from `/opt/udigity/.env`; values in `frontend.env` do not reach the browser).
 - `.dockerignore` keeps `.env*`, `docs/`, `node_modules`, build output and `.git` out of the context.
 
-## 4. Production deploy on a single VPS (do NOT run without the Owner's go-ahead)
+## 4. Production deploy (do NOT run without the Owner's go-ahead)
 
-Prerequisites: Ubuntu 24.04 LTS VPS, DNS A record for the app host, Docker Engine + Compose plugin, `age`, `ufw`.
+The target is the Hostinger VPS that already serves other sites, public origin `https://hrsystem.udigity.com` (S-28). The stack
+publishes only `127.0.0.1:8080`; the server's existing proxy (nginx, Apache, OpenLiteSpeed, Caddy) holds the certificate, redirects
+to https and forwards to it. **The full, current procedure is `devops/DEPLOY.md`** (outer-proxy vhost templates in `devops/proxy/`,
+env files, `devops/scripts/deploy.sh`, rollback, monitoring) and the checklist `docs/review/2026-11-04/DEPLOYMENT-CHECKLIST.md`.
+Short form:
 
-1. **Harden the host:** SSH keys only, `ufw allow 22,80,443/tcp && ufw enable`, unattended-upgrades, a non-root
-   deploy user in the `docker` group.
-2. **Code:** `git clone` (or copy a release tarball) to `/opt/udigity`.
-3. **Secrets:** `cd /opt/udigity/devops/env`, copy each `*.env.example` to `*.env`, fill in, `chmod 600 *.env`, then run `devops/scripts/check-env.sh`.
-   - `SESSION_SECRET`: `openssl rand -hex 32`. DB password: `openssl rand -base64 32 | tr -d '/+='`
-     (same value in `postgres.env` and `DATABASE_URL`).
-   - `APP_ORIGIN` / `PUBLIC_APP_URL` = `https://<host>`; replace `app.example.com` in `devops/nginx/conf.d/udigity.conf`.
-   - Company values that **NEED VALUE** (timezone, office IP): leave empty to start "Not configured".
-4. **TLS:** first issue a certificate. Simplest: stop nothing yet, run
-   `certbot certonly --standalone -d <host>` before nginx is up, then copy/symlink `fullchain.pem` and `privkey.pem`
-   into `devops/nginx/certs/`. Renewal: `certbot renew --webroot -w /opt/udigity/devops/nginx/acme` plus a
-   deploy hook `docker compose -f docker-compose.prod.yml exec nginx nginx -s reload`.
-5. **Build and migrate:**
-   ```sh
-   docker compose -f docker-compose.prod.yml build
-   docker compose -f docker-compose.prod.yml up -d db   # creates the limited udigity_api role on an empty volume
-   docker compose -f docker-compose.prod.yml --profile tools run --rm migrate
-   ```
-   (Copy `devops/env/migrate.env.example` too: owner credentials, loaded only by `migrate`; the API/worker use the limited `udigity_api` role. See DEPLOY.md section 8.)
-   Do not run the dev seed in production. Create the first Owner account with the procedure the backend team provides.
-6. **Start:** `docker compose -f docker-compose.prod.yml up -d` and check `docker compose ... ps` (all `healthy`).
-7. **Smoke test:** `curl -I https://<host>/login` (200, security headers present), log in as the Owner, enrol 2FA.
-8. **Backups:** install the cron entry in section 5 and run one restore drill before go-live.
+1. Inspect the server (what owns 80/443, free RAM/disk, unused 172.29.10-30.0/24), change no existing firewall/SSH/proxy setting.
+2. Code in `/opt/udigity`; `cp devops/env/compose.env.example .env`; copy the five `*.env.example` files, fill in, `chmod 600`,
+   `devops/scripts/check-env.sh` must print PASSED (`TRUSTED_PROXY_CIDRS=172.29.10.10/32`, origin `https://hrsystem.udigity.com`).
+3. Add the `hrsystem.udigity.com` vhost to the existing proxy and issue its certificate with that proxy's own tool (never `--standalone`).
+4. `devops/scripts/deploy.sh` (backup, build, migrate, start, records `UDIGITY_TAG` in `.env`); `deploy.sh rollback` for the previous tag.
+5. Smoke: `curl -I https://hrsystem.udigity.com/login`; log in as the Owner, enrol 2FA. Install the monitoring of DEPLOY.md section 13.
 
-Stack facts: `db`, `backend`, `worker` and `frontend` sit on an `internal` network with no internet route and no published
-ports; only `nginx` publishes 80/443. Backend and frontend run read-only, as uid 1000, `cap_drop: ALL`,
-`no-new-privileges`. nginx overwrites `X-Forwarded-For` with the client address and the backend trusts one hop
-(`TRUST_PROXY=true`), which the office-IP check (ADR-016) relies on. Logs: json-file, 10 MB x 5 per service.
+Stack facts: `db`, `backend`, `worker` and `frontend` sit on an `internal` network (pinned 172.29.10.0/24) with no internet route and no
+published ports; only `nginx` publishes a port, on `127.0.0.1:8080`. Backend and frontend run read-only, as uid 1000, `cap_drop: ALL`,
+`no-new-privileges`, with memory/CPU caps and a `stop_grace_period` per service. nginx learns the visitor address from the host proxy
+(`set_real_ip_from` 127.0.0.1 and 172.16.0.0/12, `real_ip_header X-Forwarded-For`, recursive), then overwrites `X-Forwarded-For` with it;
+the backend trusts exactly that one hop (`TRUSTED_PROXY_CIDRS=172.29.10.10/32`), which the office-IP check (ADR-016) relies on. Logs:
+json-file, 10 MB x 5 per service; the nginx access log blanks `token=` values.
 
 Worker: the `worker` service reuses the backend image (`node dist/worker.js`, no HTTP port). Its health check calls the
 API's `/health/worker` (heartbeat freshness) over the internal network. At the edge, `/healthz`, `/readyz` and
@@ -112,14 +101,16 @@ the app (`frontend/proxy.ts`); the edge must not add `default-src`/`script-src` 
 header. `Referrer-Policy` has one source (nginx map): `no-referrer` on `/reset-password` and `/session-ended`,
 otherwise `strict-origin-when-cross-origin`; the upstream copy is hidden.
 
-**Rate limits (nginx, outer guard).** Login, 2FA, password reset/change (`/api/auth/*`): 10/min per client IP, burst 10 (brute-force
-protection, unchanged). `GET /api/auth/me` (session probe polled by every open tab) has its own zone keyed by the session
-cookie, so many users behind one office NAT do not exhaust each other (10/s per session, burst 30; without a cookie it falls
-back to the IP). If you rename `SESSION_COOKIE_NAME`, change the cookie name in the `map` in `devops/nginx/nginx.conf`.
-Per-IP connection cap is 200 for the same reason. The backend keeps its own per-IP auth limiter (`AUTH_RATE_LIMIT_*`).
+**Rate limits (nginx, outer flood guard; the backend limiters are primary).** The whole office shares one client IP, so every number is
+sized for ~60 people, not one. Credential endpoints (`/api/auth/` login, 2FA verify/recover/enrol, password reset/change): 60/min per IP,
+burst 40. Everything else under `/api/auth/` (me, logout, 2fa/status, sessions): 10/s per session cookie, burst 30 (falls back to the IP
+without a cookie). Other `/api/`: 8/s per session, burst 60, plus a 150/s per-IP safety net (a client can forge a cookie value to get a
+fresh session bucket). Pages: 100/s per IP, burst 200; `/_next/static/` is not limited. Per-IP connection cap 200. If you rename
+`SESSION_COOKIE_NAME`, change the cookie name in the `map` in `devops/nginx/nginx.conf`. The backend keeps its own per-account and
+per-session limits (`AUTH_RATE_LIMIT_*`, lockout).
 
-**Update:** `git pull && docker compose -f docker-compose.prod.yml build && docker compose -f docker-compose.prod.yml --profile tools run --rm migrate && docker compose -f docker-compose.prod.yml up -d`.
-Take a backup first. Migrations are forward-only; rollback = previous image tag + restore if a migration was involved.
+**Update:** `git pull && devops/scripts/deploy.sh` (it takes a backup first and records the tag). Rollback and the migration caveat:
+DEPLOY.md section 12.
 
 ## 5. Backups (policy D19: nightly dump + WAL archiving, RPO 15 min / RTO 4 h objectives, 14/8/6 retention)
 
@@ -138,15 +129,15 @@ AGE_IDENTITY=~/keys/udigity-backup.agekey devops/backup/restore-drill.sh pitr ba
 Layout, keys and alerts: `devops/backup/README.md`. Setup, drills, real restore (dump or point in time) and the drill
 log: `devops/DEPLOY.md` section 11. On Git Bash for Windows run the drill with `MSYS_NO_PATHCONV=1`.
 
-## 6. CI (`.github/workflows/ci.yml`, not pushed)
+## 6. CI (`.github/workflows/ci.yml`; free-plan gating, actions pinned to commit SHAs)
 
 Jobs: `secrets-scan` (gitleaks), `verify` (backend/frontend typecheck, lint, tests with a postgres:17 service on 55432,
 backend and frontend build, worker output check, shell-script syntax check, blocking `npm audit --audit-level=high`) and
 `docker` (build both images without pushing, worker entrypoint check, compose validation).
 
-State on 2026-10-26: the audit gate is blocking and currently FAILS on two high advisories (body-parser < 1.20.9, fixable with
-`npm audit fix`; zod < 4.6.6, needs a major bump): needs the Tech Lead. The old dev-only vitest advisory is gone, so the
-`continue-on-error` audit step was removed.
+The audit gate is blocking (`npm audit --audit-level=high`). `prod-smoke.sh` (heavy jobs only) also starts the `backup` service with a
+throwaway age key and checks the dump, base backup, WAL encryption and checksums, the real-client-IP handling, the token redaction and
+the nginx rate-limit zones. Shell scripts get `bash -n` and `shellcheck --severity=error`.
 
 Full production runbook: `devops/DEPLOY.md`. Env validation: `devops/scripts/check-env.sh` (see section 4, step 3).
 
@@ -160,12 +151,12 @@ worker refuses to start.
 
 1. Edit `devops/env/backend.env` on the server (never commit it):
    ```
-   SMTP_HOST=smtp.your-provider.com
+   SMTP_HOST=<provider SMTP host>
    SMTP_PORT=587            # 465 with SMTP_SECURE=true
    SMTP_SECURE=false
    SMTP_USER=...
    SMTP_PASS=...
-   SMTP_FROM=no-reply@your-domain      # plain address
+   SMTP_FROM=<sender address>           # plain address
    EMAIL_ALLOW_REAL_SEND=true
    ```
    Use an authenticated sender on a domain with SPF/DKIM/DMARC set up, or mail lands in spam.
@@ -178,11 +169,12 @@ To go back to no-send: empty `SMTP_HOST`, set `EMAIL_ALLOW_REAL_SEND=false`, rec
 ## 8. Production smoke test (local, no deploy)
 
 ```sh
-devops/scripts/prod-smoke.sh          # ports 18080/18443, project "udigity-smoke", temp dummy secrets + self-signed cert
+devops/scripts/prod-smoke.sh          # loopback port 18080, project "udigity-smoke", own subnets 172.29.110-130.0/24, dummy secrets
 ```
 
-Builds and starts `docker-compose.prod.yml` under its own compose project, then checks `/healthz`, `/readyz` and
-`/health/worker` (inside, and 404 at the edge), the login page over TLS, the app's nonce CSP, a single `Referrer-Policy`
-(`no-referrer` on `/reset-password`) and HSTS/nosniff. Teardown removes only that project's containers and volumes; the
-`udigity-test-db` container and your real `devops/env/*.env` files are never touched. `KEEP=1` leaves the stack running.
-The compose file honours `UDIGITY_ENV_DIR`, `NGINX_CERTS_DIR`, `HTTP_PORT` and `HTTPS_PORT` for this.
+Builds and starts `docker-compose.prod.yml` under its own compose project and talks to the bundled nginx the way the host proxy does
+(plain HTTP, `Host: hrsystem.udigity.com`, `X-Forwarded-For`). Checks `/healthz`, `/readyz` and `/health/worker` (inside, and 404 at the
+edge), unknown Host gets no answer, the visitor address reaches nginx (Linux only), `?token=` is redacted in the access log, logout is
+not throttled, the app's nonce CSP, a single `Referrer-Policy`, HSTS/nosniff, and the backup service (dump, base backup, encrypted WAL,
+checksum, growth guards). Teardown removes only that project's containers and volumes. `KEEP=1` leaves the stack running.
+The compose file honours `UDIGITY_ENV_DIR`, `HTTP_PORT`, `UDIGITY_SUBNET_*` and `NGINX_INTERNAL_IP` for this.

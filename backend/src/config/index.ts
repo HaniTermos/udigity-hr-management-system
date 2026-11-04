@@ -139,7 +139,7 @@ export function resolvePublicAppUrl(raw: string, isProduction: boolean): string 
   try {
     u = new URL(v);
   } catch {
-    throw new ConfigError('PUBLIC_APP_URL must be an absolute URL such as https://app.example.com');
+    throw new ConfigError('PUBLIC_APP_URL must be an absolute URL such as https://hrsystem.udigity.com');
   }
   if (u.protocol !== 'https:' && (isProduction || u.protocol !== 'http:')) {
     throw new ConfigError(isProduction ? 'PUBLIC_APP_URL must use https:// in production' : 'PUBLIC_APP_URL must be an http(s) URL');
@@ -170,11 +170,54 @@ function bcryptCost(env: Env, appEnv: AppEnv, key: string, fallback: number): nu
 function int(env: Env, key: string, fallback: number): number {
   const raw = env[key];
   if (raw === undefined || raw === '') return fallback;
-  const value = Number.parseInt(raw, 10);
+  // C-14: digits only. parseInt would accept "1.5abc" as 1 and hide a typo.
+  const value = /^\s*\d{1,9}\s*$/.test(raw) ? Number.parseInt(raw, 10) : NaN;
   if (!Number.isFinite(value) || value <= 0) {
     throw new ConfigError(`${key} must be a positive integer`);
   }
   return value;
+}
+
+function port(env: Env, key: string, fallback: number): number {
+  const value = int(env, key, fallback);
+  if (value > 65535) throw new ConfigError(`${key} must be a TCP port (1-65535)`);
+  return value;
+}
+
+const LOCAL_HOST_RE = /^(localhost|.*\.localhost|127(\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)$/i;
+
+/**
+ * C-14: APP_ORIGIN / CORS_ORIGIN entries. The Origin/Referer check compares exact strings, so a trailing slash, an
+ * upper-case host or a path would make every browser POST fail with ORIGIN_REJECTED while /readyz stays green.
+ * Production refuses anything that is not already the canonical `https://host[:port]` form (the error names the
+ * canonical value); development/test normalise what they can and keep the rest unchanged.
+ */
+export function normaliseOrigins(raw: string, label: string, isProduction: boolean): string[] {
+  const out: string[] = [];
+  for (const entry of raw.split(',').map((o) => o.trim()).filter(Boolean)) {
+    let u: URL | null = null;
+    try {
+      u = new URL(entry);
+    } catch {
+      u = null;
+    }
+    if (!isProduction) {
+      out.push(u && (u.protocol === 'http:' || u.protocol === 'https:') ? u.origin : entry);
+      continue;
+    }
+    if (!u || u.protocol !== 'https:' || u.origin === 'null') {
+      throw new ConfigError(`${label} must list https:// origins such as https://hrsystem.udigity.com (got an unusable entry)`);
+    }
+    if (u.username || u.password || u.search || u.hash || u.pathname !== '/') {
+      throw new ConfigError(`${label} entries must be origins only (no credentials, path, query or fragment); use ${u.origin}`);
+    }
+    if (entry !== u.origin) {
+      throw new ConfigError(`${label} entry must be written exactly as ${u.origin} (lower case, no trailing slash)`);
+    }
+    if (LOCAL_HOST_RE.test(u.hostname)) throw new ConfigError(`${label} must be the public host name, not a local address`);
+    out.push(u.origin);
+  }
+  return out;
 }
 
 /** Express `trust proxy` names (subnet presets) accepted beside IP addresses and CIDR ranges. */
@@ -221,7 +264,7 @@ export function loadConfig(env: Env) {
     url: databaseUrl,
     migrationUrl,
     host: env.DB_HOST || '',
-    port: int(env, 'DB_PORT', 5432),
+    port: port(env, 'DB_PORT', 5432),
     name: env.DB_NAME || '',
     user: env.DB_USER || '',
     password: env.DB_PASSWORD || '',
@@ -252,19 +295,31 @@ export function loadConfig(env: Env) {
     throw new ConfigError('OWNER_PENDING_2FA_SCOPE must be R11-a or R11-b');
   }
 
-  const appOrigins = (env.APP_ORIGIN || env.CORS_ORIGIN || (isProduction ? '' : 'http://localhost:3000'))
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
+  const appOrigins = normaliseOrigins(
+    env.APP_ORIGIN || env.CORS_ORIGIN || (isProduction ? '' : 'http://localhost:3000'),
+    env.APP_ORIGIN ? 'APP_ORIGIN' : 'CORS_ORIGIN',
+    isProduction
+  );
   if (isProduction && appOrigins.length === 0) {
     throw new ConfigError('APP_ORIGIN is required in production (the public origin of the app)');
+  }
+  const corsOrigins = env.CORS_ORIGIN ? normaliseOrigins(env.CORS_ORIGIN, 'CORS_ORIGIN', isProduction) : [];
+  if (isProduction && corsOrigins.some((o) => !appOrigins.includes(o))) {
+    throw new ConfigError('CORS_ORIGIN must equal APP_ORIGIN (the one public origin)');
+  }
+  const publicAppUrl = resolvePublicAppUrl(env.PUBLIC_APP_URL || appOrigins[0] || '', isProduction);
+  if (isProduction && !appOrigins.includes(publicAppUrl)) {
+    throw new ConfigError(`PUBLIC_APP_URL (${publicAppUrl}) must equal the public origin in APP_ORIGIN (${appOrigins.join(', ')})`);
+  }
+  if (isProduction && LOCAL_HOST_RE.test(new URL(publicAppUrl).hostname)) {
+    throw new ConfigError('PUBLIC_APP_URL must be the public host name, not a local address');
   }
 
   return {
     env: appEnv,
     isProduction,
-    port: int(env, 'PORT', 5000),
-    corsOrigin: env.CORS_ORIGIN || appOrigins[0] || '',
+    port: port(env, 'PORT', 5000),
+    corsOrigin: corsOrigins[0] || appOrigins[0] || '',
     /** Origins accepted by the Origin/Referer check on mutating requests (ADR-002/003). */
     appOrigins,
     /** Requests with neither Origin nor Referer: rejected in production, allowed in dev/test (CLI tools, supertest). */
@@ -307,7 +362,8 @@ export function loadConfig(env: Env) {
     // Per-IP rate limit on auth endpoints. IMPL-LOCKOUT names a per-IP limit but no number:
     // 20 requests / 15 min is a placeholder. Demonstration alternative — not approved (docs/policy-defaults.md).
     authRateLimit: {
-      max: int(env, 'AUTH_RATE_LIMIT_MAX', 20),
+      // Failed sign-ins per IP per window (successes never count; office NAT fairness, see identity/limits.ts).
+      max: int(env, 'AUTH_RATE_LIMIT_MAX', 100),
       windowMinutes: int(env, 'AUTH_RATE_LIMIT_WINDOW_MINUTES', 15),
     },
 
@@ -334,7 +390,7 @@ export function loadConfig(env: Env) {
     policyAliases: loadPolicyEnvAliases(env),
 
     /** Trusted public origin used to build links in security emails (validated; https in production). */
-    publicAppUrl: resolvePublicAppUrl(env.PUBLIC_APP_URL || appOrigins[0] || '', isProduction),
+    publicAppUrl,
   };
 }
 

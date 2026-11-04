@@ -1,0 +1,32 @@
+# Outer proxy = Apache httpd on the host. Needs: a2enmod proxy proxy_http headers ssl rewrite http2 (once), then
+# copy to /etc/apache2/sites-available/hrsystem.udigity.com.conf, `a2ensite`, `apachectl configtest`, `systemctl reload apache2`.
+# Certificate with the tool already in use, for example:  sudo certbot --apache -d hrsystem.udigity.com
+# (certbot --apache writes the SSLCertificate* lines and the redirect for you.) Never stop Apache: it serves the other sites.
+# The Udigity stack listens on 127.0.0.1:8080 and is not reachable from outside.
+
+<VirtualHost *:80>
+  ServerName hrsystem.udigity.com
+  RewriteEngine On
+  RewriteCond %{REQUEST_URI} !^/.well-known/acme-challenge/
+  RewriteRule ^/?(.*)$ https://hrsystem.udigity.com/$1 [R=301,L]
+</VirtualHost>
+
+<VirtualHost *:443>
+  ServerName hrsystem.udigity.com
+  Protocols h2 http/1.1
+  SSLEngine on
+  SSLCertificateFile    /etc/letsencrypt/live/hrsystem.udigity.com/fullchain.pem
+  SSLCertificateKeyFile /etc/letsencrypt/live/hrsystem.udigity.com/privkey.pem
+
+  # The inner nginx only answers the Host hrsystem.udigity.com, so keep the original Host header.
+  ProxyPreserveHost On
+  ProxyRequests Off
+  ProxyTimeout 60
+  # mod_proxy APPENDS the TCP peer to X-Forwarded-For. The inner nginx reads the header from the right and only believes
+  # addresses from this host, so anything a client puts on the left is ignored. Drop it anyway:
+  RequestHeader unset X-Forwarded-For
+  RequestHeader set X-Forwarded-Proto "https"
+  ProxyPass        / http://127.0.0.1:8080/ keepalive=On
+  ProxyPassReverse / http://127.0.0.1:8080/
+  # (mod_proxy still adds the real TCP peer after the unset: the inner nginx then sees exactly the client address.)
+</VirtualHost>

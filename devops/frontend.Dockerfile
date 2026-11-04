@@ -1,11 +1,11 @@
 # Udigity frontend (Next.js 16). Build context: repository root.
 #   docker build -f devops/frontend.Dockerfile -t udigity-frontend .
 #
-# Uses Next "standalone" output when next.config sets `output: 'standalone'`
-# (REQUEST posted on docs/implementation/coordination.md). Until then the image falls back to
-# `next start` with production node_modules (larger image, same behaviour).
+# Uses Next "standalone" output (`output: 'standalone'` in frontend/next.config.mjs). The build FAILS if the standalone
+# output is missing, instead of silently shipping a much larger `next start` image (G-15).
 
-ARG NODE_IMAGE=node:22-alpine
+# G-05: pinned by digest (reproducible rebuilds). Refresh monthly: docker buildx imagetools inspect node:22-alpine
+ARG NODE_IMAGE=node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
@@ -18,33 +18,27 @@ FROM deps AS build
 # Rewrites in next.config are resolved at BUILD time: this must be the backend address inside the
 # compose network. NEXT_PUBLIC_* values are inlined at build time too.
 ARG INTERNAL_API_URL=http://backend:5000
+# Must equal the backend values (PASSWORD_MIN_LENGTH / CSRF_COOKIE_NAME in backend.env); docker-compose.prod.yml passes them.
 ARG NEXT_PUBLIC_PASSWORD_MIN_LENGTH=12
+ARG NEXT_PUBLIC_CSRF_COOKIE_NAME=__Host-udigity_csrf
 ENV INTERNAL_API_URL=${INTERNAL_API_URL} \
     NEXT_PUBLIC_PASSWORD_MIN_LENGTH=${NEXT_PUBLIC_PASSWORD_MIN_LENGTH} \
+    NEXT_PUBLIC_CSRF_COOKIE_NAME=${NEXT_PUBLIC_CSRF_COOKIE_NAME} \
     NEXT_TELEMETRY_DISABLED=1 \
     NODE_ENV=production
 COPY frontend frontend
 RUN npm run build -w frontend
-# Assemble /out: standalone if available, otherwise a pruned `next start` layout.
+# Assemble /out from the standalone output; fail loudly when it is not there (G-15).
 RUN set -eu; mkdir -p /out; \
-  if [ -d frontend/.next/standalone ]; then \
-    cp -a frontend/.next/standalone/. /out/; \
-    SERVER_DIR="$(dirname "$(cd /out && find . -name server.js -path '*frontend/server.js' -not -path '*/node_modules/*' | head -n1)")"; \
-    [ "$SERVER_DIR" != "." ] || SERVER_DIR=./frontend; \
-    mkdir -p "/out/$SERVER_DIR/.next"; \
-    cp -a frontend/.next/static "/out/$SERVER_DIR/.next/static"; \
-    [ ! -d frontend/public ] || cp -a frontend/public "/out/$SERVER_DIR/public"; \
-    printf '#!/bin/sh\ncd /app/%s && exec node server.js\n' "$SERVER_DIR" > /out/start.sh; \
-  else \
-    npm prune --omit=dev -w frontend --include-workspace-root=false --no-audit --no-fund || true; \
-    cp -a node_modules package.json /out/; \
-    mkdir -p /out/frontend; \
-    cp -a frontend/.next frontend/package.json frontend/next.config.mjs /out/frontend/; \
-    [ ! -d frontend/public ] || cp -a frontend/public /out/frontend/public; \
-    [ ! -d frontend/node_modules ] || cp -a frontend/node_modules /out/frontend/node_modules; \
-    rm -rf /out/frontend/.next/cache; \
-    printf '#!/bin/sh\ncd /app/frontend && exec node ../node_modules/next/dist/bin/next start -p "${PORT:-3000}" -H 0.0.0.0\n' > /out/start.sh; \
-  fi; \
+  [ -d frontend/.next/standalone ] || { echo "ERROR: frontend/.next/standalone is missing: set output: 'standalone' in frontend/next.config.mjs" >&2; exit 1; }; \
+  cp -a frontend/.next/standalone/. /out/; \
+  SERVER_DIR="$(dirname "$(cd /out && find . -name server.js -path '*frontend/server.js' -not -path '*/node_modules/*' | head -n1)")"; \
+  [ "$SERVER_DIR" != "." ] || SERVER_DIR=./frontend; \
+  [ -f "/out/$SERVER_DIR/server.js" ] || { echo "ERROR: standalone server.js not found" >&2; exit 1; }; \
+  mkdir -p "/out/$SERVER_DIR/.next"; \
+  cp -a frontend/.next/static "/out/$SERVER_DIR/.next/static"; \
+  [ ! -d frontend/public ] || cp -a frontend/public "/out/$SERVER_DIR/public"; \
+  printf '#!/bin/sh\ncd /app/%s && exec node server.js\n' "$SERVER_DIR" > /out/start.sh; \
   chmod +x /out/start.sh
 
 FROM ${NODE_IMAGE} AS runtime

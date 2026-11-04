@@ -1,7 +1,8 @@
 # Udigity backend (Express/TS). Build context: repository root.
 #   docker build -f devops/backend.Dockerfile -t udigity-backend .
 
-ARG NODE_IMAGE=node:22-alpine
+# G-05: pinned by digest (reproducible rebuilds). Refresh monthly: docker buildx imagetools inspect node:22-alpine
+ARG NODE_IMAGE=node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 
 # ---- deps: full install for the backend workspace (incl. dev deps for tsc) ----
 FROM ${NODE_IMAGE} AS deps

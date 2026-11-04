@@ -73,6 +73,8 @@ if [ ! -f "$B" ]; then err "backend.env not found (copy backend.env.example)"; e
     IFS=',' read -ra parts <<< "$TPC"
     for p in "${parts[@]}"; do
       p="${p// /}"
+      case "$p" in 0.0.0.0/0|::/0|*/0|*/1|*/2|*/3|*/4|*/5|*/6|*/7|*/8) err "backend.env: TRUSTED_PROXY_CIDRS entry $p is far too wide: any host in it could set the client address";; esac
+      case "$p" in loopback|linklocal|uniquelocal) warn "backend.env: TRUSTED_PROXY_CIDRS=$p trusts a whole range; behind the bundled nginx use its pinned address (172.29.10.10/32, see docker-compose.prod.yml)";; esac
       [[ "$p" =~ ^(loopback|linklocal|uniquelocal)$ || "$p" =~ ^[0-9.]+(/[0-9]{1,2})?$ || "$p" =~ ^[0-9A-Fa-f:]+(/[0-9]{1,3})?$ ]] \
         || err "backend.env: TRUSTED_PROXY_CIDRS entries must be IPs, CIDR ranges or loopback/linklocal/uniquelocal"
     done
@@ -90,6 +92,8 @@ if [ ! -f "$B" ]; then err "backend.env not found (copy backend.env.example)"; e
   S="$(get "$B" SESSION_SECRET)"
   if is_placeholder "$S" || [ "${#S}" -lt 32 ] || [ "$S" = "udigity_dev_session_secret_change_me_in_production_32chars" ]; then
     err "backend.env: SESSION_SECRET must be >= 32 random characters (openssl rand -hex 32)"
+  elif [ "$(printf '%s' "$S" | fold -w1 | sort -u | wc -l)" -lt 10 ]; then
+    err "backend.env: SESSION_SECRET has too few distinct characters (not random; openssl rand -hex 32)"
   fi
 
   T="$(get "$B" TOTP_ENC_KEY)"
@@ -104,11 +108,20 @@ if [ ! -f "$B" ]; then err "backend.env not found (copy backend.env.example)"; e
       IFS=',' read -ra parts <<< "$(get "$B" $k)"
       for o in "${parts[@]}"; do
         o="${o// /}"
-        [[ "$o" =~ ^https://[^/]+$ ]] || err "backend.env: $k entries must be https origins without a path"
+        [[ "$o" =~ ^https://[^/]+$ ]] || err "backend.env: $k entries must be https origins without a path or trailing slash"
+        [[ "$o" == "$(printf '%s' "$o" | tr 'A-Z' 'a-z')" ]] || err "backend.env: $k must be lower case (the origin check is an exact string match)"
         [[ "$o" == *example.com* ]] && err "backend.env: $k still contains example.com"
+        [[ "$o" =~ ^https://(localhost|127\.|\[::1\]) ]] && err "backend.env: $k must be the public host name, not a local address"
       done
     fi
   done
+  # The API refuses to start unless these agree (C-14); catch it here with a clear message.
+  AO="$(get "$B" APP_ORIGIN)"; PU="$(get "$B" PUBLIC_APP_URL)"
+  if ! is_placeholder "$AO" && ! is_placeholder "$PU"; then
+    [[ ",${AO// /}," == *",${PU// /},"* ]] || err "backend.env: PUBLIC_APP_URL must equal the public origin in APP_ORIGIN"
+  fi
+  CO="$(get "$B" CORS_ORIGIN)"
+  [ -z "$CO" ] || [[ ",${AO// /}," == *",${CO// /},"* ]] || err "backend.env: CORS_ORIGIN must equal APP_ORIGIN"
 
   # Company timezone (BL-16): required, must be an IANA zone.
   TZV="$(get "$B" POLICY_COMPANY_TIMEZONE)"
@@ -167,6 +180,7 @@ if [ ! -f "$B" ]; then err "backend.env not found (copy backend.env.example)"; e
   fi
   if [ -n "$SH" ] && [ "$(get "$B" EMAIL_TRANSPORT)" != "log" ]; then
     [[ "$FROM" == *example.com || "$FROM" == *.invalid ]] && err "backend.env: SMTP_FROM still uses a placeholder domain"
+    [ -n "$(get "$B" ALERT_EMAIL_TO)" ] || warn "backend.env: ALERT_EMAIL_TO is empty while real email is on: failure alerts are only stored in ops_alerts (set an operator address)"
     if [ "$(get "$B" EMAIL_ALLOW_REAL_SEND)" != "true" ]; then
       err "backend.env: SMTP_HOST is set but EMAIL_ALLOW_REAL_SEND is not true; the worker will refuse to start"
     else
@@ -218,15 +232,22 @@ if [ ! -f "$M" ]; then err "migrate.env not found (copy migrate.env.example; own
   fi
 fi
 
+# nginx server_name must be the host of APP_ORIGIN, otherwise the inner nginx answers 444 to every request (G-12a).
 NGX="$HERE/../nginx/conf.d/udigity.conf"
-if [ -f "$NGX" ] && grep -qE '^[[:space:]]*server_name[[:space:]]+[^;]*example\.com' "$NGX"; then
-  warn "nginx/conf.d/udigity.conf: server_name still app.example.com (edit it to the real host before go-live)"
+if [ -f "$NGX" ] && [ -f "$B" ]; then
+  AOH="$(get "$B" APP_ORIGIN)"; AOH="${AOH%%,*}"; AOH="${AOH#https://}"; AOH="${AOH%%:*}"
+  if [ -n "$AOH" ] && ! grep -qE "^[[:space:]]*server_name[[:space:]]+([^;]*[[:space:]])?${AOH//./\.}([[:space:]][^;]*)?;" "$NGX"; then
+    err "nginx/conf.d/udigity.conf: no server_name equals the APP_ORIGIN host ($AOH); every request would get no answer"
+  fi
 fi
 
 if [ ! -f "$F" ]; then err "frontend.env not found (copy frontend.env.example)"; else
   check_perms "$F"; check_unknown "$F" "$EX_DIR/frontend.env.example"
   [ "$(get "$F" NODE_ENV)" = "production" ] || err "frontend.env: NODE_ENV must be production"
   require "$F" INTERNAL_API_URL
+  for k in NEXT_PUBLIC_CSRF_COOKIE_NAME NEXT_PUBLIC_PASSWORD_MIN_LENGTH; do
+    [ -z "$(get "$F" $k)" ] || warn "frontend.env: $k has no effect at run time (inlined at image build); set it in /opt/udigity/.env and rebuild, equal to the backend value"
+  done
   [ "$(get "$F" NEXT_PUBLIC_ENABLE_DEV_PERSONAS)" = "true" ] && err "frontend.env: NEXT_PUBLIC_ENABLE_DEV_PERSONAS must be false in production"
   if [ -f "$B" ]; then
     bs="$(get "$B" SESSION_COOKIE_NAME)"; fs="$(get "$F" SESSION_COOKIE_NAME)"
@@ -242,7 +263,7 @@ if [ -f "$K" ]; then
   check_perms "$K"; check_unknown "$K" "$EX_DIR/backup.env.example"
   case "$(get "$K" BACKUP_ENCRYPTION)" in
     gpg) require "$K" GPG_RECIPIENT;;
-    age|'') v="$(get "$K" AGE_RECIPIENT)"; [[ "$v" == age1* && "$v" != age1CHANGE_ME ]] || err "backup.env: AGE_RECIPIENT must be a real age public key (age1...)";;
+    age|'') v="$(get "$K" AGE_RECIPIENT)"; [[ "$v" =~ ^age1[02-9ac-hj-np-z]{58}$ ]] || err "backup.env: AGE_RECIPIENT must be a real age public key (age1 + 58 lower-case bech32 characters)";;
     *) err "backup.env: BACKUP_ENCRYPTION must be age or gpg";;
   esac
   # Backup container (policy D19): its own read-only DB role, never the owner or the app role.
@@ -262,6 +283,9 @@ if [ -f "$K" ]; then
     ctz="$(get "$B" POLICY_COMPANY_TIMEZONE)"; btz="$(get "$K" TZ)"
     [ -n "$ctz" ] && [ "${btz:-UTC}" != "$ctz" ] && warn "backup.env: TZ (${btz:-UTC}) differs from POLICY_COMPANY_TIMEZONE: BACKUP_TIME is read in TZ"
   fi
+  for k in WAL_BACKLOG_MAX DISK_ALERT_PCT; do
+    v="$(get "$K" $k)"; [ -z "$v" ] || { is_int "$v" && [ "$v" -gt 0 ]; } || err "backup.env: $k must be a positive integer"
+  done
   warn "backup.env: backups are stored on this server only (Owner-approved exception): copy them off-server when possible (devops/DEPLOY.md section 11)"
 else
   err "backup.env not found: the backup service needs it (copy backup.env.example; devops/DEPLOY.md section 11)"

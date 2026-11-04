@@ -45,7 +45,7 @@ describe('fail-closed configuration', () => {
   it('FX-MAIL: PUBLIC_APP_URL (email link base) is a trusted https origin in production, else start-up fails', () => {
     const prod = { NODE_ENV: 'production', SESSION_SECRET: STRONG, ...DB, APP_ORIGIN: 'https://a.example', TOTP_ENC_KEY: KEY };
     expect(loadConfig(prod).publicAppUrl).toBe('https://a.example'); // falls back to the first APP_ORIGIN
-    expect(loadConfig({ ...prod, PUBLIC_APP_URL: 'https://app.example:8443/' }).publicAppUrl).toBe('https://app.example:8443');
+    expect(loadConfig({ ...prod, APP_ORIGIN: 'https://app.example:8443', PUBLIC_APP_URL: 'https://app.example:8443/' }).publicAppUrl).toBe('https://app.example:8443');
     for (const bad of [
       'http://app.example',
       'app.example',
@@ -115,5 +115,41 @@ describe('fail-closed configuration', () => {
     expect(test.password.bcryptRounds).toBe(4);
     expect(test.password.recoveryCodeBcryptRounds).toBe(4);
     expect(() => loadConfig({ NODE_ENV: 'test', PASSWORD_BCRYPT_ROUNDS: '3' })).toThrow(/between 4 and 15/);
+  });
+
+  it('C-14: production APP_ORIGIN / CORS_ORIGIN must be canonical https origins, else start-up fails', () => {
+    const prod = { NODE_ENV: 'production', SESSION_SECRET: STRONG, ...DB, TOTP_ENC_KEY: KEY };
+    const ok = loadConfig({ ...prod, APP_ORIGIN: 'https://hrsystem.udigity.com' });
+    expect(ok.appOrigins).toEqual(['https://hrsystem.udigity.com']);
+    expect(ok.corsOrigin).toBe('https://hrsystem.udigity.com');
+    expect(ok.publicAppUrl).toBe('https://hrsystem.udigity.com');
+    for (const bad of [
+      'https://hrsystem.udigity.com/', // trailing slash: every POST would be 403 ORIGIN_REJECTED
+      'https://HRSystem.udigity.com',
+      'http://hrsystem.udigity.com',
+      'hrsystem.udigity.com',
+      '*',
+      'https://hrsystem.udigity.com/app',
+      'https://localhost:3000',
+      'https://127.0.0.1',
+    ]) {
+      expect(() => loadConfig({ ...prod, APP_ORIGIN: bad }), bad).toThrow(/APP_ORIGIN/);
+    }
+    expect(() => loadConfig({ ...prod, APP_ORIGIN: 'https://hrsystem.udigity.com', CORS_ORIGIN: 'https://other.example' })).toThrow(/CORS_ORIGIN/);
+    expect(() => loadConfig({ ...prod, APP_ORIGIN: 'https://hrsystem.udigity.com', CORS_ORIGIN: 'https://hrsystem.udigity.com/' })).toThrow(/CORS_ORIGIN/);
+    expect(loadConfig({ ...prod, APP_ORIGIN: 'https://hrsystem.udigity.com', CORS_ORIGIN: 'https://hrsystem.udigity.com' }).corsOrigin).toBe('https://hrsystem.udigity.com');
+    // PUBLIC_APP_URL must be the same public origin as APP_ORIGIN, and not a local address.
+    expect(() => loadConfig({ ...prod, APP_ORIGIN: 'https://hrsystem.udigity.com', PUBLIC_APP_URL: 'https://other.example' })).toThrow(/PUBLIC_APP_URL/);
+    expect(() => loadConfig({ ...prod, APP_ORIGIN: 'https://hrsystem.udigity.com', PUBLIC_APP_URL: 'https://localhost:3000' })).toThrow(/PUBLIC_APP_URL/);
+    // Development and test normalise instead of failing.
+    expect(loadConfig({ NODE_ENV: 'development', APP_ORIGIN: 'http://localhost:3000/' }).appOrigins).toEqual(['http://localhost:3000']);
+  });
+
+  it('C-14: numeric settings reject trailing garbage and out-of-range ports', () => {
+    expect(() => loadConfig({ NODE_ENV: 'development', PORT: '99999' })).toThrow(/PORT/);
+    expect(() => loadConfig({ NODE_ENV: 'development', DB_PORT: '70000' })).toThrow(/DB_PORT/);
+    expect(() => loadConfig({ NODE_ENV: 'development', SESSION_IDLE_MINUTES: '1.5abc' })).toThrow(/SESSION_IDLE_MINUTES/);
+    expect(() => loadConfig({ NODE_ENV: 'development', SESSION_IDLE_MINUTES: '0' })).toThrow(/SESSION_IDLE_MINUTES/);
+    expect(loadConfig({ NODE_ENV: 'development', PORT: '5000', SESSION_IDLE_MINUTES: '90' }).session.idleMinutes).toBe(90);
   });
 });

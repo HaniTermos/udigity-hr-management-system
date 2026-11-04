@@ -1,4 +1,10 @@
-# Production stack for a single VPS. Runbook: devops/README.md. DO NOT deploy without the Owner's go-ahead.
+# Production stack for a VPS that ALREADY runs other sites behind its own web server / proxy (Owner decision S-28,
+# 2026-11-04: public origin https://hrsystem.udigity.com). This stack owns NO public port: the bundled nginx listens
+# on 127.0.0.1:${HTTP_PORT:-8080} (plain HTTP) and the existing proxy terminates TLS and forwards to it
+# (devops/proxy/*.example, devops/DEPLOY.md section 5). Runbook: devops/DEPLOY.md. DO NOT deploy without the Owner's go-ahead.
+#
+# The image tag is NOT optional: put UDIGITY_TAG=<git sha> into /opt/udigity/.env (written by devops/scripts/deploy.sh;
+# compose reads it automatically), so a reboot or a plain `up -d` can never fall back to an unknown `latest` image.
 #
 #   cp devops/env/backend.env.example  devops/env/backend.env    # fill in real values (never commit)
 #   cp devops/env/frontend.env.example devops/env/frontend.env
@@ -9,8 +15,8 @@
 #   cp devops/env/backup.env.example   devops/env/backup.env     # age PUBLIC key + backup role password
 #   docker compose -f docker-compose.prod.yml up -d      # db, backend, worker, frontend, nginx, backup
 #
-# Local smoke test: devops/scripts/prod-smoke.sh (overrides UDIGITY_ENV_DIR, NGINX_CERTS_DIR, HTTP_PORT, HTTPS_PORT;
-# runs without the backup service: --scale backup=0).
+# Local smoke test: devops/scripts/prod-smoke.sh (overrides UDIGITY_ENV_DIR, HTTP_PORT and the UDIGITY_SUBNET_* values
+# so it can run next to a real stack; it also starts the backup service with a throwaway age key).
 name: udigity
 
 x-logging: &logging
@@ -19,9 +25,14 @@ x-logging: &logging
     max-size: "10m"
     max-file: "5"
 
+# Memory/CPU caps (G-06) are sized for a small shared VPS (4 GB RAM, other sites on the same machine): the stack caps at
+# about 2.6 GB RAM in total and never takes the whole CPU. Raise them in this file if `docker stats` shows a service at
+# its limit under normal load; every cap is a ceiling, not a reservation. pids_limit stops a fork bomb inside one service.
+# Node services also get --max-old-space-size below their memory cap so V8 collects before the kernel OOM-kills the process.
+
 services:
   db:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
     restart: unless-stopped
     env_file:
       - ${UDIGITY_ENV_DIR:-devops/env}/postgres.env
@@ -43,6 +54,11 @@ services:
       - archive_command=test ! -f /wal/%f && cp %p /wal/%f.tmp && mv /wal/%f.tmp /wal/%f
       - -c
       - archive_timeout=900
+      # G-06: modest memory use on a shared VPS (the default shared_buffers is 128 MB). The whole database is far smaller.
+      - -c
+      - shared_buffers=192MB
+      - -c
+      - max_connections=100
     volumes:
       - pgdata:/var/lib/postgresql/data
       - wal_archive:/wal
@@ -59,19 +75,26 @@ services:
     security_opt:
       - no-new-privileges:true
     shm_size: 256m
+    # 768m = 192 MB shared_buffers + up to ~40 pooled sessions (API + worker pools of 20) + maintenance. Postgres
+    # gets the longest grace: a fast shutdown checkpoints, a SIGKILL during a checkpoint means slow crash recovery.
+    mem_limit: 768m
+    cpus: 1.5
+    pids_limit: 256
+    stop_grace_period: 60s
     logging: *logging
 
   backend:
     build:
       context: .
       dockerfile: devops/backend.Dockerfile
-    image: udigity-backend:${UDIGITY_TAG:-latest}
+    image: udigity-backend:${UDIGITY_TAG:?UDIGITY_TAG is not set - run devops/scripts/deploy.sh or write UDIGITY_TAG=gitsha into the .env file}
     restart: unless-stopped
     env_file: ${UDIGITY_ENV_DIR:-devops/env}/backend.env
     environment:
       NODE_ENV: production
       PORT: "5000"
       TRUST_PROXY: "true"
+      NODE_OPTIONS: --max-old-space-size=384
     user: "1000:1000"
     read_only: true
     tmpfs:
@@ -79,6 +102,11 @@ services:
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
+    # 512m: Express + a pool of 20 + the heaviest report export (streamed). 30 s grace lets in-flight requests finish.
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    stop_grace_period: 30s
     depends_on:
       db:
         condition: service_healthy
@@ -94,9 +122,11 @@ services:
   # One-shot migration job. Only this service gets the owner credentials (migrate.env); the API and worker run as the
   # limited role from backend.env DATABASE_URL (DEV-R5). Not started by `up`: use `--profile tools run --rm migrate`.
   migrate:
-    image: udigity-backend:${UDIGITY_TAG:-latest}
+    image: udigity-backend:${UDIGITY_TAG:?UDIGITY_TAG is not set - run devops/scripts/deploy.sh or write UDIGITY_TAG=gitsha into the .env file}
     profiles: [tools]
     command: ["node", "dist/db/migrate.js"]
+    mem_limit: 384m
+    cpus: 1.0
     env_file:
       - ${UDIGITY_ENV_DIR:-devops/env}/backend.env
       - ${UDIGITY_ENV_DIR:-devops/env}/migrate.env
@@ -119,13 +149,14 @@ services:
   # Health = the API's /health/worker (heartbeat freshness), reached over the internal network only; nginx 404s it.
   worker:
     # Built by the backend service (same Dockerfile); `docker compose build` produces the shared image.
-    image: udigity-backend:${UDIGITY_TAG:-latest}
+    image: udigity-backend:${UDIGITY_TAG:?UDIGITY_TAG is not set - run devops/scripts/deploy.sh or write UDIGITY_TAG=gitsha into the .env file}
     command: ["node", "dist/worker.js"]
     restart: unless-stopped
     env_file: ${UDIGITY_ENV_DIR:-devops/env}/backend.env
     environment:
       NODE_ENV: production
       TRUST_PROXY: "true"
+      NODE_OPTIONS: --max-old-space-size=256
     user: "1000:1000"
     read_only: true
     tmpfs:
@@ -133,6 +164,11 @@ services:
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
+    # 384m: sequential loop, one SMTP connection. 30 s grace: the loop finishes its current iteration (SIGKILL after).
+    mem_limit: 384m
+    cpus: 0.5
+    pids_limit: 64
+    stop_grace_period: 30s
     depends_on:
       db:
         condition: service_healthy
@@ -155,7 +191,11 @@ services:
       dockerfile: devops/frontend.Dockerfile
       args:
         INTERNAL_API_URL: http://backend:5000
-    image: udigity-frontend:${UDIGITY_TAG:-latest}
+        # G-15: NEXT_PUBLIC_* are inlined at BUILD time, so they come from the build environment (/opt/udigity/.env or
+        # the shell), not from frontend.env. They must equal the backend values (check-env.sh warns about a mismatch).
+        NEXT_PUBLIC_CSRF_COOKIE_NAME: ${NEXT_PUBLIC_CSRF_COOKIE_NAME:-__Host-udigity_csrf}
+        NEXT_PUBLIC_PASSWORD_MIN_LENGTH: ${NEXT_PUBLIC_PASSWORD_MIN_LENGTH:-12}
+    image: udigity-frontend:${UDIGITY_TAG:?UDIGITY_TAG is not set - run devops/scripts/deploy.sh or write UDIGITY_TAG=gitsha into the .env file}
     restart: unless-stopped
     env_file: ${UDIGITY_ENV_DIR:-devops/env}/frontend.env
     environment:
@@ -163,6 +203,7 @@ services:
       INTERNAL_API_URL: http://backend:5000
       PORT: "3000"
       HOSTNAME: 0.0.0.0
+      NODE_OPTIONS: --max-old-space-size=384
     user: "1000:1000"
     read_only: true
     tmpfs:
@@ -170,6 +211,11 @@ services:
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
+    # 512m: Next standalone server (SSR for ~60 users). Stateless, so a short grace is enough.
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    stop_grace_period: 15s
     depends_on:
       backend:
         condition: service_healthy
@@ -191,7 +237,7 @@ services:
     build:
       context: .
       dockerfile: devops/backup.Dockerfile
-    image: udigity-backup:${UDIGITY_TAG:-latest}
+    image: udigity-backup:${UDIGITY_TAG:?UDIGITY_TAG is not set - run devops/scripts/deploy.sh or write UDIGITY_TAG=gitsha into the .env file}
     restart: unless-stopped
     env_file: ${UDIGITY_ENV_DIR:-devops/env}/backup.env
     init: true
@@ -204,6 +250,11 @@ services:
     volumes:
       - ${BACKUP_VOLUME:-backups}:/backups
       - wal_archive:/wal
+    # 256m: pg_dump/pg_basebackup stream through age (no buffering). 60 s grace: a signal waits for the current step.
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    stop_grace_period: 60s
     depends_on:
       db:
         condition: service_healthy
@@ -216,27 +267,35 @@ services:
       start_period: 30m
     logging: *logging
 
+  # Edge inside the stack: rate limits, security headers, the 404 for health endpoints, routing /api -> backend and
+  # everything else -> frontend. It speaks plain HTTP on 127.0.0.1 only; the host's existing proxy owns 80/443 and TLS.
+  # It trusts X-Forwarded-For only from that proxy (devops/nginx/nginx.conf: set_real_ip_from), so the office-IP check
+  # and the rate limits see the real client address.
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     restart: unless-stopped
     ports:
-      # Override HTTP_PORT / HTTPS_PORT only for local smoke tests (devops/scripts/prod-smoke.sh).
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
+      # Loopback only. Binding 0.0.0.0 would expose the plain-HTTP app to the internet: never set HTTP_BIND to that.
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:80"
     volumes:
       - ./devops/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./devops/nginx/conf.d:/etc/nginx/conf.d:ro
-      # TLS placeholders: fullchain.pem / privkey.pem go here (e.g. from certbot). See devops/README.md.
-      - ${NGINX_CERTS_DIR:-./devops/nginx/certs}:/etc/nginx/certs:ro
-      - ./devops/nginx/acme:/var/www/acme:ro
     depends_on:
       frontend:
         condition: service_healthy
       backend:
         condition: service_healthy
-    networks: [internal, public]
+    # The fixed address on "internal" is what backend.env TRUSTED_PROXY_CIDRS names (exactly one proxy hop, G-04).
+    networks:
+      internal:
+        ipv4_address: ${NGINX_INTERNAL_IP:-172.29.10.10}
+      public: {}
     security_opt:
       - no-new-privileges:true
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    stop_grace_period: 15s
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1"]
       interval: 30s
@@ -244,13 +303,27 @@ services:
       retries: 3
     logging: *logging
 
+# G-04: the subnets are pinned (not left to Docker's auto-allocation) so TRUSTED_PROXY_CIDRS in backend.env stays valid
+# across `down`/`up`, reboots and other compose projects on the same host. 172.29.10-30.0/24 is outside Docker's default
+# 172.17-172.28 pools; if `docker network ls` / `docker network inspect` on the server shows one of these ranges in use,
+# change the four values together in /opt/udigity/.env (UDIGITY_SUBNET_*, NGINX_INTERNAL_IP) and in TRUSTED_PROXY_CIDRS.
 networks:
   # db/backend/frontend have no route to the internet. Only nginx is on the public (ingress) network.
   internal:
     internal: true
-  public: {}
+    ipam:
+      config:
+        - subnet: ${UDIGITY_SUBNET_INTERNAL:-172.29.10.0/24}
+  # Where the host's proxy connects from (the bridge gateway of this subnet, e.g. 172.29.20.1).
+  public:
+    ipam:
+      config:
+        - subnet: ${UDIGITY_SUBNET_PUBLIC:-172.29.20.0/24}
   # Outbound-only network for the worker (SMTP). No published ports, no ingress: only the worker joins it.
-  egress: {}
+  egress:
+    ipam:
+      config:
+        - subnet: ${UDIGITY_SUBNET_EGRESS:-172.29.30.0/24}
 
 volumes:
   pgdata: {}

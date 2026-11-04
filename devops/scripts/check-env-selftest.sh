@@ -18,12 +18,12 @@ echo "MIGRATION_DATABASE_URL=postgres://udigity_owner:$OWN@db:5432/udigity" > "$
 cat > "$T/backend.env" <<E
 NODE_ENV=production
 TRUST_PROXY=true
-TRUSTED_PROXY_CIDRS=172.16.0.0/12
+TRUSTED_PROXY_CIDRS=172.29.10.10/32
 DATABASE_URL=postgres://udigity_api:$APP@db:5432/udigity
 SESSION_SECRET=$(openssl rand -hex 32)
 TOTP_ENC_KEY=$(openssl rand -hex 32)
-APP_ORIGIN=https://app.udigity.test
-PUBLIC_APP_URL=https://app.udigity.test
+APP_ORIGIN=https://hrsystem.udigity.com
+PUBLIC_APP_URL=https://hrsystem.udigity.com
 POLICY_COMPANY_TIMEZONE=Asia/Beirut
 COMPANY_TIMEZONE=Asia/Beirut
 E
@@ -54,6 +54,10 @@ mut rm "$T.m/migrate.env"; expect 1 "missing migrate.env is rejected" "$T.m"
 mut sed -i "/^TRUSTED_PROXY_CIDRS=/d" "$T.m/backend.env"; expect 1 "missing TRUSTED_PROXY_CIDRS is rejected (D2)" "$T.m"
 mut bash -c "echo POLICY_ATTENDANCE_VERIFICATION_MODE=disabled >> '$T.m/backend.env'"; expect 1 "allow-all office mode is rejected (D2)" "$T.m"
 mut bash -c "echo MIGRATION_DATABASE_URL=postgres://x:y@db/z >> '$T.m/backend.env'"; expect 1 "MIGRATION_DATABASE_URL in backend.env is rejected" "$T.m"
+mut sed -i "s#^APP_ORIGIN=.*#APP_ORIGIN=https://hrsystem.udigity.com/#" "$T.m/backend.env"; expect 1 "APP_ORIGIN with a trailing slash is rejected (C-14)" "$T.m"
+mut sed -i "s#^PUBLIC_APP_URL=.*#PUBLIC_APP_URL=https://other.udigity.com#" "$T.m/backend.env"; expect 1 "PUBLIC_APP_URL different from APP_ORIGIN is rejected" "$T.m"
+mut sed -i "s#^TRUSTED_PROXY_CIDRS=.*#TRUSTED_PROXY_CIDRS=0.0.0.0/0#" "$T.m/backend.env"; expect 1 "TRUSTED_PROXY_CIDRS 0.0.0.0/0 is rejected" "$T.m"
+mut sed -i "s#^SESSION_SECRET=.*#SESSION_SECRET=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#" "$T.m/backend.env"; expect 1 "non-random SESSION_SECRET is rejected" "$T.m"
 mut rm "$T.m/backup.env"; expect 1 "missing backup.env is rejected (D19)" "$T.m"
 mut sed -i "s#^BACKUP_DB_USER=.*#BACKUP_DB_USER=udigity_owner#" "$T.m/backup.env"; expect 1 "backup role equal to the owner is rejected" "$T.m"
 mut sed -i "s#^BACKUP_DB_PASSWORD=.*#BACKUP_DB_PASSWORD=$APP#" "$T.m/backup.env"; expect 1 "backup password equal to the app password is rejected" "$T.m"

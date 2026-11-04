@@ -1,13 +1,20 @@
-# Deploying Udigity on a single Ubuntu VPS
+# Deploying Udigity on the Hostinger VPS (behind the server's existing proxy)
 
-Step-by-step runbook for Ubuntu 24.04 LTS. Run it only with the Owner's go-ahead. It uses only files and commands
-that exist in this repository (`docker-compose.prod.yml`, `devops/**`, `backend` scripts). Reference detail lives in
-`devops/README.md`. Replace `app.example.com` with the real host name throughout.
+Step-by-step runbook for `https://hrsystem.udigity.com` (Owner decision S-28). The server is a Hostinger VPS that **already runs
+other sites behind its own web server / proxy on ports 80 and 443**, so this stack does not publish 80/443 and never requests
+certificates. Run it only with the Owner's go-ahead. Reference detail lives in `devops/README.md`; the checklist with owners per
+step is `docs/review/2026-11-04/DEPLOYMENT-CHECKLIST.md`. Replace `<owner e-mail>` / `<operator e-mail>` with real addresses.
 
-Stack: `nginx` (80/443, the only published ports) -> `frontend` and `backend` -> `db` (PostgreSQL 17); `worker` runs
-`node dist/worker.js` from the backend image. `db`, `backend` and `frontend` sit on an internal network with no
-internet route. The `worker` is on the internal network plus an outbound-only `egress` network (it needs the external
-SMTP server); it publishes no port and is not on the public network, so nothing reaches it from outside.
+```
+visitor --HTTPS--> existing proxy on the host (nginx | Apache | OpenLiteSpeed | Caddy)   [certificate, 80->443 redirect]
+                      --HTTP, Host + X-Forwarded-For--> 127.0.0.1:8080 = bundled nginx container [rate limits, headers, 404 on health]
+                           --> frontend (Next) / backend (API) --> db (PostgreSQL 17)       [worker: outbound SMTP only]
+```
+
+Stack: `nginx` (published only on `127.0.0.1:8080`) -> `frontend` and `backend` -> `db`; `worker` runs `node dist/worker.js` from
+the backend image. `db`, `backend` and `frontend` sit on an internal network with no internet route. The `worker` is on the
+internal network plus an outbound-only `egress` network (it needs the external SMTP server) and publishes no port. Docker
+networks use pinned subnets 172.29.10/20/30.0/24 (the bundled nginx is 172.29.10.10 on `internal`).
 
 Three database roles: `udigity_owner` (superuser/owner) runs migrations through the one-shot `migrate` job;
 the API and worker run as `udigity_api`, a limited login role (member of the group role `udigity_app` from migration
@@ -15,32 +22,38 @@ the API and worker run as `udigity_api`, a limited login role (member of the gro
 credentials live in `migrate.env`, which only the `migrate` job loads. The `backup` service connects as
 `udigity_backup` (read-only + replication, password in `backup.env`; section 11).
 
-Sizing: 2 vCPU, 4 GB RAM, 40 GB disk is a sensible minimum.
+Sizing: the stack's memory caps add up to about 2.6 GB (`mem_limit` in `docker-compose.prod.yml`: db 768m, backend 512m,
+frontend 512m, worker 384m, backup 256m, nginx 128m; migrate 384m only while it runs) and CPU caps never exceed the host. Plan on
+a VPS with at least 4 GB RAM and 40 GB disk, minus what the other sites use: check `free -h` and `df -h` first (checklist section 1).
 
 ---
 
 ## 1. DNS
 
-Create an `A` record for `app.example.com` pointing at the VPS public IPv4 (and `AAAA` if you use IPv6). Wait until
-`dig +short app.example.com` returns the VPS address before requesting a certificate.
+Create an `A` record `hrsystem` in the `udigity.com` zone pointing at the VPS public IPv4 (and `AAAA` only if IPv6 works end to
+end). Wait until `dig +short hrsystem.udigity.com` returns the VPS address before issuing the certificate.
 
-## 2. Host hardening and firewall
+## 2. Host: what NOT to change
+
+The server already has SSH, a firewall and a web server for the other sites. Do not touch them. This stack needs **no new open
+port**: keep whatever the firewall allows today (22, 80, 443). Docker publishes ports through iptables directly, so ufw alone
+would not guard them; that is safe here because the only published port is `127.0.0.1:8080` and the database has none. Never add
+`ports:` to `db`, and never set `HTTP_BIND=0.0.0.0`. The host needs no `age` or `certbot` for this stack (the backup container
+carries `age`; the existing proxy owns the certificate). A non-root deploy user in the `docker` group is enough.
+
+Before you start, inspect (read-only) and write the answers into the checklist:
 
 ```sh
-adduser deploy && usermod -aG sudo deploy         # non-root deploy user; copy your SSH key to ~deploy/.ssh
-# In /etc/ssh/sshd_config set: PermitRootLogin no, PasswordAuthentication no ; then: systemctl reload ssh
-apt update && apt -y upgrade && apt -y install ufw unattended-upgrades git age certbot logrotate
-ufw default deny incoming && ufw default allow outgoing
-ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp
-ufw enable && ufw status verbose                    # only 22, 80, 443 open
+ss -ltnp | grep -E ':(80|443|8080) '                       # who owns 80/443; is 8080 free? if not, set HTTP_PORT in .env
+docker ps; docker network ls                               # other projects on this Docker host
+docker network inspect $(docker network ls -q) --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}'   # 172.29.10-30.0/24 must be unused
+free -h; df -h
 ```
 
-Docker publishes ports by editing iptables directly, so ufw alone does not guard them. That is safe here because only
-`nginx` publishes ports (80/443) and the database has none. Never add `ports:` to `db`.
+## 3. Docker Engine and the Compose plugin
 
-## 3. Install Docker Engine and the Compose plugin
-
-Follow the official apt repository instructions at https://docs.docker.com/engine/install/ubuntu/ (packages
+If Docker and Compose v2 are already installed (`docker compose version`), skip the install. Otherwise follow the official apt
+repository instructions at https://docs.docker.com/engine/install/ubuntu/ (packages
 `docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin`), then:
 
 ```sh
@@ -53,47 +66,51 @@ docker compose version
 ```sh
 sudo mkdir -p /opt/udigity && sudo chown deploy:deploy /opt/udigity
 git clone <repository-url> /opt/udigity && cd /opt/udigity     # or unpack a release tarball
-git rev-parse --short HEAD                                      # note this: it becomes the image tag (section 9)
+git rev-parse --short HEAD                                      # becomes the image tag (deploy.sh records it)
 ```
 
 All commands below run from `/opt/udigity`.
 
-## 5. Point nginx at the host name
+## 5. Outer proxy and certificate (the server's existing web server)
 
-Edit `devops/nginx/conf.d/udigity.conf`: change `server_name app.example.com;` in the 443 server block to the real host.
+The bundled nginx answers only the Host `hrsystem.udigity.com` (`devops/nginx/conf.d/udigity.conf`; other Host headers get no
+answer) and speaks plain HTTP on `127.0.0.1:8080`. Add **one vhost** for `hrsystem.udigity.com` to the proxy that already runs on
+the server, with the certificate tool that proxy already uses. Find out which proxy it is first
+(`ss -ltnp | grep -E ':(80|443) '`, `systemctl list-units | grep -Ei 'nginx|apache|httpd|lsws|caddy'`), then copy the matching
+template and adapt the paths:
 
-## 6. TLS certificate (Let's Encrypt)
+| Existing proxy | Template | Certificate |
+|---|---|---|
+| nginx on the host | `devops/proxy/nginx-outer.conf.example` | `certbot --nginx -d hrsystem.udigity.com` (or `certonly --webroot -w /var/www/certbot`) |
+| Apache | `devops/proxy/apache-outer.conf.example` | `certbot --apache -d hrsystem.udigity.com` |
+| OpenLiteSpeed / CyberPanel | `devops/proxy/openlitespeed-outer.conf.example` (field names UNVERIFIED) | the panel's "Issue SSL" (Let's Encrypt, auto-renew) |
+| Caddy | `devops/proxy/Caddyfile.example` | automatic |
+| Traefik / Coolify / other | same idea: Host unchanged, `X-Forwarded-For` = visitor address, upstream `127.0.0.1:8080` | its own |
 
-nginx cannot start without a certificate (the 443 block loads it), so request the first one while port 80 is free:
+Rules for any proxy: forward the `Host` header unchanged; send the visitor address in `X-Forwarded-For` (the bundled nginx believes
+that header only when the TCP peer is 127.0.0.1 or in 172.16.0.0/12, which covers the Docker bridge gateway 172.29.20.1 a host proxy
+arrives from, and reads it from the right, so a forged header is ignored); add no security headers (the app and the bundled nginx
+send them); redirect http to https; never stop or restart the proxy that serves the other sites (`nginx -t && systemctl reload nginx`
+only). Never use `certbot --standalone`, and never copy certificates into this repository: the stack holds none. If the host proxy
+runs in Docker, or a CDN (Cloudflare) sits in front of it, read the notes at the end of the template.
+
+Test the chain once the stack is up (section 8):
 
 ```sh
-sudo certbot certonly --standalone -d app.example.com -m you@your-domain --agree-tos
-sudo cp -L /etc/letsencrypt/live/app.example.com/fullchain.pem devops/nginx/certs/fullchain.pem
-sudo cp -L /etc/letsencrypt/live/app.example.com/privkey.pem   devops/nginx/certs/privkey.pem
-sudo chmod 640 devops/nginx/certs/*.pem
+curl -sI -H 'Host: hrsystem.udigity.com' http://127.0.0.1:8080/login    # 200, bundled nginx directly (from the server)
+curl -sI https://hrsystem.udigity.com/login                             # 200, HSTS present
+curl -sI http://hrsystem.udigity.com/login                              # 301 to https
 ```
 
-Automatic renewal (certbot installs a systemd timer). Because nginx will hold port 80, stop it around renewal and copy
-the new files in with hooks. Create these three scripts (`chmod +x` each):
+## 6. Compose settings (`/opt/udigity/.env`)
 
 ```sh
-# /etc/letsencrypt/renewal-hooks/pre/udigity-stop-nginx.sh
-#!/bin/sh
-cd /opt/udigity && docker compose -f docker-compose.prod.yml stop nginx
-
-# /etc/letsencrypt/renewal-hooks/deploy/udigity-copy-certs.sh
-#!/bin/sh
-cp -L /etc/letsencrypt/live/app.example.com/fullchain.pem /opt/udigity/devops/nginx/certs/fullchain.pem
-cp -L /etc/letsencrypt/live/app.example.com/privkey.pem   /opt/udigity/devops/nginx/certs/privkey.pem
-
-# /etc/letsencrypt/renewal-hooks/post/udigity-start-nginx.sh
-#!/bin/sh
-cd /opt/udigity && docker compose -f docker-compose.prod.yml up -d nginx
+cp devops/env/compose.env.example .env && chmod 600 .env     # deploy.sh writes UDIGITY_TAG for you
 ```
 
-Test with `sudo certbot renew --dry-run` once the stack is up (renewal causes a few seconds of downtime).
-(The webroot directory `devops/nginx/acme` is also served on port 80 at `/.well-known/acme-challenge/` if you prefer
-`--webroot -w /opt/udigity/devops/nginx/acme` renewal without downtime.)
+`.env` holds the image tag (so a reboot or a plain `docker compose up -d` can never run an unknown image; compose refuses to start
+without it), the loopback port, the pinned subnets and the frontend build-time values (`NEXT_PUBLIC_*`, baked into the browser
+bundle: setting them in `frontend.env` has no effect). `TRUSTED_PROXY_CIDRS` (next section) must match the pinned nginx address.
 
 ## 7. Create and validate the env files
 
@@ -111,13 +128,14 @@ Fill in the values (never commit these files, never paste them into chat or tick
 | `TOTP_ENC_KEY` (backend.env) | `openssl rand -hex 32`. Keep a copy outside the server and outside the DB backups; without it nobody can pass 2FA |
 | `POSTGRES_PASSWORD` (postgres.env) and the password inside `MIGRATION_DATABASE_URL` (migrate.env) | owner role `udigity_owner`: `openssl rand -base64 32 \| tr -d '/+='` (same value in both) |
 | `APP_DB_PASSWORD` (postgres.env) and the password inside `DATABASE_URL` (backend.env) | runtime role `udigity_api`: a **different** value, same generator (same value in both files) |
-| `APP_ORIGIN`, `PUBLIC_APP_URL` | `https://app.example.com` (your host) |
+| `APP_ORIGIN`, `PUBLIC_APP_URL` | `https://hrsystem.udigity.com`, exactly (lower case, no trailing slash, no path, both equal). The API refuses to start otherwise (C-14) |
 | `POLICY_COMPANY_TIMEZONE` | required (BL-16), IANA name: the **company-confirmed** value (proposed `Asia/Beirut`, pending confirmation; the example ships it empty). Without it (and no Owner-saved value) `/readyz` answers 503. The alias `COMPANY_TIMEZONE` is only a fallback. Attendance enforcement (lateness, alerts, check-in) still starts only after the Owner saves the complete attendance settings in Settings (D1) |
-| `TRUSTED_PROXY_CIDRS` | required in production (D2): the nginx proxy address(es) whose `X-Forwarded-For` entry is trusted for the office-IP check, as IPs/CIDRs (or `loopback`, `linklocal`, `uniquelocal`), e.g. the compose network subnet from `docker network inspect <project>_default`. Unset → no proxy is trusted and `/readyz` answers 503. `TRUST_PROXY` is a development/test fallback only |
+| `TRUSTED_PROXY_CIDRS` | required in production (D2): the proxy hop(s) whose `X-Forwarded-For` entry the API believes. **Behind the existing host proxy (this deployment): `172.29.10.10/32`**, the bundled nginx container, which compose pins to that address; it passes on the real visitor address it learned from the host proxy (nginx `set_real_ip_from`). If you change `NGINX_INTERNAL_IP` / `UDIGITY_SUBNET_INTERNAL` in `.env`, use the new address. Never `0.0.0.0/0`, `127.0.0.1`, a whole range or the host proxy here (check-env rejects wide ranges). Unset: no proxy is trusted and `/readyz` answers 503. `TRUST_PROXY` is a development/test fallback only |
 | `POLICY_ATTENDANCE_OFFICE_IPS` | office public IP(s), comma-separated; a pre-fill suggestion only: the Owner saves the office IP list in Settings ("Not configured" until then) |
 | `AGE_RECIPIENT` (backup.env) | public key from `age-keygen -o udigity-backup.agekey` run on the Owner's machine (section 11) |
 | `BACKUP_DB_PASSWORD` (backup.env) | backup role `udigity_backup`: a third, **different** value, same generator |
 | `TZ` (backup.env) | same IANA zone as `POLICY_COMPANY_TIMEZONE`; `BACKUP_TIME` (default `02:30`) is read in it |
+| `ALERT_EMAIL_TO` (backend.env) | operator address for failure alerts (check-env warns when real email is on and it is empty) |
 
 Then validate (prints key names only, never values; exits 1 on any error):
 
@@ -127,18 +145,28 @@ cd /opt/udigity && devops/scripts/check-env.sh
 
 Fix every `ERROR` line before going on. Leave real email off for now (`SMTP_HOST` empty, `EMAIL_ALLOW_REAL_SEND=false`).
 `PUBLIC_APP_URL` is the base of every invitation and password-reset link: it must be a bare `https://` origin (no path,
-query or credentials); the API and the worker refuse to start otherwise. Links never use request headers.
+query or credentials) equal to `APP_ORIGIN`; the API and the worker refuse to start otherwise. Links never use request headers.
 
 ## 8. Build, migrate, start
 
+One command does the backup (skipped on a first install), build, migration, backup-role grant and start, and records the image tag
+in `/opt/udigity/.env`:
+
 ```sh
-export UDIGITY_TAG=$(git rev-parse --short HEAD)       # image tag; keep it exported for the rest of the session
+devops/scripts/deploy.sh     # check-env -> [backup] -> build -> up db -> migrate -> 20-backup-role.sh -> write tag -> up --wait
+docker compose -f docker-compose.prod.yml ps            # every service should reach "healthy" (backup after its first check, up to 5 min)
+```
+
+The manual equivalent (first install), for reference:
+
+```sh
+export UDIGITY_TAG=$(git rev-parse --short=12 HEAD)
 docker compose -f docker-compose.prod.yml build
 docker compose -f docker-compose.prod.yml up -d db   # first start of an empty volume creates the udigity_api and udigity_backup roles
 docker compose -f docker-compose.prod.yml --profile tools run --rm migrate
 docker compose -f docker-compose.prod.yml exec db sh /docker-entrypoint-initdb.d/20-backup-role.sh   # ops_alerts grant (needs the migrations)
+echo "UDIGITY_TAG=$UDIGITY_TAG" >> .env
 docker compose -f docker-compose.prod.yml up -d      # also starts "backup": first dump + base backup right away
-docker compose -f docker-compose.prod.yml ps            # every service should reach "healthy"
 ```
 
 Verify the runtime role is limited (expected: `f`, then `permission denied`):
@@ -169,12 +197,12 @@ over HTTP):
 
 ```sh
 docker compose -f docker-compose.prod.yml run --rm backend \
-  node dist/modules/identity/bootstrap.js --email owner@your-domain --name "Owner Full Name"
+  node dist/modules/identity/bootstrap.js --email <owner e-mail> --name "Owner Full Name"
 ```
 
 The terminal prints, once, a random initial password and a one-time 2FA enrollment token (valid 24 h). Hand both to the
 Owner over separate channels and do not store them in shell history or chat. The Owner signs in at
-`https://app.example.com/login`, enrols the authenticator app (the password is required again at enrollment) and
+`https://hrsystem.udigity.com/login`, enrols the authenticator app (the password is required again at enrollment) and
 saves the recovery codes.
 
 Recovery procedures with the same CLI (verify the person's identity out of band first):
@@ -182,7 +210,7 @@ Recovery procedures with the same CLI (verify the person's identity out of band 
 ```sh
 # Owner lost the authenticator AND the recovery codes: un-enrol 2FA, end sessions, issue a new token
 docker compose -f docker-compose.prod.yml run --rm backend \
-  node dist/modules/identity/bootstrap.js --email owner@your-domain --reset-2fa --reason "ticket or reason"
+  node dist/modules/identity/bootstrap.js --email <owner e-mail> --reset-2fa --reason "ticket or reason"
 # Re-encrypt any TOTP secret still stored in plaintext (one-off backfill)
 docker compose -f docker-compose.prod.yml run --rm backend \
   node dist/modules/identity/bootstrap.js --encrypt-existing
@@ -191,7 +219,7 @@ docker compose -f docker-compose.prod.yml run --rm backend \
 ## 10. Smoke test and real email
 
 ```sh
-curl -sSI https://app.example.com/login | head -20      # 200, HSTS and nosniff present
+curl -sSI https://hrsystem.udigity.com/login | head -20      # 200, HSTS and nosniff present
 docker compose -f docker-compose.prod.yml logs --tail=30 worker    # "[worker] ... starting ... email transport=none"
 ```
 
@@ -207,14 +235,14 @@ Log in as the Owner, enrol 2FA, open Settings and confirm the company timezone a
 `devops/env/backend.env`:
 
 ```
-SMTP_HOST=smtp.your-provider.com
+SMTP_HOST=<provider SMTP host>
 SMTP_PORT=587                  # 465 with SMTP_SECURE=true
 SMTP_SECURE=false
 SMTP_USER=...
 SMTP_PASS=...
-SMTP_FROM=no-reply@your-domain     # plain address, domain with SPF/DKIM/DMARC
+SMTP_FROM=<sender address>          # plain address, domain with SPF/DKIM/DMARC
 EMAIL_ALLOW_REAL_SEND=true
-ALERT_EMAIL_TO=ops@your-domain     # optional: failure alerts (API 500s, dead jobs/events, crashes), 1 email per kind per 15 min
+ALERT_EMAIL_TO=<operator e-mail>   # recommended: failure alerts (API 500s, dead jobs/events, crashes), 1 email per kind per 15 min
 ```
 
 **Gmail account (the Owner's choice, 2026-10-29).** Turn on 2-Step Verification on the Google account, then create an
@@ -338,29 +366,26 @@ docker compose -f docker-compose.prod.yml up -d
 ## 12. Updates and rollback
 
 ```sh
-cd /opt/udigity
-docker compose -f docker-compose.prod.yml exec backup backupd nightly   # 1. backup first
-PREV=${UDIGITY_TAG:-$(docker inspect --format '{{.Config.Image}}' $(docker compose -f docker-compose.prod.yml ps -q backend) | cut -d: -f2)}
-echo "$PREV" > /opt/udigity/.previous-tag                         # 2. remember the running tag
-git pull
-devops/scripts/check-env.sh                                      # 3. new keys added by the release?
-export UDIGITY_TAG=$(git rev-parse --short HEAD)
-docker compose -f docker-compose.prod.yml build
-docker compose -f docker-compose.prod.yml --profile tools run --rm migrate
-docker compose -f docker-compose.prod.yml up -d
-docker compose -f docker-compose.prod.yml ps                     # all healthy
+cd /opt/udigity && git pull && devops/scripts/deploy.sh
 ```
 
-Migrations are forward-only and non-destructive. **Rollback:** run the previous images (they are still on the host):
+`deploy.sh` refuses a dirty tree, runs `check-env.sh`, takes a dump first (`backupd nightly`), remembers the running tag in
+`.previous-tag`, builds, migrates, re-applies the backup-role grant (`20-backup-role.sh`, lost after any restore), writes the new
+`UDIGITY_TAG` into `/opt/udigity/.env` only after the migration succeeded, and waits for every service to be healthy. The tag
+lives in `.env`, so `docker compose up -d` after a reboot or in a new SSH session starts the same images (compose refuses to
+start at all when the tag is missing; it never falls back to `latest`).
+
+**Rollback decision.** Migrations are forward-only. If the release you are leaving ran **no migration**, or only additive ones
+(new tables, columns, indexes: read the new files in `backend/src/db/migrations/`), roll the images back:
 
 ```sh
-export UDIGITY_TAG=$(cat /opt/udigity/.previous-tag)
-docker compose -f docker-compose.prod.yml up -d
+devops/scripts/deploy.sh rollback      # checks the old images still exist, writes the previous tag to .env, up -d --wait
 ```
 
-That is safe when the release added only additive migrations (the normal case). If a migration must be undone, stop
-the stack and do the "Real restore" above with the backup from step 1, then start the previous tag. Reclaim disk with
-`docker image prune` only after the new release has been stable for a few days.
+If a migration changed or removed something the old code needs, do not roll the images back: do the "Real restore" above with the
+dump from step 1 (loses writes since the update), then start the previous tag. Keep the last two image tags on the host: never run
+`docker image prune -a` or `docker system prune` (dangling-only `docker image prune` is fine). Never run `docker compose down -v`
+or `docker volume prune`: they delete the database and the backups.
 
 ## 13. Monitoring and log rotation
 
@@ -370,17 +395,31 @@ Health endpoints are blocked at the edge (404) and reachable only inside the sta
 docker compose -f docker-compose.prod.yml ps                     # health column
 docker compose -f docker-compose.prod.yml exec backend node -e "fetch('http://127.0.0.1:5000/readyz').then(r=>console.log(r.status))"        # 200 = API + database
 docker compose -f docker-compose.prod.yml exec backend node -e "fetch('http://127.0.0.1:5000/health/worker').then(r=>console.log(r.status))"  # 200 = worker heartbeat fresh
-curl -sS -o /dev/null -w '%{http_code}\n' https://app.example.com/login                                                                   # 200 from outside
+curl -sS -o /dev/null -w '%{http_code}\n' https://hrsystem.udigity.com/login                                                                   # 200 from outside
 ```
 
-Wire an external uptime monitor to `https://app.example.com/login` (the only public probe) and alert on the worker
-check by running the `/health/worker` command above from cron and mailing/paging on a non-200. Also watch disk
-(`df -h /var/lib/docker`: the `backups` and `wal_archive` volumes live there), the `backup` service health (unhealthy =
-no successful nightly dump for 26 h; failures are also emailed via `ops_alerts`), and the
-certificate expiry (`sudo certbot certificates`).
+Docker never restarts an `unhealthy` container, and the in-app alerts (`ops_alerts` mails) need the database, the worker and SMTP
+all working, so two independent watchers are set up (no new services):
 
-Logs: every service uses Docker's json-file driver with 10 MB x 5 files per service (set in
-`docker-compose.prod.yml`), so container logs rotate by themselves. Read them with
+1. **External uptime probe** (free tier of UptimeRobot / Better Stack / healthchecks.io): HTTPS check on
+   `https://hrsystem.udigity.com/login` every 1-5 min, expecting 200 (optionally the keyword "Sign in"), alerting `<operator e-mail>`.
+   `/healthz` is hidden at the edge by design, so `/login` is the probe URL.
+2. **Host cron** `devops/scripts/host-monitor.sh` every 10 minutes (`crontab -e` as the deploy user):
+   `*/10 * * * * cd /opt/udigity && devops/scripts/host-monitor.sh >> /var/log/udigity-monitor.log 2>&1`
+   It checks the public URL, disk use (>= 80%), containers not running or unhealthy, raw WAL backlog (> 20 files), age of the last
+   nightly dump (> 26 h), certificate expiry (< 14 days) and the worker heartbeat; it mails `ALERT_EMAIL_TO` (needs `mail` or
+   `sendmail` on the host, for example `msmtp` with the same Gmail App Password) at most once per 6 hours per problem, and always
+   logs. Optional `devops/env/monitor.env`: `HOST`, `DISK_WARN_PCT`, `WAL_MAX`, `PING_URL` (healthchecks.io dead-man ping on success).
+
+**Disk and WAL growth.** The `backup` service raises an alert when raw WAL waiting for encryption exceeds `WAL_BACKLOG_MAX`, when a
+volume reaches `DISK_ALERT_PCT`, or when no base backup is newer than 10 days; the host monitor repeats this from outside.
+Retention (14/8/6 dumps, 2 base backups, WAL since the oldest base) bounds the backups volume. **If the disk is nearly full and
+PostgreSQL is about to stop** (a failing `archive_command` keeps WAL in `pg_wal`): first free space (old files in `/backups`, Docker
+logs); only if that is impossible set `archive_mode=off` for the `db` command in a temporary override and recreate `db` (this loses
+point-in-time recovery until you switch it back and take a base backup with `backupd base`).
+
+Logs: every service uses Docker's json-file driver with 10 MB x 5 files per service, so they rotate by themselves. The nginx access
+log blanks the `token=` query value, so single-use reset and invitation links never reach it. Read logs with
 `docker compose -f docker-compose.prod.yml logs --tail=100 <backend|worker|frontend|nginx|db|backup>`. Do not log or share env values.
 
 ---

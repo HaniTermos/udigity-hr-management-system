@@ -7,6 +7,8 @@
 #   docker compose ps                # Check health status
 #   docker compose logs -f           # Follow container logs
 #   docker compose down              # Stop all containers
+# DEV ONLY (fixed dev secrets, ALLOW_MISSING_ORIGIN=true). Never run this file on a server: it shares the project name
+# and container names of docker-compose.prod.yml (G-17). Production uses its own pinned subnets 172.29.10-30.0/24.
 name: udigity
 
 services:
@@ -106,7 +108,7 @@ services:
       HOSTNAME: 0.0.0.0
       NEXT_TELEMETRY_DISABLED: "1"
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       backend:
         condition: service_healthy

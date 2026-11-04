@@ -22,3 +22,9 @@ devops/env/*.env
 **/*.log
 **/npm-debug.log*
 docker-compose*.yml
+e2e
+devops/nginx
+devops/proxy
+devops/scripts
+devops/postgres
+**/*.md

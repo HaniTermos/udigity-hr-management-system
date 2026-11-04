@@ -13,6 +13,13 @@ async function main(): Promise<void> {
     console.log(`📡 App origin(s): ${config.appOrigins.join(', ')}`);
   });
 
+  // F-09: the bundled nginx keeps upstream connections open (keepalive 16, nginx keepalive_timeout 65 s) and reuses
+  // them. Node's default keepAliveTimeout is 5 s, so an idle connection that Node already closed would be reused
+  // and fail as an intermittent 502. Keep Node's timeout above every proxy idle timeout (an outer proxy such as
+  // OpenLiteSpeed/Apache/Caddy usually idles at 30-75 s); headersTimeout must stay above keepAliveTimeout.
+  server.keepAliveTimeout = 75_000;
+  server.headersTimeout = 76_000;
+
   exitOnCrash('api');
 
   process.on('SIGTERM', () => {
