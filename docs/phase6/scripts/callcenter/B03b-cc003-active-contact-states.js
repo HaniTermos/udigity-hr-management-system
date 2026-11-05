@@ -1,7 +1,7 @@
-// B03b-cc003-active-contact-states.js — Call Center Screen Agent — Phase 6 Batch B — page 43 HiFi — Call Center (96:5)
-// Builds: SCR-CC-003 Active contact — part b (outcome branches, save failed, save conflict). Run order B01 → B07 (sections stack in inventory order; a section is positioned only when first created).
-// Spec: docs/phase6/screens/callcenter-spec.md. DS instances + Semantic/Primitive variables only. Idempotent: rebuilds frames inside its own section(s).
-// ---------- Call Center helper library (inlined in every Phase 6 Call Center script; derived from phase5 01-s3-workspace.js) ----------
+// B03b-cc003-active-contact-states.js — Call Center agent — Phase 6 B — page 43 (96:5)
+// Builds: SCR-CC-003 Active contact — part b (branches, save failed, conflict). Run order B01 → B07.
+// Spec: docs/phase6/screens/callcenter-spec.md. DS instances + variables only. Idempotent.
+// ---------- Call Center helper library ----------
 const OUT = { created: {}, updated: {}, removed: [], fit: {}, warnings: [] };
 const PAGE_ID = '96:5', SEM_ID = 'VariableCollectionId:40:3', PRIM_ID = 'VariableCollectionId:40:2', LIGHT = '40:1', DARK = '40:2';
 const page = await figma.getNodeByIdAsync(PAGE_ID);
@@ -74,7 +74,7 @@ async function T(chars, style, color, o = {}) {
 function add(p, ...k) { for (const x of k) if (x) p.appendChild(x); return p; }
 function fillW(n) { if (n.type === 'TEXT') n.textAutoResize = 'HEIGHT'; n.layoutSizingHorizontal = 'FILL'; return n; }
 function fillH(n) { n.layoutSizingVertical = 'FILL'; return n; }
-function grow(n) { n.layoutGrow = 1; return n; }
+function grow(n) { try { if (n.name === 'Spacer' && 'children' in n && !n.children.length) { n.resize(n.width, 1); n.layoutSizingVertical = 'FIXED'; } n.layoutGrow = 1; } catch (e) { W('grow ' + n.name + ': ' + e.message); } return n; } // fit: empty spacers were 100 px tall (CC-007 Owner view Content +18)
 function fixedCol(n, w) { n.resize(w, 100); n.layoutSizingHorizontal = 'FIXED'; return n; }
 function put(p, n) { p.appendChild(n); fillW(n); return n; }
 function notice(size, dec, body, title) { const n = I('Notice/Policy pending', { Size: size, Tone: 'Policy pending' }, size === 'Chip' ? { DEC: dec } : { DEC: dec, Body: body }, 'Policy · ' + dec); if (title) layer(n, 'Title', title); return n; }
@@ -103,8 +103,8 @@ function getSection(name, part) {
   PREFIX = name.split(' — ')[0]; PART = part || '-';
   let s = page.children.find(n => n.type === 'SECTION' && n.name === name), y0 = 80;
   if (s) {
-    for (const k of [...s.children]) { const p = k.getPluginData('ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
-    for (const k of s.children) y0 = Math.max(y0, k.y + k.height + 160);
+    for (const k of [...s.children]) { const p = k.getSharedPluginData('udigity.cc', 'ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
+    for (const k of s.children) if ((k.getSharedPluginData('udigity.cc', 'ccPart') || '-') < PART) y0 = Math.max(y0, k.y + k.height + 160); // stack after earlier parts only; later parts are re-flowed in finishSection
     OUT.updated['section ' + PREFIX] = s.id;
   } else {
     const bottoms = page.children.filter(n => n.type === 'SECTION').map(n => n.y + n.height);
@@ -118,7 +118,7 @@ function newRow() { if (CUR.n) { CUR.y += CUR.rowH + 160; CUR.x = 80; CUR.rowH =
 function frame(suffix, mobile, dark) {
   const name = SEC.name + ' — ' + suffix; const w = mobile ? 390 : 1440, h = mobile ? 844 : 900;
   if (CUR.n >= (mobile ? 6 : 4)) newRow();
-  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setPluginData('ccPart', PART);
+  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setSharedPluginData('udigity.cc', 'ccPart', PART);
   f.fills = [paint('surface/page')]; f.setExplicitVariableModeForCollection(semCol, dark ? DARK : LIGHT);
   CUR.x += w + 80; CUR.rowH = Math.max(CUR.rowH, h); CUR.n++;
   OUT.created[PREFIX + ' ' + suffix] = f.id; return f;
@@ -198,13 +198,22 @@ function fitFrame(f) {
 async function annotations(notes, w) {
   newRow();
   const a = AL(PREFIX + ' — Annotations' + (PART !== '-' ? ' (' + PART + ')' : ''), 'VERTICAL', { gap: 12, pad: 24, fill: 'surface/page', stroke: 'border/default', radius: 'xl' });
-  SEC.appendChild(a); a.setPluginData('ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
+  SEC.appendChild(a); a.setSharedPluginData('udigity.cc', 'ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
   a.setExplicitVariableModeForCollection(semCol, LIGHT);
   a.appendChild(await T(PREFIX + ' annotations (designer notes and intended interactions, not product UI)', 'ds/H3', 'text/primary'));
   for (const [type, title, body] of notes) put(a, I('Annotation', { Type: type }, { Title: title, Body: body }, 'Annotation · ' + title));
   OUT.created['annotations ' + PREFIX] = a.id; CUR.y += a.height; return a;
 }
-function finishSection() { let mx = 0, my = 0; for (const c of SEC.children) { mx = Math.max(mx, c.x + c.width); my = Math.max(my, c.y + c.height); } SEC.resizeWithoutConstraints(mx + 80, my + 80); OUT.fit['section ' + PREFIX] = [Math.round(SEC.x), Math.round(SEC.y), Math.round(SEC.width), Math.round(SEC.height)]; }
+function finishSection() {
+  const pt = k => k.getSharedPluginData('udigity.cc', 'ccPart') || '-';
+  const mine = SEC.children.filter(k => pt(k) <= PART), later = SEC.children.filter(k => pt(k) > PART);
+  if (later.length) { // keep part order a → b inside the section; frames move, the section never does
+    const top = Math.max(80, ...mine.map(k => k.y + k.height + 160)), d = top - Math.min(...later.map(k => k.y));
+    if (Math.abs(d) > 0.5) { for (const k of later) k.y += d; OUT.fit['later parts shifted ' + PREFIX] = Math.round(d); }
+  }
+  let mx = 0, my = 0; for (const c of SEC.children) { mx = Math.max(mx, c.x + c.width); my = Math.max(my, c.y + c.height); } SEC.resizeWithoutConstraints(mx + 80, my + 80); OUT.fit['section ' + PREFIX] = [Math.round(SEC.x), Math.round(SEC.y), Math.round(SEC.width), Math.round(SEC.height)];
+  for (const o of page.children) if (o !== SEC && o.type === 'SECTION' && o.x < SEC.x + SEC.width && SEC.x < o.x + o.width && o.y < SEC.y + SEC.height && SEC.y < o.y + o.height) W(`${PREFIX} section overlaps ${o.name.split(' — ')[0]} (section not moved)`);
+}
 // ---------- end helper library ----------
 
 // ---------- workspace module (queue column + business detail column + contact panel; approved S3 layout) ----------
@@ -218,7 +227,7 @@ const QB = [
   { label: 'Callback to be scheduled', count: '1', exp: true, rows: [
     { name: 'Cedar Home Realty', cat: 'Real estate', out: 'Needs another call', meta: 'Time not set yet · last attempt 16 Oct' }] },
   { label: 'Data correction requested', count: '1', exp: true, rows: [
-    { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30', flag: ['Warning', 'Correction requested 14 Oct'] }] },
+    { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30', flag: ['Warning', 'Correction submitted · 14 Oct'] }] },
   { label: 'Requires contact', count: '1', exp: false, rows: [] },
 ];
 function qRow(r, sel) {
@@ -265,7 +274,7 @@ const TL_OLIVE = [
 async function dColumn(parent, o) {
   const b = BIZ[o.biz || 'olive'];
   const col = AL('Business detail column', 'VERTICAL', { gap: 8 }); parent.appendChild(col); fixedCol(col, 400); fillH(col);
-  const D = AL('Detail scroll area', 'VERTICAL', { gap: 12, clip: true }); put(col, D); fillH(D);
+  const D = AL('Detail scroll area (scrolls)', 'VERTICAL', { gap: 12, clip: true }); put(col, D); fillH(D);
   if (o.top) await o.top(D);
   const biz = await slotCard(D, 'Card/Section', { name: 'Business · ' + b.name, title: b.name, subtitle: o.bizSub || (b.cat + ' · Assigned to you'), action: { label: 'Request correction', icon: 'flag' } });
   for (const [num, lab] of b.phones) {
@@ -343,19 +352,20 @@ function notes(pb, v) { return put(pb, I('Textarea', { State: 'Filled' }, { Labe
 async function saveFooter(pf, keepLabel, saveLabel, large) {
   const row = AL('Footer actions', 'HORIZONTAL', { gap: 8, align: 'CENTER' }); put(pf, row);
   const k = button('Ghost', large ? 'Large' : 'Medium', keepLabel), s = button('Primary', large ? 'Large' : 'Medium', saveLabel); add(row, k, s); fillW(s);
-  put(pf, await T('Reservation is released only after the save succeeds.', 'ds/Caption', 'text/muted', { name: 'Reservation caption', w: 340, align: large ? 'CENTER' : 'LEFT' }));
+  const cap = put(pf, await T('Reservation is released only after the save succeeds.', 'ds/Caption', 'text/muted', { name: 'Reservation caption', w: 340, align: large ? 'CENTER' : 'LEFT' }));
   if (s.width < 128) { row.layoutMode = 'VERTICAL'; row.insertChild(0, s); fillW(s); fillW(k); }
-  return { k, s };
+  return { k, s, cap };
 }
 
 // ================= SCR-CC-003 Active contact — part b: On hold, Rejected, Accepted, Save failed, Save conflict (Light) =================
 getSection('SCR-CC-003 — Active contact — log attempt & outcome', 'b');
 async function stateDesk(suffix, sel, body, foot) {
   const f = frame(suffix);
-  const ws = await workspace(f, { key: suffix, top: resvTop });
+  const ws = await workspace(f, Object.assign({ key: suffix, top: resvTop }, body.ws));
+  if (body.after) body.after(ws);
   await panelTitle(ws.pb, 'Log call attempt', 'Attempt: 20 Oct 2026 · 10:32', 'Cancel contact');
   if (body.pre) await body.pre(ws.pb);
-  await outcomeGroup(ws.pb, sel);
+  const og = await outcomeGroup(ws.pb, sel); if (body.inOutcome) await body.inOutcome(og, sel);
   await body.fields(ws.pb);
   const cue = await cueStrip(ws.P, 1, '↓ More below', 'Scroll cue · panel', false);
   await (foot || (pf => saveFooter(pf, 'Save, keep reservation', 'Save attempt')))(ws.pf);
@@ -364,6 +374,8 @@ async function stateDesk(suffix, sel, body, foot) {
   fitFrame(f); return f;
 }
 const field = (n, nm) => { n.name = 'Field · ' + nm; return n; };
+// N43-5: Rejected = do-not-call, so the attempt is saved and the reservation released; "Save, keep reservation" is not offered
+const releaseOnly = why => async pf => { const b = await saveFooter(pf, 'Save, keep reservation', 'Save attempt'); b.k.visible = false; b.cap.characters = why; OUT.fit[PREFIX + ' keep-reservation hidden · ' + why.split(':')[0]] = true; };
 await stateDesk('Desktop — Light — On hold', 0, { fields: async pb => {
   put(pb, field(I('Checkbox', { Checked: 'False', State: 'Default' }, { Label: 'Add a follow-up (optional)', 'Show label': true }), 'Optional follow-up'));
   put(pb, await T('Optional follow-up (D3). Without one, the business returns to the Requires contact bucket.', 'ds/Caption', 'text/muted', { w: 320, name: 'Field · Caption' }));
@@ -372,13 +384,13 @@ await stateDesk('Desktop — Light — On hold', 0, { fields: async pb => {
 await stateDesk('Desktop — Light — Rejected', 2, { fields: async pb => {
   put(pb, field(I('Select', { Type: 'Select', State: 'Filled' }, { Label: 'Rejection reason', Value: 'Not interested — asked not to be called again', 'Show label': true, Required: false, 'Show helper': false }), 'Rejection reason'));
   put(pb, banner('Warning', 'Inline', 'Removes from calling', 'Saving removes this business from all calling buckets. Start Contact and new follow-ups are blocked.', 'Banner · Removes from calling'));
-  put(pb, await T('Open follow-ups', 'ds/Label', 'text/primary', { name: 'Field · Open follow-ups' }));
+  const fl = AL('Field · Open follow-ups', 'HORIZONTAL', { gap: 8, align: 'CENTER' }); put(pb, fl); // N43-5: D4 label beside the disabled group
+  const flt = await T('Open follow-ups', 'ds/Label', 'text/primary', { name: 'Label' }); add(fl, flt, notice('Chip', 'D4', null, 'Undecided · none preselected')); grow(flt);
   for (const r of ['Cancel open follow-ups (system reason)', 'Keep open follow-ups', 'Agent chooses in this save']) pb.appendChild(field(I('Radio', { Selected: 'False', State: 'Disabled' }, { Label: r }), 'D4 option'));
-  put(pb, notice('Inline', 'D4', 'Handling of open follow-ups on Rejected is undecided; no option is preselected.'));
   put(pb, await T('Any callback-to-be-scheduled marker is cleared in the same save (B1).', 'ds/Caption', 'text/muted', { w: 320, name: 'Field · Marker caption' }));
   put(pb, notice('Inline', 'DEC-016', 'Who may reopen a Rejected business, and to which outcome, is undecided.'));
   notes(pb, 'Owner says they already have a website partner. Asked not to be called again.');
-} });
+} }, releaseOnly('Rejected = do not call: Save attempt releases the reservation after the save succeeds.'));
 await stateDesk('Desktop — Light — Accepted (developer deferred)', 3, { fields: async pb => {
   put(pb, field(I('Input', { Type: 'Text', State: 'Filled' }, { Label: 'Client needs', Value: 'Menu website with table booking', 'Show label': true, Required: false, 'Show helper': false, 'Show icon': false }), 'Client needs'));
   put(pb, field(I('Select', { Type: 'Select', State: 'Filled' }, { Label: 'Service interest', Value: 'Website + booking', 'Show label': true, Required: false, 'Show helper': false }), 'Service interest'));
@@ -399,20 +411,31 @@ await stateDesk('Desktop — Light — Save failed', 1, {
   pre: async pb => put(pb, banner('Error', 'Inline', 'Could not save the attempt', 'Nothing was saved. Your notes and choices are kept and the reservation is still yours. Try again.', 'Banner · Save failed')),
   fields: async pb => { await followUp(pb); notes(pb); },
 }, pf => saveFooter(pf, 'Save, keep reservation', 'Try again'));
+// N43-4: the conflict frame shows the reloaded record everywhere (history + queue) and asks which follow-up stays (never two open ones)
+const CONFLICT_Q = QB.map(b => b.label === 'Callbacks due today' ? Object.assign({}, b, { count: '1', rows: b.rows.filter(r => r.name !== 'Olive & Thyme Café') }) : b);
+const TL_RELOADED = [{ type: 'Upcoming', title: 'Follow-up · Wed 21 Oct 09:00', time: 'Changed 10:36', body: 'Rescheduled from today 10:30 by Rana Haddad (Owner). Discuss menu website.' }].concat(TL_OLIVE.slice(1));
 await stateDesk('Desktop — Light — Save conflict', 1, {
-  pre: async pb => {
-    put(pb, banner('Warning', 'Inline', 'This business changed during your call', 'Rana Haddad rescheduled the 10:30 follow-up at 10:36. Nothing was overwritten. Review the latest values, then save again.', 'Banner · Save conflict'));
-    const s = await slotCard(pb, 'Card/Inset', { name: 'Field · Latest values', gap: 4 });
-    for (const [k, v] of [['Follow-up now', 'Wed 21 Oct 09:00 · Maya Khoury'], ['Changed by', 'Rana Haddad · 10:36'], ['Your draft', 'Kept — not saved']]) put(s.body, kv(k, v));
+  ws: { buckets: CONFLICT_Q, history: TL_RELOADED, histSub: 'Reloaded 10:36 · 3 attempts' },
+  after: ws => { const t = ws.Q && nested(ws.Q, 'Queue view'); if (t) prop(nested(t, 'Tab 2'), { Label: 'Due today (1)' }); else W('Save conflict: queue view tabs not found'); },
+  // N43-4 (2nd): compact banner (no title, one sentence); the choice sits inline in the Outcome group under the selected card, so both fit the first viewport
+  pre: async pb => put(pb, banner('Warning', 'Inline', '', 'Changed during your call: Rana Haddad moved the follow-up to Wed 21 Oct 09:00 (10:36). Nothing was saved.', 'Banner · Save conflict')),
+  inOutcome: async (og, sel) => {
+    const c = AL('Conflict choice', 'VERTICAL', { gap: 4, pad: [8, 12], fill: 'surface/subtle', stroke: 'border/subtle', radius: 'lg' }); og.insertChild(sel + 1, c); fillW(c);
+    put(c, await T('Which follow-up stays open? *', 'ds/Label', 'text/primary', { name: 'Choice label' }));
+    // N43-12: shorter labels, and the label text wraps (FILL + HEIGHT) so the deciding option is readable in full
+    for (const [l, n] of [['Keep latest · Wed 21 Oct 09:00 (Rana)', 'Keep latest'], ['Replace with my draft · Thu 22 Oct 11:00', 'Replace with draft']]) { const r = put(c, field(I('Radio', { Selected: 'False', State: 'Default' }, { Label: l }), n)); for (const t of r.findAllWithCriteria({ types: ['TEXT'] })) { try { t.layoutSizingHorizontal = 'FILL'; t.textAutoResize = 'HEIGHT'; } catch (e) { W('N43-12 wrap: ' + e.message); } } }
   },
-  fields: async pb => { await followUp(pb); notes(pb); },
-}, pf => saveFooter(pf, 'Review latest', 'Save again'));
+  fields: async pb => { notes(pb); },
+}, async pf => { const b = await saveFooter(pf, 'Save, keep reservation', 'Save again'); for (const x of [b.k, b.s]) prop(x, { State: 'Disabled' }); b.cap.characters = 'Choose which follow-up stays to save again. One open follow-up either way; the reservation is released only after the save succeeds.'; });
+{ const h = OUT.fit[PREFIX + ' Desktop — Light — Save conflict panel']; if (h && h.hiddenBelow.includes('Outcome group')) W('N43-4: Outcome group below the fold in Save conflict'); }
 await annotations([
   ['Note', 'Branch A — On hold', 'No answer: optional follow-up (D3). The business returns to Requires contact.'],
   ['Note', 'Branch B — Rejected', 'Reason captured; the D2 marker is cleared in the same save (B1). Open follow-ups: D4 undecided, no option preselected (radios disabled). Reopening only via SCR-CC-008 (DEC-016).'],
   ['Note', 'Branch C — Accepted (E3/E5)', 'Creates one deal record in stage "Accepted opportunity", never a closed deal. "Decide later" stores no developer: the Owner sees Developer not yet assigned (SCR-CC-007). Meeting optional. DEC-005, DEC-017, D4 pending.'],
-  ['Interaction', 'Save failed / conflict', 'Save failed: nothing saved, form kept, reservation stays Active and renewing; retry. Conflict: current values shown, nothing overwritten; review then save again.'],
+  ['Interaction', 'Save failed / conflict', 'Save failed: nothing saved, form kept, reservation stays Active and renewing; retry. Conflict (N43-4/12): the record reloads (history shows Wed 21 Oct 09:00; the queue drops Olive & Thyme Café from Callbacks due today). A one-sentence banner, then an inline choice under the selected card, none preselected, labels wrap: Keep latest, or Replace with my draft (reschedules the same follow-up). Both saves stay disabled until one is chosen, so no second open follow-up. Notes and outcome are kept.'],
+  ['Note', 'Rejected / Accepted footer (N43-5)', 'Rejected = do-not-call: "Save, keep reservation" is not offered; "Save attempt" saves, then releases. Accepted keeps both actions as approved (open question for the Owner: does Accepted keep the reservation?). The D4 label sits beside the disabled Open follow-ups group.'],
   ['Note', 'Panel scroll', 'Panel body scrolls; the strip under it names the items below (for example Notes). Footer actions stay fixed.'],
+['Note', 'Request correction target', 'Request correction opens SCR-SHR-009 (page 42, frame 175:10802); the request goes to Data Entry (WF-BIZ-002).'],
 ]);
 finishSection();
 return OUT;

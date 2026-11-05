@@ -66,7 +66,9 @@ function nested(root, name) { return root.findOne(n => n.type === 'INSTANCE' && 
 function layerText(root, name, txt, quiet) { const t = root.findOne(n => n.type === 'TEXT' && n.name === name); if (!t) { if (!quiet) warn(`no text layer ${name} in ${root.name}`); return; } try { t.characters = txt; } catch (e) { warn(`text ${name}: ${e.message}`); } }
 function slotOf(i, name) { const s = i.findAll(n => n.type === 'SLOT'); return s.find(x => x.name === name) || s[0] || null; }
 function clearSlot(s) { if (!s) return; for (const ch of [...s.children]) { try { ch.remove(); } catch (e) { ch.visible = false; } } }
-function fillSlot(i, nodes, name, gap) { const s = slotOf(i, name || 'Content'); if (!s) { warn('no slot in ' + i.name); return null; } clearSlot(s); if (gap != null) num(s, 'itemSpacing', gap); for (const n of nodes) if (n) put(s, n, 'FILL'); return s; }
+function fillSlot(i, nodes, name, gap) { const s = slotOf(i, name || 'Content'); if (!s) { warn('no slot in ' + i.name); return null; } clearSlot(s); if (gap != null) num(s, 'itemSpacing', gap); for (const n of nodes) if (n) put(s, n, hugK(n)); return s; }
+// M-6: badges, chips and policy chips HUG inside slots; everything else FILL
+function hugK(n) { return n.type === 'INSTANCE' && (/^(Badge|Badge\/Flag|Chip\/Derived) · /.test(n.name) || (n.name.startsWith('Policy · ') && n.variantProperties && n.variantProperties.Size === 'Chip')) ? 'HUG' : 'FILL'; }
 // ---- DS builders (every visible text set explicitly)
 async function badge(tone, label, size, dot) { const b = await inst('Badge', { Tone: tone, Size: size || 'Small' }, 'Badge · ' + label); setP(b, { Label: label, 'Show dot': dot !== false }); return b; }
 async function chip(tone, label) { const c = await inst('Chip', { Tone: tone }, 'Chip/Derived · ' + label); setP(c, { Label: label }); return c; }
@@ -133,10 +135,7 @@ async function scrim(f, mobile) { const s = await inst('Scrim', { Size: mobile ?
 async function drawer(f, title, sub, nodes, footer) {
   await scrim(f); const dr = await inst('Drawer', null, 'Drawer · ' + title); f.appendChild(dr); dr.x = 960; dr.y = 0;
   setP(dr, { Title: title, Subtitle: sub || ' ', 'Show subtitle': !!sub });
-  const bs = slotOf(dr, 'Content'); clearSlot(bs); num(bs, 'itemSpacing', 0);
-  const body = AL('Drawer body', 'VERTICAL', { gap: 16 }); bs.appendChild(body);
-  try { body.layoutSizingHorizontal = 'FILL'; } catch (e) { body.resize(Math.max(1, bs.width - (bs.paddingLeft || 0) - (bs.paddingRight || 0)), 10); body.layoutSizingHorizontal = 'FIXED'; } body.layoutSizingVertical = 'HUG';
-  for (const n of nodes) if (n) put(body, n, 'FILL');
+  const bs = slotOf(dr, 'Content'), body = stage(f, bs, 'Drawer body', 16, nodes);
   const fs = dr.findAll(n => n.type === 'SLOT').find(s => s.name === 'Footer');
   if (fs) { clearSlot(fs); const fr = AL('Drawer actions', 'HORIZONTAL', { gap: 8, align: 'CENTER' }); fs.appendChild(fr); try { fr.layoutSizingHorizontal = 'FILL'; } catch (e) { fr.resize(Math.max(1, fs.width - 48), 40); } fr.layoutSizingVertical = 'HUG'; for (const b of footer) { if (b === 'spacer') spacer(fr); else fr.appendChild(b); } } else warn('drawer footer slot not found');
   meta(f).drawer = { dr, bs, body }; return dr;
@@ -145,14 +144,43 @@ async function dialog(f, title, desc, nodes, sec, pri, o) {
   o = o || {}; await scrim(f, o.mobile); const d = await inst('Dialog', null, 'Dialog · ' + title); f.appendChild(d);
   setP(d, { Title: title, Description: desc || ' ', 'Show description': !!desc, 'Show footer': !!(sec || pri), 'Show close': true });
   if (o.w) d.resize(o.w, d.height);
-  fillSlot(d, nodes, 'Content', 12);
+  meta(f).dbody = stage(f, slotOf(d, 'Content'), 'Dialog body', 12, nodes);
   const sb = nested(d, 'Secondary action'), pb = nested(d, 'Primary action');
   if (sb) { if (sec) setP(sb, { Label: sec, 'Show icon': false }); else sb.visible = false; }
   if (pb) { if (pri) { setP(pb, { Label: pri, 'Show icon': false }); if (o.destructive) setP(pb, { Variant: 'Destructive' }); if (o.disabled) setP(pb, { State: 'Disabled' }); } else pb.visible = false; }
   const W = o.mobile ? 390 : 1440, H = o.mobile ? 844 : 900; d.x = Math.round((W - d.width) / 2); d.y = Math.max(o.mobile ? 16 : 40, Math.round((H - d.height) / 2));
   meta(f).dialog = d; return d;
 }
-function relayout(f) { for (const i of f.findAll(n => n.type === 'INSTANCE' && n.name.startsWith('Field · '))) { try { if (i.layoutSizingHorizontal === 'FILL') { i.layoutSizingHorizontal = 'FIXED'; i.layoutSizingHorizontal = 'FILL'; } } catch (e) { } } }
+const _META = {}; function meta(f) { return _META[f.id] || (_META[f.id] = {}); }
+function relayout(f) { for (const i of f.findAll(n => n.type === 'INSTANCE' && n.name.startsWith('Field · '))) { try { if (i.layoutSizingHorizontal === 'FILL') { i.layoutSizingHorizontal = 'FIXED'; i.layoutSizingHorizontal = 'FILL'; } } catch (e) { } } const M = meta(f); kick(M.drawer && M.drawer.body); kick(M.dbody); }
+// N44-1/2: nested instances moved into another instance's slot keep the layout of their old (320 default) width. So the
+// slot body is built detached, at the slot's inner width, in a plain frame (layout runs there, as on mobile), then:
+// 1 append to slot, 2 wrapper FILL, 3 children FILL, 4 own text HEIGHT+FILL, 5 relayout (wrapper width really changes).
+function stage(f, s, name, gap, nodes) {
+  if (!s) { warn('no Content slot in ' + f.name); return null; }
+  const W = Math.max(200, Math.round(s.width - (s.paddingLeft || 0) - (s.paddingRight || 0))); clearSlot(s); num(s, 'itemSpacing', 0);
+  const b = AL(name, 'VERTICAL', { gap }); f.appendChild(b); b.resize(W, 10); b.counterAxisSizingMode = 'FIXED'; b.primaryAxisSizingMode = 'AUTO';
+  for (const n of nodes) if (n) put(b, n, hugK(n));
+  s.appendChild(b); try { b.layoutSizingHorizontal = 'FILL'; } catch (e) { b.layoutSizingHorizontal = 'FIXED'; } b.layoutSizingVertical = 'HUG';
+  for (const n of b.children) if (hugK(n) === 'FILL') { try { n.layoutSizingHorizontal = 'FILL'; } catch (e) { } }
+  for (const t of b.findAll(n => n.type === 'TEXT' && !lockedIn(n, b))) if (t.parent === b || t.layoutSizingHorizontal === 'FILL') { try { t.layoutSizingHorizontal = 'FILL'; t.textAutoResize = 'HEIGHT'; } catch (e) { } }
+  kick(b); return b;
+}
+function kick(b) { if (!b || b.removed) return; try { const w = b.width, fill = b.layoutSizingHorizontal === 'FILL'; b.layoutSizingHorizontal = 'FIXED'; b.resize(w - 1, b.height); if (fill) b.layoutSizingHorizontal = 'FILL'; else b.resize(w, b.height); b.layoutSizingVertical = 'HUG'; } catch (e) { warn('relayout ' + b.name + ': ' + e.message); } }
+// fit: FILL layers inside slot instances that kept an old width, or that render past their instance box
+function stale(b) {
+  const o = []; if (!b || b.removed) return o; const inner = p => p.width - (p.paddingLeft || 0) - (p.paddingRight || 0);
+  for (const i of b.findAll(n => n.type === 'INSTANCE' && !lockedIn(n, b) && shown(n, b))) {
+    const ib = i.absoluteBoundingBox; if (!ib) continue; let m = null;
+    for (const k of i.findAll(x => shown(x, i))) {
+      const p = k.parent; if (p && p.layoutMode === 'VERTICAL' && k.layoutSizingHorizontal === 'FILL' && Math.abs(k.width - inner(p)) > 1.5) { m = k.name + ' ' + Math.round(k.width) + '/' + Math.round(inner(p)); break; }
+      const kb = k.absoluteRenderBounds; if (kb && kb.x + kb.width > ib.x + ib.width + 1.5) { m = k.name + ' +' + Math.round(kb.x + kb.width - ib.x - ib.width) + 'w'; break; }
+    }
+    if (m) o.push(i.name + ' › ' + m);
+  }
+  return o;
+}
+function lockedIn(p, root) { for (let a = p.parent; a && a !== root; a = a.parent) if (a.type === 'INSTANCE') return true; return false; } // D-5: p sits inside another instance, so scripts cannot resize it
 function shown(n, root) { for (let p = n; p && p !== root; p = p.parent) if (p.visible === false) return false; return true; }
 function fit(f, o) {
   o = o || {}; relayout(f); const r = { size: [Math.round(f.width), Math.round(f.height)] }, over = [];
@@ -163,12 +191,13 @@ function fit(f, o) {
     const pb = p.absoluteBoundingBox, b = n.absoluteBoundingBox; if (!pb || !b || b.width < 1) continue;
     const dx = b.x + b.width - (pb.x + pb.width - (p.paddingRight || 0)); if (dx > 1.5) over.push(`${n.name} ⊄ ${p.name} +${Math.round(dx)}w`);
     const fixedH = p.layoutMode === 'VERTICAL' ? p.primaryAxisSizingMode === 'FIXED' : p.counterAxisSizingMode === 'FIXED';
-    if (fixedH && p.clipsContent && !(o.scroll && p === c)) { const dy = b.y + b.height - (pb.y + pb.height - (p.paddingBottom || 0)); if (dy > 1.5) over.push(`${n.name} ⊄ ${p.name} +${Math.round(dy)}h`); }
+    if (fixedH && p.clipsContent && !(o.scroll && p === c)) { const dy = b.y + b.height - (pb.y + pb.height - (p.paddingBottom || 0)); if (dy > 1.5) { const m = `${n.name} ⊄ ${p.name} +${Math.round(dy)}h`; if (p.type === 'INSTANCE' && lockedIn(p, f) && dy <= (p.paddingBottom || 0) + 0.5) (r.padOnly = r.padOnly || []).push(m + ' (bottom padding only, not clipped; component geometry)'); else over.push(m); } }
   }
   const M = meta(f);
-  for (const k of ['dialog', 'drawer']) if (M[k]) { const d = M[k].dr || M[k]; r[k] = [Math.round(d.width), Math.round(d.height)]; if (d.y + d.height > f.height - 8) warn(`${f.name}: ${k} taller than the frame`); }
+  for (const k of ['dialog', 'drawer']) if (M[k]) { const d = k === 'drawer' ? M[k].dr : M[k]; r[k] = [Math.round(d.width), Math.round(d.height)]; if (d.y + d.height > f.height - (k === 'drawer' ? 0 : 8) + 0.5) warn(`${f.name}: ${k} taller than the frame`); }
   if (M.drawer) { const { bs, body } = M.drawer; const free = Math.round(bs.absoluteBoundingBox.y + bs.height - (bs.paddingBottom || 0) - (body.absoluteBoundingBox.y + body.height)); r.drawerBodyFree = free; if (free < 0) warn(`${f.name}: drawer body taller than its slot by ${-free} px`); }
   if (o.mobile) { const small = []; for (const n of f.findAll(x => x.type === 'INSTANCE' && /^(Button|IconButton|Link|Chip\/Filter) · /.test(x.name) && shown(x, f))) if (n.height < 44) small.push(`${n.name} ${Math.round(n.height)}px`); const bk = f.findOne(x => x.type === 'INSTANCE' && x.name === 'Back'); if (bk && shown(bk, f)) r.backButton = Math.round(bk.height); if (bk && shown(bk, f) && bk.height < 44) small.push('Header Back ' + Math.round(bk.height) + 'px (Component request: Shell/Mobile/Header)'); r.tapTargetsUnder44 = small; if (small.length) warn(`${f.name}: ${small.length} tap target(s) < 44 px`); }
+  { const M = meta(f), st = stale(M.drawer && M.drawer.body).concat(stale(M.dbody)); r.stale = st.slice(0, 8); if (st.length) warn(`${f.name}: ${st.length} stale/overrunning layer(s) in the overlay, e.g. ${st[0]}`); }
   r.overflow = over.slice(0, 12); if (over.length) warn(`${f.name}: ${over.length} overflow(s), e.g. ${over[0]}`);
   OUT.fit[f.name] = r; return r;
 }
@@ -179,11 +208,13 @@ const N = 'SCR-DEV-002 — Deal record detail — Desktop — ';
 const CEDAR = { biz: 'Cedar Home Realty', deal: 'Listings website', id: 'DL-0033', cat: 'Real estate', phone: '+000 70 000 103', web: 'cedar.example.com',
   facts: [['ACCEPTED', true, '14 Sep 2026', 'Omar Nassar · from call'], ['SIGNATURE', true, '7 Oct 2026', 'Agreement AGR-0133'], ['PAYMENT', true, '15 Oct 2026', 'Confirmation PAY-0151'], ['CLOSURE', false, 'Not closed yet', 'Needs all three facts']],
   stage: ['Warning', 'Signed and paid · awaiting closure'], needs: 'Listings with search by area and price; an enquiry form on each listing.', interest: 'Website with property listings',
-  meetings: [['Discovery call', '22 Sep 2026 · 2 attendees', 'Success', 'Held'], ['Scope review', '1 Oct 2026 · 1 attendee', 'Success', 'Held']] };
+  meetings: [['Discovery call', '22 Sep · 2 attendees', 'Success', 'Held'], ['Scope review', '1 Oct · 1 attendee', 'Success', 'Held']] };
 const PEAK = { biz: 'Peak Fitness Gym', deal: 'Member app', id: 'DL-0040', cat: 'Gym', phone: '+000 70 000 102', web: 'peakfitness.example.com',
   facts: [['ACCEPTED', true, '14 Oct 2026', 'Maya Khoury · from call'], ['SIGNATURE', false, 'Not recorded', 'Agreement not signed yet'], ['PAYMENT', false, 'Not recorded', 'No payment yet'], ['CLOSURE', false, 'Not closed yet', 'Needs all three facts']],
   stage: ['Neutral', 'Accepted opportunity'], needs: 'Member app with class booking and a membership card; launch before January.', interest: 'Mobile app for members',
-  meetings: [['Member app kickoff', 'Wed 21 Oct, 14:00 · Upcoming', 'Info', 'Scheduled']] };
+  meetings: [['Member app kickoff', 'Wed 21 Oct, 14:00–15:00 · upcoming', 'Info', 'Scheduled']] };
+// M-2: the Save-conflict frame shows the reloaded record (payment fact removed by the Owner) — no live closure actions
+const CEDAR_RELOADED = Object.assign({}, CEDAR, { facts: CEDAR.facts.map(x => x[0] === 'PAYMENT' ? ['PAYMENT', false, 'Not recorded', 'Removed 10:42 today · Rana Haddad'] : x), stage: ['Neutral', 'Signed · payment outstanding'] });
 function spacerNode() { const s = figma.createFrame(); s.name = 'Spacer'; s.fills = []; s.resize(1, 1); return s; }
 async function sectionHead(t, l) { const r = await row('Head · ' + t, [await T(t, 'ds/H4', 'text/primary')]); if (l) { const sp = spacerNode(); r.appendChild(sp); sp.layoutGrow = 1; r.appendChild(await link(l)); } return r; }
 async function factCard(D, owner, mode) {
@@ -201,9 +232,13 @@ async function factCard(D, owner, mode) {
   return cs;
 }
 async function closureCard(mode) {
-  const cs = await card('Section', 'Closure', mode === 'accepted' ? 'Closure needs signature and payment first' : 'All three facts are recorded', null);
+  const cs = await card('Section', 'Closure', mode === 'accepted' ? 'Closure needs signature and payment first' : mode === 'conflict' ? 'Payment is no longer recorded — closure needs all three facts' : 'All three facts are recorded', null);
   const items = [];
-  if (mode === 'main' || mode === 'conflict') {
+  if (mode === 'conflict') {
+    items.push(await row('Closure options', [await button('Primary', 'Medium', 'Finalize closure…', null, 'Disabled'), await button('Secondary', 'Medium', 'Request closure verification', null, 'Disabled'), await button('Secondary', 'Medium', 'Record payment…')], 8));
+    items.push(await ninline('DEC-006 / R-12', 'Closure options return when payment is recorded again. Only one of Finalize (Alt A) / Request verification (Alt B) will exist. R-12 → user decision.'));
+  }
+  if (mode === 'main') {
     items.push(await row('Closure options', [await button('Primary', 'Medium', 'Finalize closure…'), await T('or', 'ds/Caption', 'text/muted'), await button('Secondary', 'Medium', 'Request closure verification')], 8));
     items.push(await ninline('DEC-006 / R-12', 'Not decided: Finalize = Alt A (Developer closes, SCR-DEV-008) · Request verification = Alt B (Owner verifies). Only one will exist. R-12 → user decision.'));
   }
@@ -227,20 +262,23 @@ async function handoff(p, D) {
   p.appendChild(await link('Previous call notes (2) · from Call Center'));
 }
 async function rail(D, mode) {
-  const r = await card('Surface', 'Right rail'); const sl = fillSlot(r, [], 'Content', 10);
-  put(sl, await sectionHead('Business context'), 'FILL');
-  put(sl, await access('Context-limited', 'Inline', 'Limited business context', 'Only what this deal needs is shown (DEC-005 pending).'), 'FILL');
+  // D-5: Accepted mode adds Handoff to the rail (was +5h clipped in C02/C02b/C08) — 13 rows, gap 10→8 frees 24 px
+  const r = await card('Surface', 'Right rail'); const sl = fillSlot(r, [], 'Content', mode === 'accepted' ? 8 : 10);
+  // M-1: master data is read-only; "Request correction" → shared data-correction drawer SCR-SHR-009 (page 42, pending DE-2)
+  put(sl, await sectionHead('Business context', mode === 'owner' ? null : 'Request correction'), 'FILL');
+  put(sl, await access('Context-limited', 'Inline', 'Limited business context', 'Only what this deal needs.'), 'FILL');
   for (const [k, v] of [['Business', D.biz], ['Category', D.cat], ['Phone', D.phone], ['Website', D.web]]) put(sl, await kv('Default', k, v), 'FILL');
   put(sl, await divider(), 'FILL');
   const ms = AL('Meetings', 'VERTICAL', { gap: 4 }); put(sl, ms, 'FILL');
   put(ms, await sectionHead('Meetings', 'Schedule'), 'FILL');
-  for (const [t, m, tone, lab] of D.meetings) { const i = await inst('ListItem', { State: 'Default' }, 'List/Item · ' + t); setP(i, { Title: t, Meta: m, Icon: IC.calendar, 'Show leading': true, 'Show badge': true, 'Show chevron': false }); setP(nested(i, 'Badge'), { Tone: tone, Label: lab, 'Show dot': true }); put(ms, i, 'FILL'); }
+  // M-5: local rows so the title wraps and the date/time line is never truncated; status badge below (HUG)
+  for (const [t, m, tone, lab] of D.meetings) { const i = AL('Meeting · ' + t, 'VERTICAL', { gap: 2, pad: [6, 0] }); put(ms, i, 'FILL'); await TF(i, t, 'ds/Body Strong', 'text/primary'); await TF(i, m, 'ds/Caption', 'text/secondary'); i.appendChild(await badge(tone, lab)); }
   if (mode === 'accepted') { put(sl, await divider(), 'FILL'); await handoff(sl, D); }
   return r;
 }
 async function detail(name, mode) {
   const owner = mode === 'owner';
-  const D = mode === 'accepted' ? PEAK : CEDAR;
+  const D = mode === 'accepted' ? PEAK : mode === 'conflict' ? CEDAR_RELOADED : CEDAR;
   const { f, c } = await desk(S, name, owner ? 'RH' : 'LA', owner ? 'Deals & Meetings' : 'Deals');
   const h = AL('Page header', 'VERTICAL', { gap: 6 }); put(c, h, 'FILL');
   const bc = await inst('Breadcrumb', null, 'Breadcrumb'); setP(bc, { 'Level 1': 'Deals', 'Level 2': D.biz, Current: D.deal, 'Show level 2': true }); h.appendChild(bc);
@@ -255,7 +293,7 @@ async function detail(name, mode) {
   meta.appendChild(await T(D.id + ' · ' + D.cat, 'ds/Body Small', 'text/muted'));
   if (mode === 'accepted') put(c, await nblock('DEC-005', 'You see this accepted opportunity only if DEC-005 Alt 1 (assigned scoping access) is adopted. Under Alt 2 this page is not available to Developers before closure.', 'Pre-closure access — policy pending'), 'FILL');
   if (mode === 'rejected') put(c, await banner('Error', 'Closure verification rejected', 'Rana Haddad, 19 Oct 2026, 11:20: “Payment reference PAY-0151 does not match agreement AGR-0133. Please check with the client.” The deal stays Signed and paid.', null), 'FILL');
-  if (mode === 'conflict') put(c, await banner('Warning', 'This deal changed while you were working', 'Rana Haddad removed the payment fact at 10:42, so the stage is now Signed (payment outstanding). Your closure request was not sent. Nothing was overwritten.', 'Review changes'), 'FILL');
+  if (mode === 'conflict') put(c, await banner('Warning', 'This deal changed while you were working', 'Rana Haddad removed the payment fact at 10:42, so the stage is now Signed (payment outstanding). Your closure request was not sent. This page now shows the latest version; nothing was overwritten.', 'Review changes'), 'FILL');
   if (owner) put(c, await banner('Warning', 'Closure verification requested by Lina Aoun', 'Sent 18 Oct 2026, 16:05: “Agreement and payment confirmed with the client.” Shown only if DEC-006 Alt B is adopted.', null), 'FILL');
   const split = AL('Main split', 'HORIZONTAL', { gap: 16 }); put(c, split, 'FILL', 'FILL');
   const left = AL('Left column', 'VERTICAL', { gap: 16 }); put(split, left, 'FILL', 'FILL');
@@ -284,7 +322,7 @@ const OV = await detail(N + 'Light — Owner view: closure verification review (
   const { f, c } = await desk(S, N + 'Light — Hidden by policy', 'LA', 'Deals');
   const bc = await inst('Breadcrumb', null, 'Breadcrumb'); setP(bc, { 'Level 1': 'Deals', 'Level 2': 'Deals', Current: 'Record not available', 'Show level 2': false }); put(c, bc);
   const a = AL('State area', 'VERTICAL', { gap: 16, align: 'CENTER', justify: 'CENTER', fill: 'surface/default', stroke: 'border/default', radius: 'lg' }); put(c, a, 'FILL', 'FILL');
-  a.appendChild(await access('Hidden by policy', 'Page', 'This deal is not visible to you', 'It may exist, but the visibility policy hides it from your role. No details are shown.', 'Back to deals'));
+  { const w = AL('Access wrap', 'VERTICAL'); a.appendChild(w); w.resize(480, 10); w.layoutSizingHorizontal = 'FIXED'; w.layoutSizingVertical = 'HUG'; put(w, await access('Hidden by policy', 'Page', 'This deal is not visible to you', 'It may exist, but the visibility policy hides it from your role. No details are shown.', 'Back to deals'), 'FILL'); } // DS-13d: Notice/Access FILL
   a.appendChild(await row('Policy row', [await nchip('DEC-002', '15-day visibility'), await nchip('DEC-005', 'pre-closure access')], 8));
   fit(f);
 }
@@ -294,6 +332,7 @@ await endSection(S, [
   ['Interaction', 'I2 — Closure', 'Alt A: "Finalize closure…" → SCR-DEV-008. Alt B: "Request closure verification" → Owner review item; Owner verifies & finalizes or rejects with a reason (banner on this page). Neither option is selected; only one will ship.'],
   ['Interaction', 'I3 — Owner correction', '"Remove recorded fact…" (Owner only, before closure): choose fact + required reason → stage reverts; original entry kept in history and audit (G3).'],
   ['Note', 'N1 — Not proceeding', '"Mark not proceeding…" needs a reason (Proposed) and exists on any non-closed stage. Calling-outcome effect is open (OQ-04).'],
-  ['Implementation', 'N2 — Conflict / hidden', 'Save conflict: reload and re-apply; nothing overwritten (SCR-SHR-014 pattern). Hidden by policy: generic title, no record data, no count.']
+  ['Note', 'N3 — Request correction', 'Business details are read-only for Developers (brief §6). "Request correction" opens the shared data-correction drawer SCR-SHR-009 (page 42; not built yet, DE-2) prefilled with this business. Record-fact and not-proceeding dialogs: C02b.'],
+  ['Implementation', 'N2 — Conflict / hidden', 'Save conflict: the page shows the reloaded record (payment removed → stage Signed, closure actions disabled, Record payment… offered); nothing overwritten; Review changes → SCR-SHR-014. Hidden by policy: generic title, no record data, no count.']
 ]);
 return OUT;

@@ -162,6 +162,7 @@ Run the scripts in this order. Each script creates its sections in a vertical st
   - The column and the N1 frame no longer clip.
   - The dialog sits on a `Dialog stage` frame (surface/sunken, radius 16, padding 32/32/48/32, no clip).
   - A new check, `checks.N1dialog`, returns the clipping ancestors (expected `[]`) and `shadowInsideStage`.
+- The DS Maintainer's 13-phase6-prep change (Dialog now clips, with a 1 px border) does not cover this. A component's own clip never cuts its own shadow; the cut came from the screen-level ancestor. Both changes together give clean corners.
 - The section is now positioned only when first created (lesson 3).
 
 ## Component requests (non-blocking; through the orchestrator to the DS Maintainer)
@@ -172,3 +173,20 @@ Run the scripts in this order. Each script creates its sections in a vertical st
 - Heights of DS internals (KeyValue, RadioCard, Timeline/Item) were estimated. Trust the returned `content`, `freeHeight` and `overflow` values. The tightest frames are: SCR-SHR-008 Call Center (banner plus three cards), the SCR-DE-005 drawers, and SCR-SHR-009 with the banner.
 - After running, re-lay-out field instances nested in slots (FIXED→FILL toggle), per lesson 5.
 - DEC-024 (platform priority) has no defined scope, so it is not drawn.
+
+## P6-DE-2 review fixes (R42-01…R42-08, X-7) — scripted, NOT run (Figma MCP quota)
+- **R42-01 (B01):** no quick chip is drawn selected. Default/Dark/Owner/mobile: "Correction requested (2)" unselected (Peak and Olive carry the flag, so the count matches the rows). Empty: "(0)". Loading/Error: no count.
+- **R42-02 (B01): decision: remove the hidden record from the Data Entry frames.** Basis: `phase2/batch2/batch2-spec.md`. The Data Entry base scope is unresolved (Alt DE-1 / DE-2, VT-2). Under both alternatives, the 15-day hidden rule (DEC-001/002, with row 6 Alt A "hidden day 16") applies to Data Entry. Only the Owner is exempt (C1). The glossary in `phase2/shared-baseline.md` §5 defines a hidden record as one "still stored and still duplicate-checked", not visible. So a record that the Owner view flags "Hidden from other roles" can't appear for Data Entry. The hidden record is now **Harbor Auto Care** (+000 70 000 155), matching SCR-SHR-010 Owner view. `bizRows()` drops rows tagged hidden for non-Owner viewers. Cedar Home Realty is now an ordinary visible row in both views. DE shows Glow…Sunrise (8 rows). The Owner view shows Glow, Peak, Harbor (flagged), Cedar, Bloom, Urban (6 rows).
+- **R42-03 (B01):** pagination now agrees. DE: "Showing 1–8 of 124", "8 per page", 16 pages. Owner: "Showing 1–6 of 131", "6 per page", 22 pages. A new `pagerProps()` (all scripts) sets the DS-13c Pagination properties. A single page sets Show page controls=false. Otherwise it sets Show page 3 / Show gap / Show last page and Last page. This mirrors the DE-6 canvas-only pagination patch.
+- **DE-6 icon patch mirrored:** `touchFix()` runs from `fit()`. It sets IconButton Close → Icon/x 44:53 and Back → Icon/chevron-left 44:38. It also re-lays-out every FILL Notice/Access instance FIXED→FILL (DS-13d).
+- **R42-04 (all scripts):** the sidebar label is "Categories". The `[DEC-nnn]` suffix is stripped from the label and kept only in the nav-item lookup key. DEC-015 stays as the page policy chip on SCR-DE-007.
+- **R42-05 (B02):** the mobile "Category help" row wraps (WRAP, 4 px row gap), so the DEC-015 chip drops to its own line.
+- **R42-06 (B05):** the In review footer primary is now "Edit business".
+- **R42-07 (B05):** in Already resolved, "Phone 2 now" is +000 70 000 113.
+- **R42-08 (B05):** two new SCR-DE-006 Light state frames reuse `queue()`.
+  - **Resolved tab:** Peak and Urban Cuts, each with an outcome note and the resolver (Rana Haddad / Karim Saleh).
+  - **Closed / rejected tab:** Bloom "Closed · no change" with a note, and Sunrise "Rejected" with a reason.
+  - Both use the columns Issue · outcome / Closed / Resolved by. Both carry a read-only, never-reopen caption and the No DEC ID chip (notification).
+  - Withdrawn tab: not drawn (one state frame was requested).
+- **X-7 (B02, B04):** error-summary links use status/danger/fg + underline (same override as D03 `sLink()`).
+- B03 and B07 were not run. B03 only got the nav-label fix, to stay under 45k (44,249 chars). B07 has the shared-helper changes. All 8 scripts parse.

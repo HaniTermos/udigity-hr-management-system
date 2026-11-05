@@ -74,7 +74,7 @@ async function T(chars, style, color, o = {}) {
 function add(p, ...k) { for (const x of k) if (x) p.appendChild(x); return p; }
 function fillW(n) { if (n.type === 'TEXT') n.textAutoResize = 'HEIGHT'; n.layoutSizingHorizontal = 'FILL'; return n; }
 function fillH(n) { n.layoutSizingVertical = 'FILL'; return n; }
-function grow(n) { n.layoutGrow = 1; return n; }
+function grow(n) { try { if (n.name === 'Spacer' && 'children' in n && !n.children.length) { n.resize(n.width, 1); n.layoutSizingVertical = 'FIXED'; } n.layoutGrow = 1; } catch (e) { W('grow ' + n.name + ': ' + e.message); } return n; } // fit: empty spacers were 100 px tall (CC-007 Owner view Content +18)
 function fixedCol(n, w) { n.resize(w, 100); n.layoutSizingHorizontal = 'FIXED'; return n; }
 function put(p, n) { p.appendChild(n); fillW(n); return n; }
 function reg(k, n) { if (n) OUT.created[k] = n.id; return n; }
@@ -98,6 +98,22 @@ async function slotCard(parent, compName, o) {
 }
 function slotOf(inst, name) { const s = inst.findAllWithCriteria({ types: ['SLOT'] }); return s.find(x => x.name === name) || null; }
 function clearSlot(s) { if (s) for (const k of [...s.children]) k.remove(); return s; }
+// N43-1/N43-2: port of DEV-002 stage(). Instances moved into a slot keep the layout of their old (320 px default) width, so slot
+// content is built detached at the slot's inner width, then moved in: wrapper FILL, children FIXED→FILL, own text HEIGHT+FILL, relayout.
+function inInst(n, root) { for (let a = n.parent; a && a !== root; a = a.parent) if (a.type === 'INSTANCE') return true; return false; }
+function kick(b) { if (!b || b.removed) return; try { const w = b.width, fill = b.layoutSizingHorizontal === 'FILL'; b.layoutSizingHorizontal = 'FIXED'; b.resize(w - 1, b.height); if (fill) b.layoutSizingHorizontal = 'FILL'; else b.resize(w, b.height); b.layoutSizingVertical = 'HUG'; } catch (e) { W('relayout ' + b.name + ': ' + e.message); } }
+function stage(f, s, name, gap, nodes, hug) {
+  if (!s) { W('no Content slot in ' + f.name); return null; }
+  const w = Math.max(200, Math.round(s.width - (s.paddingLeft || 0) - (s.paddingRight || 0))); for (const k of [...s.children]) k.remove(); try { s.itemSpacing = 0; } catch (e) { }
+  const b = AL(name, 'VERTICAL', { gap }); f.appendChild(b); b.resize(w, 10); b.counterAxisSizingMode = 'FIXED'; b.primaryAxisSizingMode = 'AUTO';
+  const H = new Set((hug || []).map(n => n.id));
+  for (const n of nodes) if (n) { b.appendChild(n); if (!H.has(n.id)) fillW(n); }
+  s.appendChild(b); try { b.layoutSizingHorizontal = 'FILL'; } catch (e) { b.layoutSizingHorizontal = 'FIXED'; } b.layoutSizingVertical = 'HUG';
+  for (const n of b.children) if (!H.has(n.id)) { try { n.layoutSizingHorizontal = 'FIXED'; n.layoutSizingHorizontal = 'FILL'; } catch (e) { } }
+  for (const t of b.findAll(n => n.type === 'TEXT' && !inInst(n, b))) if (t.parent === b || t.layoutSizingHorizontal === 'FILL') { try { t.layoutSizingHorizontal = 'FILL'; t.textAutoResize = 'HEIGHT'; } catch (e) { } }
+  kick(b); return b;
+}
+function overrun(b) { const o = []; if (!b) return o; for (const i of b.findAll(n => n.type === 'INSTANCE' && !inInst(n, b) && n.visible)) { const ib = i.absoluteBoundingBox; if (!ib) continue; if (i.layoutSizingHorizontal === 'FILL' && i.parent === b && Math.abs(i.width - b.width) > 1.5) { o.push(i.name + ' ' + Math.round(i.width) + '/' + Math.round(b.width) + 'w'); continue; } for (const k of i.findAll(x => x.type === 'TEXT' && x.visible)) { const kb = k.absoluteRenderBounds; if (kb && kb.x + kb.width > ib.x + ib.width + 1.5) { o.push(i.name + ' › ' + k.name + ' +' + Math.round(kb.x + kb.width - ib.x - ib.width) + 'w'); break; } } } return o; }
 function relBottom(n, f) { return n.absoluteTransform[1][2] - f.absoluteTransform[1][2] + n.height; }
 // ---------- sections & frames ----------
 let SEC = null, CUR = { x: 80, y: 80, rowH: 0, n: 0 }, PREFIX = '', PART = '';
@@ -105,7 +121,7 @@ function getSection(name, part) {
   PREFIX = name.split(' — ')[0]; PART = part || '-';
   let s = page.children.find(n => n.type === 'SECTION' && n.name === name), y0 = 80;
   if (s) {
-    for (const k of [...s.children]) { const p = k.getPluginData('ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
+    for (const k of [...s.children]) { const p = k.getSharedPluginData('udigity.cc', 'ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
     for (const k of s.children) y0 = Math.max(y0, k.y + k.height + 160);
     OUT.updated['section ' + PREFIX] = s.id;
   } else {
@@ -120,7 +136,7 @@ function newRow() { if (CUR.n) { CUR.y += CUR.rowH + 160; CUR.x = 80; CUR.rowH =
 function frame(suffix, mobile, dark) {
   const name = SEC.name + ' — ' + suffix; const w = mobile ? 390 : 1440, h = mobile ? 844 : 900;
   if (CUR.n >= (mobile ? 6 : 4)) newRow();
-  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setPluginData('ccPart', PART);
+  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setSharedPluginData('udigity.cc', 'ccPart', PART);
   f.fills = [paint('surface/page')]; f.setExplicitVariableModeForCollection(semCol, dark ? DARK : LIGHT);
   CUR.x += w + 80; CUR.rowH = Math.max(CUR.rowH, h); CUR.n++;
   OUT.created[PREFIX + ' ' + suffix] = f.id; return f;
@@ -210,7 +226,7 @@ function fitFrame(f) {
 async function annotations(notes, w) {
   newRow();
   const a = AL(PREFIX + ' — Annotations' + (PART !== '-' ? ' (' + PART + ')' : ''), 'VERTICAL', { gap: 12, pad: 24, fill: 'surface/page', stroke: 'border/default', radius: 'xl' });
-  SEC.appendChild(a); a.setPluginData('ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
+  SEC.appendChild(a); a.setSharedPluginData('udigity.cc', 'ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
   a.setExplicitVariableModeForCollection(semCol, LIGHT);
   a.appendChild(await T(PREFIX + ' annotations (designer notes and intended interactions, not product UI)', 'ds/H3', 'text/primary'));
   for (const [type, title, body] of notes) put(a, I('Annotation', { Type: type }, { Title: title, Body: body }, 'Annotation · ' + title));
@@ -228,16 +244,17 @@ const OPEN = [
 ];
 const CLOSED = [
   { time: 'Tue 13 Oct · 15:00', name: 'Olive & Thyme Café', meta: 'Completed by call attempt 13 Oct 15:10', st: ['Success', 'Completed'] },
-  { time: 'Mon 19 Oct · 09:30', name: 'Peak Fitness Gym', meta: 'Completed by call attempt 19 Oct 09:41 (Accepted)', st: ['Success', 'Completed'] },
   { time: 'Wed 14 Oct · 12:00', name: 'Bloom Florist', meta: 'Cancelled 14 Oct · reason: phone number wrong, correction requested', st: ['Neutral', 'Cancelled'] },
 ];
+// N43-6: DEC-002 row 5 (scheduled callback visibility) is pending; Alt B is labelled, never selected
+const dec002 = () => notice('Chip', 'DEC-002', null, 'Alt B pending · callback + 48 h visibility');
 async function fuRow(parent, r, closed) {
   const row = AL('Follow-up · ' + r.name, 'HORIZONTAL', { gap: 12, pad: [10, 0], align: 'CENTER' }); topRule(row, 'border/subtle'); put(parent, row);
   const tm = await T(r.time, 'ds/Label', closed ? 'text/muted' : 'text/primary', { w: 132, name: 'Time' }); row.appendChild(tm);
   const tx = AL('Text', 'VERTICAL', { gap: 2 }); row.appendChild(tx); grow(tx);
   put(tx, await T(r.name, 'ds/Body Strong', 'text/primary', { w: 200, name: 'Business' })); put(tx, await T(r.meta, 'ds/Caption', 'text/muted', { w: 200, name: 'Meta' }));
   if (closed) row.appendChild(status(r.st[0], r.st[1]));
-  else { add(row, status('Info', 'Scheduled'), derived(r.chip[0], r.chip[1]), button('Ghost', 'Small', 'Reschedule', 'clock'), button('Ghost', 'Small', 'Complete', 'check'), button('Ghost', 'Small', 'Cancel')); }
+  else { const ch = AL('Chips', 'HORIZONTAL', { gap: 6, align: 'CENTER' }); add(ch, status('Info', 'Scheduled'), derived(r.chip[0], r.chip[1])); tx.appendChild(ch); add(row, button('Ghost', 'Small', 'Reschedule', 'clock'), button('Ghost', 'Small', 'Complete', 'check'), button('Ghost', 'Small', 'Cancel')); }
   return row;
 }
 async function viewTabs(active) {
@@ -257,14 +274,20 @@ async function listDesk(f) {
   await header(c, '1'); await toolbar(c);
   put(c, banner('Warning', 'Default', 'A reminder could not be sent', 'The 13:45 email reminder for Nova Dental Clinic failed and will be retried. The follow-up itself is unaffected.'));
   const body = AL('Body', 'HORIZONTAL', { gap: 16 }); put(c, body); fillH(body); body.counterAxisAlignItems = 'MIN';
-  const left = AL('Open follow-ups', 'VERTICAL', { gap: 12 }); body.appendChild(left); grow(left);
+  // N43-6: the list scrolls in the S3 pattern (clipped viewport + "More below" strip in reserved space, naming hidden groups)
+  const lc = AL('List column', 'VERTICAL', { gap: 8 }); body.appendChild(lc); grow(lc); fillH(lc);
+  const left = AL('Open follow-ups (viewport)', 'VERTICAL', { gap: 12, clip: true }); put(lc, left); fillH(left);
   for (const g of ['Overdue', 'Due today']) {
     const rows = OPEN.filter(r => r.g === g);
     const cs = await slotCard(left, 'Card/Section', { name: 'Group · ' + g, title: `${g} · ${rows.length}`, subtitle: g === 'Overdue' ? 'Scheduled and past due (derived) · threshold pending' : 'Scheduled for today (derived, company timezone)', gap: 0 });
+    if (g === 'Overdue') { const pr = AL('Policy row', 'HORIZONTAL', { gap: 8, pad: [4, 0, 8, 0], align: 'CENTER' }); put(cs.body, pr); pr.appendChild(dec002()); }
     for (const r of rows) await fuRow(cs.body, r);
   }
   const cl = await slotCard(left, 'Card/Section', { name: 'Group · Recently closed', title: 'Recently closed', subtitle: 'Completed and cancelled follow-ups are final', gap: 0 });
   for (const r of CLOSED) await fuRow(cl.body, r, true);
+  const lcue = await cueStrip(lc, lc.children.length, '↓ More below', 'Scroll cue · list', true);
+  clipTo(PREFIX + ' ' + f.name.split(' — ').slice(2).join(' — ') + ' list', left, lcue, k => k.name === 'Group · Recently closed' ? `Recently closed (${CLOSED.length})` : k.name.startsWith('Group · ') ? k.name.slice(8) : null);
+  if (!OUT.fit[PREFIX + ' ' + f.name.split(' — ').slice(2).join(' — ') + ' list'].hiddenBelow.length) lcue.cue.visible = false;
   const right = AL('Today agenda', 'VERTICAL', { gap: 12 }); body.appendChild(right); fixedCol(right, 358);
   const day = I('Calendar/Day', null, { Date: 'Tuesday 20 October' }, 'Calendar/Day · Today'); put(right, day);
   const ev = day.findAllWithCriteria({ types: ['INSTANCE'] }).filter(n => n.componentProperties && Object.keys(n.componentProperties).some(k => k.startsWith('Time')));
@@ -286,9 +309,10 @@ for (const [s, d] of [['Desktop — Light', false], ['Desktop — Dark', true]])
   const wrap = figma.createFrame(); wrap.name = 'Week wrapper'; wrap.fills = []; c.appendChild(wrap); wrap.resize(1148, 528);
   const wk = I('Calendar/Week', null, null, 'Calendar/Week'); wrap.appendChild(wk); wk.x = 0; wk.y = 0;
   for (const e of wk.findAllWithCriteria({ types: ['INSTANCE'] }).filter(n => n.componentProperties && Object.keys(n.componentProperties).some(k => k.startsWith('Time')))) e.visible = false;
-  for (const [d, start, dur, kind, time, title] of [[0, 16, 0.5, 'Overdue', '16:00 · overdue', 'Sunrise Bakery — callback'], [1, 10.5, 0.5, 'Follow-up', '10:30–11:00', 'Olive & Thyme Café'], [1, 14, 0.5, 'Follow-up', '14:00–14:30', 'Nova Dental Clinic'], [0, 9.5, 0.5, 'Done', '09:30 · completed', 'Peak Fitness Gym — callback']]) {
+  for (const [d, start, dur, kind, time, title] of [[0, 16, 0.5, 'Overdue', '16:00 · overdue', 'Sunrise Bakery'], [1, 10.5, 0.5, 'Follow-up', '10:30–11:00', 'Olive & Thyme Café'], [1, 14, 0.5, 'Follow-up', '14:00–14:30', 'Nova Dental Clinic'], [0, 9.5, 0.5, 'Done', '09:30 · completed', 'Peak Fitness Gym']]) {
     const e = I('Calendar/Event', { Kind: kind }, { Time: time, Title: title }, 'Event · ' + title); wrap.appendChild(e);
-    e.resize(148, Math.max(60 * dur - 4, 44)); e.x = 56 + d * 156 + 4; e.y = 48 + (start - 9) * 60 + 2;
+    e.resize(148, Math.max(60 * dur - 4, 44)); // titles kept to one line: two-line titles were clipped at 44 px (review CC-8)
+    e.x = 56 + d * 156 + 4; e.y = 48 + (start - 9) * 60 + 2;
   }
   put(c, await T('Cancelled follow-ups are not shown on the calendar. Select an event to open it; Reschedule opens SCR-CC-006.', 'ds/Caption', 'text/muted', { w: 600 }));
   fitFrame(f);
@@ -307,18 +331,18 @@ for (const [s, d] of [['Desktop — Light', false], ['Desktop — Dark', true]])
   const f = frame('Desktop — Light — Cancel with reason (D2 guard)'); await listDesk(f);
   const sc = I('Overlay/Scrim', { Size: 'Desktop' }, null, 'Overlay/Scrim'); f.appendChild(sc); sc.x = 0; sc.y = 0;
   const dl = I('Dialog', null, { Title: 'Cancel follow-up?', Description: 'Olive & Thyme Café · Tue 20 Oct 2026 · 10:30', 'Show description': true, 'Show footer': true, 'Show close': true }, 'Dialog · Cancel follow-up'); f.appendChild(dl);
-  const s = clearSlot(slotOf(dl, 'Content') || dl.findAllWithCriteria({ types: ['SLOT'] })[0]);
-  if (s) {
-    try { s.itemSpacing = 12; } catch (e) { }
-    put(s, I('Textarea', { State: 'Filled' }, { Label: 'Reason', Value: 'Owner travelling this week; manager will confirm a new time.', 'Show label': true, Required: true, 'Show helper': false, Counter: '58 / 500' }, 'Reason'));
-    put(s, banner('Info', 'Inline', 'Last open follow-up', 'Olive & Thyme Café is Needs another call. Add a replacement, or it moves to Callback to be scheduled.'));
-    put(s, I('Radio', { Selected: 'True', State: 'Default' }, { Label: 'Set "callback to be scheduled" (no time yet)' }, 'Option · marker'));
-    put(s, I('Radio', { Selected: 'False', State: 'Default' }, { Label: 'Schedule a replacement follow-up now' }, 'Option · replacement'));
-    put(s, await T('Cancelled is final; pending reminders are cancelled. The cancellation and reason are audited.', 'ds/Caption', 'text/muted', { w: 440 }));
-  } else W('Dialog content slot missing');
+  // N43-2: body built detached at the slot's inner width (stage), so the Reason textarea and the notice FILL the dialog (no 320 px fields)
+  const s = slotOf(dl, 'Content') || dl.findAllWithCriteria({ types: ['SLOT'] })[0];
+  const db = stage(f, s, 'Dialog body', 12, [
+    I('Textarea', { State: 'Filled' }, { Label: 'Reason', Value: 'Owner travelling this week; manager will confirm a new time.', 'Show label': true, Required: true, 'Show helper': false, Counter: '58 / 500' }, 'Reason'),
+    banner('Info', 'Inline', 'Last open follow-up', 'Olive & Thyme Café is Needs another call. Add a replacement, or it moves to Callback to be scheduled.'),
+    I('Radio', { Selected: 'True', State: 'Default' }, { Label: 'Set "callback to be scheduled" (no time yet)' }, 'Option · marker'),
+    I('Radio', { Selected: 'False', State: 'Default' }, { Label: 'Schedule a replacement follow-up now' }, 'Option · replacement'),
+    await T('Cancelled is final; pending reminders are cancelled. The cancellation and reason are audited.', 'ds/Caption', 'text/muted', { w: 440 })]);
+  if (db) { const ta = db.children.find(n => n.name === 'Reason'); const ov = overrun(db); OUT.fit[PREFIX + ' cancel dialog body'] = { bodyW: Math.round(db.width), reasonW: ta ? Math.round(ta.width) : null, overrun: ov }; if (ov.length) W('Cancel dialog: ' + ov.length + ' stale/overrunning layer(s), e.g. ' + ov[0] + ' (operator: re-lay-out FIXED→FILL)'); }
   const b1 = nested(dl, 'Secondary action'), b2 = nested(dl, 'Primary action');
   if (b1) prop(b1, { Label: 'Keep follow-up', 'Show icon': false }); if (b2) prop(b2, { Variant: 'Destructive', Label: 'Cancel follow-up', 'Show icon': false }); if (!b1 || !b2) W('Dialog footer buttons missing');
-  dl.x = 460; dl.y = Math.round((900 - dl.height) / 2);
+  dl.x = Math.round((1440 - dl.width) / 2); dl.y = Math.round((900 - dl.height) / 2);
   reg(PREFIX + ' cancel dialog', dl); fitFrame(f);
 }
 async function mob(suffix, dark, empty) {
@@ -331,14 +355,14 @@ async function mob(suffix, dark, empty) {
   const view = AL('List viewport', 'VERTICAL', { gap: 8, clip: true }); put(c, view); fillH(view);
   put(view, banner('Warning', 'Inline', 'Reminder not sent', 'Nova Dental Clinic 13:45 reminder failed; it will retry. Follow-up unaffected.'));
   const li = (t, m, tone, lab, ic) => { const x = I('List/Item', { State: 'Default' }, { Title: t, Meta: m, Icon: ic || 'calendar', 'Show leading': true, 'Show badge': true, 'Show chevron': true }, 'Item · ' + t); const b = nested(x, 'Badge'); if (b) prop(b, { Tone: tone, Label: lab, 'Show dot': false }); return x; };
+  const mp = AL('Policy chips', 'HORIZONTAL', { gap: 6 }); mp.layoutWrap = 'WRAP'; mp.counterAxisSpacing = 6; put(view, mp); // N43-6
+  add(mp, notice('Chip', 'No DEC ID', null, 'Overdue threshold · reminder timing'), dec002());
   put(view, await T('OVERDUE (DERIVED)', 'ds/Overline', 'text/muted'));
   put(view, li('Sunrise Bakery', 'Was due Mon 19 Oct 16:00', 'Danger', 'Overdue', 'alert-circle'));
   put(view, await T('DUE TODAY (DERIVED)', 'ds/Overline', 'text/muted'));
   put(view, li('Olive & Thyme Café', 'Today 10:30 · supplier visit follow-up', 'Warning', 'Due now'));
   put(view, li('Nova Dental Clinic', 'Today 14:00 · booking page decision', 'Info', '14:00'));
-  put(view, await T('RECENTLY CLOSED', 'ds/Overline', 'text/muted'));
-  put(view, li('Olive & Thyme Café', 'Completed 13 Oct by call attempt', 'Success', 'Completed', 'check-circle'));
-  put(view, li('Bloom Florist', 'Cancelled 14 Oct · phone number wrong', 'Neutral', 'Cancelled', 'x-circle'));
+  // minor: closed items are not listed under the "Open · 3" filter; they show under Completed / Cancelled
   const cue = await cueStrip(c, c.children.length, '↓ More below', 'Scroll cue · mobile list', true);
   clipTo(PREFIX + ' ' + suffix + ' list', view, cue, k => k.name.startsWith('Item · ') ? k.name.slice(7) : null);
   if (!OUT.fit[PREFIX + ' ' + suffix + ' list'].hiddenBelow.length) cue.cue.visible = false;
@@ -350,6 +374,8 @@ await annotations([
   ['Note', 'Follow-up states', 'Scheduled, Completed and Cancelled are the only states (SM-FOLLOWUP-001). Due today and Overdue are derived classifications (dashed chips), not states. Completed and Cancelled are final; a new contact need creates a new follow-up.'],
   ['Interaction', 'Row actions', 'Reschedule opens SCR-CC-006 (new time + reason, history kept). Complete asks for a completion note (or happens through a linked call attempt). Cancel requires a reason; the D2 guard runs when it is the last open follow-up of a Needs another call business.'],
   ['Note', 'Reminders (D5)', 'A failed reminder is flagged and retried; it never changes or blocks the follow-up. Reminder lead time, overdue threshold and escalation have no DEC ID (pending).'],
+  ['Note', 'Pending policy (N43-6)', 'DEC-002 row 5: how long a scheduled callback keeps a business visible after day 15. Alt B (exempt until callback date-time + 48 h) is labelled as pending beside the Overdue group on desktop and mobile; Alt A is not ruled out and nothing is decided. Overdue threshold and reminder timing: No DEC ID (pending), labelled on desktop and mobile.'],
+  ['Note', 'List scroll (S3)', 'The desktop list scrolls in a clipped viewport; the strip beneath it names the hidden groups, e.g. "More below · Recently closed (2)". Nothing overlaps content.'],
   ['Note', 'Scope', 'Call Center sees own follow-ups; the Owner sees all with an agent filter (C1). No reservation is needed to schedule, reschedule, complete or cancel outside a call. Rejected businesses cannot get new or rescheduled follow-ups.'],
   ['Interaction', 'Mobile', 'List is the default; tap a row for the action sheet (Reschedule / Complete / Cancel). View switch and chips sit in 44 px hit areas.'],
 ]);

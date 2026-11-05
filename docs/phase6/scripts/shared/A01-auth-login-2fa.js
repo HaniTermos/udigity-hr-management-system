@@ -151,6 +151,8 @@ async function badge(label, tone, size, dot) { return I('Badge/Status', { Tone: 
 async function derived(label, amber) { return I('Chip/Derived', { Tone: amber ? 'Amber' : 'Neutral' }, { Label: label }, 'Derived · ' + label); }
 async function btn(variant, label, size, state, ic, layer) { return I('Button', { Variant: variant, Size: size || 'Medium', State: state || 'Default' }, { Label: label, 'Show icon': !!ic, Icon: ic || 'check' }, layer || label); }
 async function link(label, size, ic) { return I('Link', { Size: size || 'Small', State: 'Default' }, { Label: label, 'Show icon': !!ic, Icon: ic || 'arrow-right' }, 'Link · ' + label); }
+// Fix R40-08: standalone text links get a ≥44 px hit area (layout wrapper with minHeight 44, link centred; the instance itself is never resized).
+async function tapLink(label, size, ic) { const r = row('Hit · ' + label, 0); r.minHeight = 44; add(r, [await link(label, size, ic)]); return r; }
 async function banner(tone, size, title, body, layer) { return I('Banner', { Tone: tone, Size: size || 'Inline' }, { Title: title, Body: body, 'Show title': !!title, 'Show action': false, 'Show close': false }, layer || 'Banner · ' + tone); }
 async function toast(tone, title, body) { return I('Toast', { Tone: tone }, { Title: title, Body: body || ' ', 'Show body': !!body }, 'Toast · ' + title.slice(0, 24)); }
 async function kv(k, v, type) { return I('List/KeyValue', { Type: type || 'Default' }, { Key: k, Value: v }, 'KV · ' + k); }
@@ -401,7 +403,7 @@ async function caption(t) { return TX(t, 'ds/Overline', 'text/muted', { name: 'S
     const filled = st && st !== 'Validation error';
     k.push(st === 'Validation error' ? await email('Error', 'maya.khoury@udigity', 'Enter a valid email address, e.g. name@udigity.example.') : await email(filled ? (st === 'Loading' ? 'Disabled' : 'Filled') : 'Default', filled ? 'maya.khoury@udigity.example' : null));
     k.push(st === 'Validation error' ? await password('Error', 'Enter your password.') : await password(st === 'Loading' ? 'Disabled' : st ? 'Default' : 'Focus'));
-    const fr = row('Forgot row', 8, { justify: 'MAX' }); add(fr, [await link('Forgot password?')]); k.push(fr);
+    const fr = row('Forgot row', 8, { justify: 'MAX' }); add(fr, [await tapLink('Forgot password?')]); k.push(fr);
     k.push(await btn('Primary', st === 'Loading' ? 'Signing in…' : 'Sign in', 'Large', st === 'Loading' ? 'Loading' : 'Default', null, 'Primary action'));
     if (st === 'Invalid credentials') k.push(await impl('Lockout and throttle wording (no DEC ID). Both fields stay neutral; the message never says which field is wrong; the password is cleared.'));
     if (st === 'Deactivated account') k.push(await impl('Generic wording is Proposed (WF-AUTH-001); it never confirms whether the email exists.', 'Inline', 'Proposed'));
@@ -463,7 +465,7 @@ async function caption(t) { return TX(t, 'ds/Overline', 'text/muted', { name: 'S
     k.push(await code(st === 'Wrong or expired code' ? 'Error' : st ? 'Default' : 'Focus', 'This code is wrong or has expired. Enter the current code.'));
     k.push(await btn('Primary', st === 'Verification failure' ? 'Try again' : 'Verify', 'Large', 'Default', null, 'Primary action'));
     const lr = row('Secondary row', 16, { justify: 'SPACE_BETWEEN' });
-    add(lr, [await link('Lost your second factor?'), await btn('Ghost', 'Sign out', 'Medium', 'Default', 'log-out', 'Sign out')]);
+    add(lr, [await tapLink('Lost your second factor?'), await btn('Ghost', 'Sign out', 'Medium', 'Default', 'log-out', 'Sign out')]);
     k.push(lr);
     if (st === 'Wrong or expired code') k.push(await impl('Attempt threshold is an implementation decision: after too many wrong codes the session ends (WF-AUTH-001).'));
     if (!st || st === 'Verification failure') k.push(await policy('Block', 'R-11', 'Not selected. R11-a: nothing is available until 2FA is complete. R11-b: only admin actions wait; My Day check-in is allowed.'));

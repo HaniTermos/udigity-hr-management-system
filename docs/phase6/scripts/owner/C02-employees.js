@@ -1,6 +1,7 @@
-// C02-employees.js — Owner Agent — Phase 6 Batch C — page 41 HiFi Owner/Admin (96:3)
-// SCR-OWN-002 Employees: Desktop Light + Dark primary; states Deactivated/assignee-inactive, Empty, Loading.
-// Idempotent: section found by name is emptied and rebuilt (position kept); created at the stack bottom (+400) only once.
+// C02-employees.js — Owner Agent — Phase 6 Batch C — page 41 HiFi Owner/Admin (96:3). Run with use_figma.
+// SCR-OWN-002 Employees: Light + Dark; Deactivated/assignee-inactive, Empty, Loading.
+// Idempotent: the section (found by name) is emptied and rebuilt in place; it is positioned only when first created (stack bottom + 400).
+// Returns { created, updated, removed, fit, warnings }.
 const PAGE_ID = '96:3';
 const SEM_ID = 'VariableCollectionId:40:3', LIGHT = '40:1', DARK = '40:2';
 const ID = {
@@ -23,7 +24,7 @@ const IC = {
   edit: '44:263', trash: '44:268', 'file-text': '44:288', refresh: '44:293', target: '44:298', hourglass: '44:303'
 };
 const NAV = ['Dashboard', 'Attendance', 'Employees', 'Targets & Work Lists', 'Businesses', 'Correction Requests', 'Categories', 'Calling Assignments', 'Follow-ups & Calendar', 'Deals & Meetings', 'Projects', 'Reports & Exports', 'Audit Log', 'Delivery Monitor', 'Settings', 'My Day (check in)', 'My Profile'];
-const page = await figma.getNodeByIdAsync(PAGE_ID);
+const page = await live(PAGE_ID);
 if (!page || page.type !== 'PAGE') throw new Error('Page ' + PAGE_ID + ' not found');
 await figma.setCurrentPageAsync(page);
 await Promise.all(['Regular', 'Medium', 'Semi Bold', 'Bold'].map(s => figma.loadFontAsync({ family: 'Inter', style: s })));
@@ -86,10 +87,15 @@ async function T(chars, style, color, o) {
 }
 function add(p, ...kids) { for (const k of kids.flat()) if (k) p.appendChild(k); return p; }
 function fillW(n) { try { if (n.type === 'TEXT') n.textAutoResize = 'HEIGHT'; n.layoutSizingHorizontal = 'FILL'; } catch (e) { warn('fillW ' + n.name + ': ' + e.message); } return n; }
-function grow(n) { try { n.layoutGrow = 1; } catch (e) { } return n; }
+function grow(n) { try { n.layoutGrow = 1; if (n.name === 'Spacer' && 'children' in n && !n.children.length) n.resize(n.width, 1); } catch (e) { } return n; } // fit: empty spacers were 100 px tall
 function addF(p, ...kids) { for (const k of kids.flat()) if (k) { p.appendChild(k); fillW(k); } return p; }
+// O-9 (OP-11 C11 "node … does not exist" in cuts): never trust a cached node or an instance sub-layer id (I…;…). Swaps,
+// setProperties and relayout replace sub-layers, so every lookup is guarded, re-queried right before use, and removed/missing nodes are skipped.
+function ok(n) { try { return !!n && !n.removed; } catch (e) { return false; } }
+async function live(id) { if (!id) return null; try { const n = await figma.getNodeByIdAsync(id); return ok(n) ? n : null; } catch (e) { return null; } }
+function ids(root, pred) { try { return ok(root) ? root.findAll(n => { try { return pred(n); } catch (e) { return false; } }).map(n => n.id) : []; } catch (e) { return []; } }
 const NODES = {};
-async function node(id) { if (!NODES[id]) { NODES[id] = await figma.getNodeByIdAsync(id); if (!NODES[id]) throw new Error('DS node not found: ' + id); } return NODES[id]; }
+async function node(id) { let n = NODES[id]; if (!ok(n)) { n = await live(id); if (!n) throw new Error('DS node not found: ' + id); NODES[id] = n; } return n; } // O-9: re-queried if removed
 const pv = name => Object.fromEntries(name.split(',').map(s => s.split('=').map(x => x.trim())));
 function setP(inst, props) {
   const cp = inst.componentProperties, o = {};
@@ -193,7 +199,12 @@ async function progress(label, value, ratio, tone) {
   const set = await node(ID.progress);
   const axes = set.type === 'COMPONENT_SET' ? set.componentPropertyDefinitions : {};
   const pct = Math.max(0, Math.min(100, Math.round(ratio * 20) * 5));
-  if (axes.Percent) return I(ID.progress, { Tone: tone || 'Brand', Percent: String(pct) }, { Label: label, Value: value, 'Show labels': true }, 'Progress · ' + label);
+  if (axes.Percent) {
+    const pb = await I(ID.progress, { Tone: tone || 'Brand', Percent: String(pct) }, { Label: label, Value: value, 'Show labels': true }, 'Progress · ' + label);
+    // DS-13 Percent variants: Label/Value texts are not bound to the props (Component request) — set the texts directly (text override only)
+    for (const [nm, ch] of [['Label', label], ['Value', value]]) { const t = pb.findOne(n => n.type === 'TEXT' && n.name === nm); if (t && t.characters !== ch) { const fs = t.fontName === figma.mixed ? t.getRangeAllFontNames(0, t.characters.length) : [t.fontName]; for (const f of fs) await figma.loadFontAsync(f); t.characters = ch; } }
+    return pb;
+  }
   warn('Progress/Bar has no Percent axis yet (P5): token-drawn bar used for ' + label);
   const g = AL('Progress · ' + label, 'VERTICAL', { gap: 6 });
   const top = AL('Labels', 'HORIZONTAL', { gap: 8 }); add(g, top); fillW(top);
@@ -221,7 +232,7 @@ async function cell(spec, w) {
   // custom: spec.c = array of nodes (or async fn) laid out in a 56-high cell, 12 px side padding, wrap allowed
   const f = AL('Cell · custom', spec.v ? 'VERTICAL' : 'HORIZONTAL', { gap: spec.v ? 2 : 6, pad: [0, 12], align: spec.v ? 'MIN' : 'CENTER', w, h: 56 });
   if (spec.v) f.primaryAxisAlignItems = 'CENTER';
-  const kids = typeof spec.c === 'function' ? await spec.c() : spec.c; add(f, kids);
+  const kids = typeof spec.c === 'function' ? await spec.c() : spec.c; add(f, kids); if (spec.fill) kids.forEach(fillW);
   f.clipsContent = true;
   return f;
 }
@@ -252,24 +263,25 @@ async function getSec(name) {
 function fitSec(sec) { let mx = 0, my = 0; for (const c of sec.children) { mx = Math.max(mx, c.x + c.width); my = Math.max(my, c.y + c.height); } sec.resizeWithoutConstraints(mx + 80, my + 80); OUT.fit.section = { w: Math.round(sec.width), h: Math.round(sec.height) }; }
 async function caption(sec, text, x, y) { const c = await T(text, 'ds/H4', 'text/secondary', { name: 'Caption · ' + text.slice(0, 60) }); sec.appendChild(c); c.x = x; c.y = y - 40; return c; }
 // desktop frame + Owner shell; active = nav label
-async function desk(sec, name, x, y, active, dark) {
+async function desk(sec, name, x, y, active, dark, who) {
+  who = who || ['Owner', 'Rana Haddad', 'Owner/Admin', 'RH', 'Checked in · 08:52'];
   const f = figma.createFrame(); f.name = name; sec.appendChild(f); f.resize(1440, 900); f.x = x; f.y = y; f.clipsContent = true; fill(f, 'surface/page');
   f.setExplicitVariableModeForCollection(semCol, dark ? DARK : LIGHT);
-  const sh = await I(ID.shell, { Role: 'Owner' }, null, 'Shell/Desktop · Owner'); f.appendChild(sh); sh.x = 0; sh.y = 0;
+  const sh = await I(ID.shell, { Role: who[0] }, null, 'Shell/Desktop · ' + who[0]); f.appendChild(sh); sh.x = 0; sh.y = 0;
   const top = nested(sh, 'TopBar');
   if (top) {
-    setP(top, { Name: 'Rana Haddad', Role: 'Owner/Admin', 'Show attendance': true, 'Show search': true });
-    const at = nested(top, 'Attendance'); if (at) setP(at, { Label: 'Checked in · 08:52' });
-    const se = nested(top, 'Search'); if (se) setP(se, { Placeholder: 'Search businesses and employees', Value: '' });
+    setP(top, { Name: who[1], Role: who[2], 'Show attendance': true, 'Show search': true });
+    const at = nested(top, 'Attendance'); if (at) setP(at, { Label: who[4] });
+    const se = nested(top, 'Search'); if (se) setP(se, { Placeholder: who[0] === 'Owner' ? 'Search businesses and employees' : 'Search assigned businesses', Value: '' });
     const bell = nested(top, 'Notifications'); if (bell) setP(bell, { 'Show dot': true });
-    const av = nested(top, 'Avatar'); if (av) setP(av, { Initials: 'RH' });
+    const av = nested(top, 'Avatar'); if (av) setP(av, { Initials: who[3] });
   } else warn('TopBar not found');
   const sb = nested(sh, 'Sidebar');
-  if (sb) for (const l of NAV) {
+  if (sb && who[0] === 'Owner') for (const l of NAV) {
     const it = nested(sb, 'Nav/Item · ' + l); if (!it) { warn('Nav item not found: ' + l); continue; }
     setP(it, { Label: l, State: l === active ? 'Active' : 'Default' });
     if (l === 'Delivery Monitor') { setP(it, { 'Show badge': true }); const bd = nested(it, 'Badge'); if (bd) setP(bd, { Count: '4' }); }
-  } else warn('Sidebar not found');
+  } else if (!sb) warn('Sidebar not found');
   const cf = AL('Content', 'VERTICAL', { gap: 16, pad: 24, clip: true }); f.appendChild(cf); cf.resize(1200, 836); cf.x = 240; cf.y = 64;
   cf.primaryAxisSizingMode = 'FIXED'; cf.counterAxisSizingMode = 'FIXED';
   const gs = GS['ds/Grid/Desktop content 12-col']; if (gs) await cf.setGridStyleIdAsync(gs.id);
@@ -288,6 +300,7 @@ function col(name, gap) { return AL(name, 'VERTICAL', { gap: gap == null ? 8 : g
 async function surface(kids, o) {
   o = o || {};
   const c = await I(o.inset ? ID.inset : ID.surface, null, null, o.name || 'Surface');
+  try { if (c.layoutMode !== 'NONE') c.primaryAxisSizingMode = 'AUTO'; } catch (e) { }
   const slot = c.findOne(n => n.type === 'SLOT');
   if (!slot) { warn('No slot in surface'); return c; }
   for (const k of [...slot.children]) k.remove();
@@ -350,7 +363,7 @@ async function person(ini, name, meta) {
   add(st, await T(name, 'ds/Body Strong', 'text/primary', { name: 'Name' }), await T(meta, 'ds/Caption', 'text/muted', { name: 'Email', w: 220, truncate: 1 }));
   return [await avatar(ini), st];
 }
-const COLS = [['Employee', 300], ['Role', 150], ['Account', 140], ['Sessions', 170], ['Open work', 172], ['Flags', 164], ['', 56]];
+const COLS = [['Employee', 260], ['Role', 150], ['Account', 140], ['Sessions', 190], ['Open work', 192], ['Flags', 164], ['', 56]]; // review-41 minor: Sessions + Open work +20 each (sublines truncated)
 async function rows(v) {
   const off = v === 'deactivated';
   return [
@@ -385,7 +398,7 @@ async function build(name, x, y, dark, v) {
     const a = await T('Account state (Active / Deactivated) is separate from sign-in sessions. Deactivating revokes every session at once; open work stays attached and is flagged “assignee inactive” until you reassign it in its own screen.', 'ds/Caption', 'text/muted', { name: 'Account note', w: 560 });
     add(notes, a, await notice('Inline', 'No DEC ID', 'Open work of a deactivated employee: you decide per item; no automatic reassignment.'));
     addF(cf, notes); grow(a); fillW(notes.children[1]);
-    if (off) addF(cf, await banner('Warning', 'Omar Nassar is deactivated · 40 open items need a decision', '37 calling assignments, 2 follow-ups and 1 open attendance session stay attached to Omar and are flagged. Reassign them in Calling assignments, Follow-ups and Corrections & review.', { action: 'Open calling assignments' }));
+    if (off) addF(cf, await banner('Warning', 'Omar Nassar is deactivated · 40 open items need a decision', '37 calling assignments, 2 follow-ups and 1 open attendance session stay attached to Omar and are flagged. Reassign them in Calling assignments (follow-ups are decided in the reassignment check) and resolve the session in Corrections & review.', { action: 'Open calling assignments' }));
   }
   fit(f); return f;
 }

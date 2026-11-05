@@ -1,0 +1,26 @@
+# Isolated, throwaway PostgreSQL for automated tests ONLY.
+# - Host port 55432 (never 5432: the local PostgreSQL 17 Windows service is left alone).
+# - Data lives on tmpfs: `down` (or a Docker restart) wipes everything.
+# - The password below is a throwaway test value. It protects nothing and must never be reused.
+name: udigity-test
+
+services:
+  test-db:
+    image: postgres:17-alpine
+    container_name: udigity-test-db
+    environment:
+      POSTGRES_DB: udigity_test
+      POSTGRES_USER: udigity_test
+      POSTGRES_PASSWORD: udigity_test_throwaway
+      TZ: UTC
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data:rw,size=512m
+    # Faster, non-durable settings: fine for a disposable test database.
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U udigity_test -d udigity_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

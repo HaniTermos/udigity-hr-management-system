@@ -188,7 +188,7 @@ function shell(frame, role, active, query) {
   } else W.push('TopBar not found');
   const sb = nested(sh, 'Sidebar');
   if (sb) {
-    for (const l of NAVS[role][1]) { const it = nested(sb, 'Nav/Item · ' + l); if (it) props(it, { Label: l, State: l === active ? 'Active' : 'Default' }); else W.push('nav item missing: ' + l); }
+    for (const l of NAVS[role][1]) { const it = nested(sb, 'Nav/Item · ' + l); if (it) props(it, { Label: l.replace(/ \[DEC-\d+\]$/, ''), State: l === active ? 'Active' : 'Default' }); else W.push('nav item missing: ' + l); }
     const secs = sb.findAll(n => n.type === 'INSTANCE' && n.name === 'Nav/SectionLabel');
     NAVS[role][0].forEach((l, i) => { if (secs[i]) props(secs[i], { Label: l }); });
     if (role === 'Call Center') props(nested(nested(sb, 'Nav/Item · Calling Queue'), 'Badge'), { Count: '7' });

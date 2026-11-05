@@ -1,0 +1,18 @@
+# gitleaks configuration (CI "Secret scan" job). Default rules stay on; only the exact values below are
+# allowed, each reviewed 2026-10-28 as not a credential. Add a value here only after the same review.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Reviewed non-secrets"
+regexTarget = "secret"
+regexes = [
+  # Figma file key of the design file (identifies the file; access needs a Figma account), docs/phase7 scripts.
+  '''^GNrhb3DWa6mIhEX6F4Nmvw$''',
+  # Example Figma file keys in the vendored figma-implement-design skill docs.
+  '''^kL9xQn2VwM8pYrTb4ZcHjF$''',
+  '''^pR8mNv5KqXzGwY2JtCfL4D$''',
+  # Test fixtures: a fixed idempotency-key UUID and a sequential dummy TOTP encryption key.
+  '''^7f9c2ba4-e88f-41b3-9c3a-1f0b5b1a1a11$''',
+  '''^0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef$''',
+]

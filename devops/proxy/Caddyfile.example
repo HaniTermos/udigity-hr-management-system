@@ -1,0 +1,36 @@
+# Outer proxy = Caddy on the host (systemd service or docker). Append to the existing Caddyfile, then `caddy validate` and `caddy reload`.
+# Caddy obtains and renews the certificate for this host by itself (automatic HTTPS) and redirects http -> https.
+# If Caddy runs in a Docker container, 127.0.0.1 is the container: use the host's address instead (host.docker.internal on Docker Desktop;
+# on Linux add `extra_hosts: ["host.docker.internal:host-gateway"]` to the Caddy service) and set HTTP_BIND in /opt/udigity/.env to
+# an address the Caddy container can reach (never 0.0.0.0; the bridge gateway, e.g. 172.17.0.1, is the usual choice). The inner nginx trusts
+# X-Forwarded-For from 172.16.0.0/12, which covers Docker networks.
+
+hrsystem.udigity.com {
+  encode zstd gzip
+  # Gap 3 (V14.2-a): reset/invitation links carry ?token=<secret>; blank token/code/key in the logged URI and drop the Referer.
+  # Validate with `caddy validate` (the filter encoder is part of Caddy 2.x core).
+  log {
+    output file /var/log/caddy/hrsystem.access.log
+    format filter {
+      wrap json
+      fields {
+        request>uri query {
+          replace token REDACTED
+          replace code REDACTED
+          replace key REDACTED
+        }
+        request>headers>Referer delete
+        request>headers>Cookie delete
+        request>headers>Authorization delete
+      }
+    }
+  }
+  reverse_proxy 127.0.0.1:8080 {
+    # Caddy keeps the original Host header by default (the inner nginx needs hrsystem.udigity.com).
+    header_up X-Forwarded-For {remote_host}      # overwrite with the TCP peer instead of appending to a client-supplied list
+    header_up X-Forwarded-Proto https
+    transport http {
+      read_timeout 60s
+    }
+  }
+}

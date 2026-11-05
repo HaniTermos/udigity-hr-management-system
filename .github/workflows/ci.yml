@@ -1,0 +1,238 @@
+name: CI
+
+# Free-plan budget (private repo, 2,000 min/month): every PR push runs the light jobs (secret scan + verify,
+# ~8 min). The heavy jobs (Docker build, E2E, prod smoke) run on pushes to main, on "Run workflow"
+# (workflow_dispatch) and on PRs carrying the `full-ci` label. Security checks are unchanged.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  secrets-scan:
+    name: Secret scan (gitleaks)
+    # `labeled` fires for every label; only the full-ci label (or a real push) should start a run.
+    if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: gitleaks
+        # CLI via the official image (the gitleaks-action needs a licence for org repos).
+        run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.2@sha256:0e99e8821643ea5b235718642b93bb32486af9c8162c8b8731f7cbdc951a7f46 git /repo --redact --verbose
+
+  verify:
+    name: Typecheck, lint, test, build, audit
+    if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    services:
+      # Throwaway test database (CI only). Same names as docker-compose.test.yml.
+      postgres:
+        image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+        env:
+          POSTGRES_DB: udigity_test
+          POSTGRES_USER: udigity_test
+          POSTGRES_PASSWORD: udigity_test_throwaway
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U udigity_test -d udigity_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-fund
+
+      - name: Backend typecheck
+        run: npm run typecheck --workspace=backend
+
+      - name: Frontend typecheck (tsc --noEmit)
+        run: npm run typecheck --workspace=frontend
+
+      - name: Backend lint
+        run: npm run lint --workspace=backend
+
+      - name: Frontend lint
+        run: npm run lint --workspace=frontend
+
+      - name: Backend tests (incl. DB-backed API tests on the postgres:17 service)
+        env:
+          NODE_ENV: test
+          TEST_DATABASE_URL: postgres://udigity_test:udigity_test_throwaway@127.0.0.1:55432/udigity_test
+        run: npm run test --workspace=backend
+
+      - name: Frontend tests
+        run: npm run test --workspace=frontend
+
+      - name: Backend build
+        run: npm run build --workspace=backend
+
+      - name: Worker build output present
+        # The worker container runs `node dist/worker.js`; fail early if tsc did not emit it.
+        run: test -f backend/dist/worker.js
+
+      - name: Frontend build
+        env:
+          INTERNAL_API_URL: http://backend:5000
+        run: npm run build --workspace=frontend
+
+      - name: Shell scripts parse and shellcheck
+        run: |
+          for f in devops/scripts/*.sh devops/backup/*.sh devops/postgres/init/*.sh e2e/scripts/*.sh; do bash -n "$f"; done
+          shellcheck --severity=error devops/scripts/*.sh devops/backup/*.sh devops/postgres/init/*.sh
+
+      - name: check-env (valid dummy set passes; examples and DB-role mistakes are rejected)
+        run: bash devops/scripts/check-env-selftest.sh
+
+      - name: Security audit (high and critical, all dependencies) - blocking
+        run: npm audit --audit-level=high
+
+  docker:
+    name: Docker images (build only, no push)
+    runs-on: ubuntu-24.04
+    needs: verify
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build backend image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: devops/backend.Dockerfile
+          push: false
+          tags: udigity-backend:ci
+          load: true
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+      - name: Build frontend image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: devops/frontend.Dockerfile
+          push: false
+          tags: udigity-frontend:ci
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+      - name: Worker entrypoint exists in the backend image
+        # The worker service reuses the backend image (docker-compose.prod.yml, command node dist/worker.js).
+        run: docker run --rm --entrypoint sh udigity-backend:ci -c 'test -f dist/worker.js && test -f dist/index.js'
+      - name: Validate compose files
+        run: |
+          mkdir -p devops/env
+          for f in backend frontend postgres migrate backup; do cp devops/env/$f.env.example devops/env/$f.env; done
+          export UDIGITY_TAG=ci
+          docker compose -f docker-compose.prod.yml config -q
+          docker compose -f docker-compose.test.yml config -q
+          docker compose config -q
+
+  e2e:
+    name: E2E (Playwright, built app, postgres service)
+    runs-on: ubuntu-24.04
+    needs: verify
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    timeout-minutes: 40
+
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+        env:
+          POSTGRES_DB: udigity_test
+          POSTGRES_USER: udigity_test
+          POSTGRES_PASSWORD: udigity_test_throwaway
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U udigity_test -d udigity_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            e2e/package-lock.json
+
+      - name: Install app
+        run: npm ci --no-fund
+
+      - name: Install e2e
+        working-directory: e2e
+        run: npm ci --no-fund
+
+      - name: Install Playwright browser
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: Reset DB, seed, start backend and built frontend, run the suite
+        env:
+          CI: "true"
+          E2E_DB_URL: postgres://udigity_test:udigity_test_throwaway@127.0.0.1:55432/udigity_test_e2e
+          E2E_LOG_DIR: ${{ runner.temp }}
+        run: bash e2e/scripts/run-e2e.sh
+
+      - name: Upload report and server logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+            ${{ runner.temp }}/e2e-*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  prod-smoke:
+    name: Production stack smoke test (docker compose, own project)
+    runs-on: ubuntu-24.04
+    needs: verify
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: prod-smoke.sh (builds the images; edge, real-IP, token-redaction, DB-role and BACKUP service checks with a throwaway age key; tears down)
+        run: bash devops/scripts/prod-smoke.sh

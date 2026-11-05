@@ -271,32 +271,7 @@ function mobFooter(f, h) {
   f.appendChild(ft); ft.x = 0; ft.y = 844 - h; ft.resize(390, h); ft.layoutSizingHorizontal = 'FIXED'; ft.layoutSizingVertical = 'FIXED';
   rule(ft, true, false); return ft;
 }
-// ---- overlays (Dialog / Drawer fill their native slots)
-async function scrim(f, mobile) { const s = await I('Overlay/Scrim', { Size: mobile ? 'Mobile' : 'Desktop' }, {}, 'Scrim'); f.appendChild(s); s.x = 0; s.y = 0; return s; }
-async function dialog(f, title, desc, kids, sec, pri, w) {
-  const d = await I('Dialog', null, { Title: title, Description: desc || ' ', 'Show description': !!desc, 'Show footer': !!(sec || pri), 'Show close': true }, 'Dialog · ' + title);
-  f.appendChild(d); if (w) d.resize(w, d.height);
-  const slot = d.findOne(n => n.type === 'SLOT');
-  if (slot) { for (const ch of [...slot.children]) ch.remove(); add(slot, kids, true); } else warn('Dialog slot not found');
-  const s = nested(d, 'Secondary action'), p = nested(d, 'Primary action');
-  if (s) { if (sec) setProps(s, Object.assign({ 'Show icon': false }, sec)); else s.visible = false; } else warn('Dialog secondary not found');
-  if (p) { if (pri) setProps(p, Object.assign({ 'Show icon': false }, pri)); else p.visible = false; } else warn('Dialog primary not found');
-  d.x = Math.round((1440 - d.width) / 2); d.y = Math.max(24, Math.round((900 - d.height) / 2));
-  if (d.height > 852) OUT.overflow.push(f.name + ': dialog taller than frame (' + Math.round(d.height) + ')');
-  return d;
-}
-async function drawer(f, title, sub, kids, left, right) {
-  const d = await I('Drawer', null, { Title: title, Subtitle: sub || ' ', 'Show subtitle': !!sub }, 'Drawer · ' + title);
-  f.appendChild(d); d.x = 960; d.y = 0;
-  const slots = d.findAll(n => n.type === 'SLOT');
-  if (slots.length < 2) { warn('Drawer slots not found'); return d; }
-  for (const s of slots) for (const ch of [...s.children]) ch.remove();
-  add(slots[0], kids, true);
-  if (left) add(slots[1], [left]);
-  const grp = row('Footer actions', 8, { justify: 'MAX' }); add(slots[1], [grp]); grow(grp); add(grp, right || []);
-  FITS.push([f.name + ' › drawer', slots[0]]);
-  return d;
-}
+// ---- overlays: none on this script's screens (X-10: unused scrim/dialog/drawer helpers dropped; D02 holds the staged versions)
 // ---- auth layout (signed-out screens: S1 visual direction)
 async function authDesk(f, kids) {
   f.layoutMode = 'HORIZONTAL'; f.primaryAxisSizingMode = 'FIXED'; f.counterAxisSizingMode = 'FIXED'; f.itemSpacing = 0;
@@ -385,15 +360,17 @@ const NOTES = [
   ['Task due tomorrow: Booking flow', 'Glow Beauty Salon — Booking website · today 09:02', 'board', ['Unread', 'Brand']],
   ['Client dependency on Content upload', 'Glow Beauty Salon — Booking website · Mon 19 Oct 16:40', 'alert-triangle', null],
   ['Deal closed: Glow Beauty Salon — Booking website', 'Rana Haddad · Fri 16 Oct 11:05', 'briefcase', null],
-  ['Wireframes approved by the client', 'Glow Beauty Salon — Booking website · Wed 14 Oct 15:30', 'check-circle', null]
+  ['Wireframes approved by the client', 'Booking website · Wed 14 Oct 15:30', 'check-circle', null]
 ];
-async function filterRow(wrap) { const r = row('Filters', 8, wrap ? { wrap: true } : {}); add(r, [await I('Chip/Filter', { State: 'Active' }, { Label: 'All' }, 'Filter · All'), await I('Chip/Filter', { State: 'Default' }, { Label: 'Unread · 2' }, 'Filter · Unread')]); return r; }
+async function filterRow(wrap, unread) { const r = row('Filters', 8, wrap ? { wrap: true } : {}); add(r, [await I('Chip/Filter', { State: 'Active' }, { Label: 'All' }, 'Filter · All'), await I('Chip/Filter', { State: 'Default' }, { Label: 'Unread · ' + (unread == null ? 2 : unread) }, 'Filter · Unread')]); return r; }
 async function noteList(mob) { const c = await card('Card/Surface', 'Notification list', {}, 0); const k = []; for (const n of NOTES) k.push(await li(n[0], n[1], n[2], n[3], !mob)); fillBody(c, k); return c.node; }
 async function notifDesk(f, st) {
-  await deskShell(f, 'Developer', null);
+  const sh = await deskShell(f, 'Developer', null);
+  // R45-01: Empty state has no unread items — bell dot off, Unread count 0.
+  if (st === 'Empty') { const tb = nested(sh, 'TopBar'); if (tb) await nestedProps(tb, 'Notifications', { 'Show dot': false }); }
   const c = await deskContent(f, 16);
   await pageHead(c, 'Notifications', 'Updates about your deals, meetings and tasks', st === 'Empty' ? null : await link('Mark all as read', 'Medium', 'check'));
-  if (st === 'Empty') { add(c, [await filterRow()]); add(c, [await stateBlock('Empty', 'Page', 'You’re all caught up', 'New notifications about your work will appear here.')]); return; }
+  if (st === 'Empty') { add(c, [await filterRow(false, 0), await chips([['AR-14', 'Read flag; access re-checked'], ['No DEC ID', 'Timing & recipients']])]); const mid = AL('Centre', 'VERTICAL', { align: 'CENTER', pad: [48, 0] }); add(c, [mid], true); add(mid, [await stateBlock('Empty', 'Page', 'You’re all caught up', 'New notifications about your work will appear here.')]); return; }
   add(c, [await filterRow()]);
   if (st === 'Target no longer accessible') add(c, [await banner('Info', 'Default', 'That item is no longer available to you', 'Access changed after the notification was sent, so it was removed from your list. Nothing about it is shown.')], true);
   const pr = AL('Policy row', 'HORIZONTAL', { gap: 16 });

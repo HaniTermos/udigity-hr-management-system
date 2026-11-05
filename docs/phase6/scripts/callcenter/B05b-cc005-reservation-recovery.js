@@ -74,7 +74,7 @@ async function T(chars, style, color, o = {}) {
 function add(p, ...k) { for (const x of k) if (x) p.appendChild(x); return p; }
 function fillW(n) { if (n.type === 'TEXT') n.textAutoResize = 'HEIGHT'; n.layoutSizingHorizontal = 'FILL'; return n; }
 function fillH(n) { n.layoutSizingVertical = 'FILL'; return n; }
-function grow(n) { n.layoutGrow = 1; return n; }
+function grow(n) { try { if (n.name === 'Spacer' && 'children' in n && !n.children.length) { n.resize(n.width, 1); n.layoutSizingVertical = 'FIXED'; } n.layoutGrow = 1; } catch (e) { W('grow ' + n.name + ': ' + e.message); } return n; } // fit: empty spacers were 100 px tall (CC-007 Owner view Content +18)
 function fixedCol(n, w) { n.resize(w, 100); n.layoutSizingHorizontal = 'FIXED'; return n; }
 function put(p, n) { p.appendChild(n); fillW(n); return n; }
 function notice(size, dec, body, title) { const n = I('Notice/Policy pending', { Size: size, Tone: 'Policy pending' }, size === 'Chip' ? { DEC: dec } : { DEC: dec, Body: body }, 'Policy · ' + dec); if (title) layer(n, 'Title', title); return n; }
@@ -103,8 +103,8 @@ function getSection(name, part) {
   PREFIX = name.split(' — ')[0]; PART = part || '-';
   let s = page.children.find(n => n.type === 'SECTION' && n.name === name), y0 = 80;
   if (s) {
-    for (const k of [...s.children]) { const p = k.getPluginData('ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
-    for (const k of s.children) y0 = Math.max(y0, k.y + k.height + 160);
+    for (const k of [...s.children]) { const p = k.getSharedPluginData('udigity.cc', 'ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
+    for (const k of s.children) if ((k.getSharedPluginData('udigity.cc', 'ccPart') || '-') < PART) y0 = Math.max(y0, k.y + k.height + 160); // stack after earlier parts only; later parts are re-flowed in finishSection
     OUT.updated['section ' + PREFIX] = s.id;
   } else {
     const bottoms = page.children.filter(n => n.type === 'SECTION').map(n => n.y + n.height);
@@ -118,7 +118,7 @@ function newRow() { if (CUR.n) { CUR.y += CUR.rowH + 160; CUR.x = 80; CUR.rowH =
 function frame(suffix, mobile, dark) {
   const name = SEC.name + ' — ' + suffix; const w = mobile ? 390 : 1440, h = mobile ? 844 : 900;
   if (CUR.n >= (mobile ? 6 : 4)) newRow();
-  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setPluginData('ccPart', PART);
+  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setSharedPluginData('udigity.cc', 'ccPart', PART);
   f.fills = [paint('surface/page')]; f.setExplicitVariableModeForCollection(semCol, dark ? DARK : LIGHT);
   CUR.x += w + 80; CUR.rowH = Math.max(CUR.rowH, h); CUR.n++;
   OUT.created[PREFIX + ' ' + suffix] = f.id; return f;
@@ -208,13 +208,22 @@ function fitFrame(f) {
 async function annotations(notes, w) {
   newRow();
   const a = AL(PREFIX + ' — Annotations' + (PART !== '-' ? ' (' + PART + ')' : ''), 'VERTICAL', { gap: 12, pad: 24, fill: 'surface/page', stroke: 'border/default', radius: 'xl' });
-  SEC.appendChild(a); a.setPluginData('ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
+  SEC.appendChild(a); a.setSharedPluginData('udigity.cc', 'ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
   a.setExplicitVariableModeForCollection(semCol, LIGHT);
   a.appendChild(await T(PREFIX + ' annotations (designer notes and intended interactions, not product UI)', 'ds/H3', 'text/primary'));
   for (const [type, title, body] of notes) put(a, I('Annotation', { Type: type }, { Title: title, Body: body }, 'Annotation · ' + title));
   OUT.created['annotations ' + PREFIX] = a.id; CUR.y += a.height; return a;
 }
-function finishSection() { let mx = 0, my = 0; for (const c of SEC.children) { mx = Math.max(mx, c.x + c.width); my = Math.max(my, c.y + c.height); } SEC.resizeWithoutConstraints(mx + 80, my + 80); OUT.fit['section ' + PREFIX] = [Math.round(SEC.x), Math.round(SEC.y), Math.round(SEC.width), Math.round(SEC.height)]; }
+function finishSection() {
+  const pt = k => k.getSharedPluginData('udigity.cc', 'ccPart') || '-';
+  const mine = SEC.children.filter(k => pt(k) <= PART), later = SEC.children.filter(k => pt(k) > PART);
+  if (later.length) { // keep part order a â†’ b inside the section; frames move, the section never does
+    const top = Math.max(80, ...mine.map(k => k.y + k.height + 160)), d = top - Math.min(...later.map(k => k.y));
+    if (Math.abs(d) > 0.5) { for (const k of later) k.y += d; OUT.fit['later parts shifted ' + PREFIX] = Math.round(d); }
+  }
+  let mx = 0, my = 0; for (const c of SEC.children) { mx = Math.max(mx, c.x + c.width); my = Math.max(my, c.y + c.height); } SEC.resizeWithoutConstraints(mx + 80, my + 80); OUT.fit['section ' + PREFIX] = [Math.round(SEC.x), Math.round(SEC.y), Math.round(SEC.width), Math.round(SEC.height)];
+  for (const o of page.children) if (o !== SEC && o.type === 'SECTION' && o.x < SEC.x + SEC.width && SEC.x < o.x + o.width && o.y < SEC.y + SEC.height && SEC.y < o.y + o.height) W(`${PREFIX} section overlaps ${o.name.split(' â€” ')[0]} (section not moved)`);
+}
 // ---------- end helper library ----------
 
 // ---------- workspace module (queue column + business detail column + contact panel; approved S3 layout) ----------
@@ -228,7 +237,7 @@ const QB = [
   { label: 'Callback to be scheduled', count: '1', exp: true, rows: [
     { name: 'Cedar Home Realty', cat: 'Real estate', out: 'Needs another call', meta: 'Time not set yet · last attempt 16 Oct' }] },
   { label: 'Data correction requested', count: '1', exp: true, rows: [
-    { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30', flag: ['Warning', 'Correction requested 14 Oct'] }] },
+    { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30', flag: ['Warning', 'Correction submitted · 14 Oct'] }] },
   { label: 'Requires contact', count: '1', exp: false, rows: [] },
 ];
 function qRow(r, sel) {
@@ -275,7 +284,7 @@ const TL_OLIVE = [
 async function dColumn(parent, o) {
   const b = BIZ[o.biz || 'olive'];
   const col = AL('Business detail column', 'VERTICAL', { gap: 8 }); parent.appendChild(col); fixedCol(col, 400); fillH(col);
-  const D = AL('Detail scroll area', 'VERTICAL', { gap: 12, clip: true }); put(col, D); fillH(D);
+  const D = AL('Detail scroll area (scrolls)', 'VERTICAL', { gap: 12, clip: true }); put(col, D); fillH(D);
   if (o.top) await o.top(D);
   const biz = await slotCard(D, 'Card/Section', { name: 'Business · ' + b.name, title: b.name, subtitle: o.bizSub || (b.cat + ' · Assigned to you'), action: { label: 'Request correction', icon: 'flag' } });
   for (const [num, lab] of b.phones) {
@@ -353,7 +362,7 @@ const TL_NOVA = [
   { type: 'Call attempt', title: 'Call attempt · Omar Nassar', time: '12 Oct, 10:20', body: 'Reception busy; asked to call later.', out: 'On hold' },
 ];
 function resvBanner(D, state, title, body, policy) {
-  const r = I('Banner/Reservation', { State: state, Size: 'Banner' }, { 'Show policy': policy !== false }, 'Reservation · ' + state); put(D, r);
+  const r = I('Banner/Reservation', { State: state, Size: 'Banner' }, { 'Show policy': policy === true }, 'Reservation · ' + state); put(D, r);
   layer(r, 'Title', title); layer(r, 'Body', body); return r;
 }
 async function resvDesk(suffix, o) {
@@ -404,7 +413,7 @@ const R = [
       pre: async pb => { put(pb, banner('Error', 'Inline', 'Save not accepted', 'The reservation behind this page had ended. Your draft is kept.')); put(pb, notice('Block', 'B3-Q05', 'Late save after losing a reservation is undecided. Alt A: reject the save and keep the draft until you re-acquire. Alt B: keep only the call attempt; outcome and follow-up need a new reservation.')); },
       buttons: [button('Ghost', 'Medium', 'Copy notes', 'copy'), button('Primary', 'Medium', 'Start contact again', 'refresh')], cap: 'Neither alternative is selected; both paths are drawn in the spec.' }) }],
 ];
-for (const [s, o] of R) { const r = await resvDesk(s, Object.assign({ crumb: ['Calling Queue', 'Olive & Thyme Café'] }, o)); fitFrame(r.f); }
+for (const [s, o] of R) { const r = await resvDesk(s, Object.assign({ crumb: ['Calling Queue', 'Olive & Thyme Café'], topExtra: async D => put(D, notice('Inline', 'DEC-004', 'Lease length, idle rule and renewal are undecided; times shown are illustrative.')) }, o)); fitFrame(r.f); }
 async function mob(suffix, other) {
   const f = frame(suffix, true);
   const c = await mobShell(f, { back: true, title: other ? 'Nova Dental Clinic' : 'Log call attempt', subtitle: other ? 'Clinic · Needs another call' : 'Olive & Thyme Café · draft', tab: 2, h: 596 });
@@ -437,6 +446,7 @@ await annotations([
   ['Note', 'Network loss', 'Renewals retry until lease end. On reconnect: still held → continue; expired and free → re-acquire; held by someone else → collision with the draft kept and saving blocked.'],
   ['Note', 'Stale client (B3-Q05)', 'Every renewal and save is validated on the server. Mismatch → "Reservation no longer held". Alt A / Alt B are both shown as undecided; neither is selected.'],
   ['Interaction', 'Mobile', 'Large (48 px) footer buttons; banners fill the width. Reserved-by-other keeps Start Contact disabled with Retry and Back to queue.'],
+['Note', 'Request correction target', 'Request correction opens SCR-SHR-009 (page 42, frame 175:10802); the request goes to Data Entry (WF-BIZ-002).'],
 ]);
 finishSection();
 return OUT;

@@ -1,0 +1,38 @@
+# Secrets: never commit
+.env
+.env.*
+!.env.example
+!*.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.key
+
+# Dependencies and build output
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.next/
+**/.next/
+out/
+*.tsbuildinfo
+coverage/
+
+# Test and runtime artifacts
+e2e/test-results/
+e2e/playwright-report/
+*.log
+.DS_Store
+Thumbs.db
+
+# Local backups and dumps
+*.dump
+*.sql.gz
+*.age
+*.gpg
+
+# Local artifacts that must never be committed
+/C*UsersHani*Temp/
+e2e/run.json

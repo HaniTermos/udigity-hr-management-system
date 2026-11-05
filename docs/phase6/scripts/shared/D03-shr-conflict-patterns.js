@@ -175,13 +175,13 @@ async function access(type, size, title, body, action) {
   if (action) await nestedProps(s, 'Action', { Label: action, 'Show icon': false });
   return s;
 }
-// mobile access/state notice (Notice/Access Page is 480 wide with fixed text widths, so phones use this layout of DS icon + text styles)
+// mobile access/state notice (DS icon + text styles)
 async function mobNotice(ic, title, body) {
   const n = AL('Notice', 'VERTICAL', { gap: 8, pad: [24, 8], align: 'CENTER' });
   add(n, [await icon(ic, 32)]); add(n, [await TX(title, 'ds/H3', 'text/primary', { name: 'Title', align: 'CENTER' }), await TX(body, 'ds/Body Small', 'text/secondary', { name: 'Body', align: 'CENTER' })], true);
   return n;
 }
-// Progress/Bar value: P5 makes the bar value-driven (DS maintainer). Use its value property when present; never resize the instance's Fill child.
+// Progress/Bar: use its value property when present; never resize the Fill child.
 async function setProgress(bar, ratio) {
   if (!bar) return;
   const cp = bar.componentProperties;
@@ -271,32 +271,7 @@ function mobFooter(f, h) {
   f.appendChild(ft); ft.x = 0; ft.y = 844 - h; ft.resize(390, h); ft.layoutSizingHorizontal = 'FIXED'; ft.layoutSizingVertical = 'FIXED';
   rule(ft, true, false); return ft;
 }
-// ---- overlays (Dialog / Drawer fill their native slots)
-async function scrim(f, mobile) { const s = await I('Overlay/Scrim', { Size: mobile ? 'Mobile' : 'Desktop' }, {}, 'Scrim'); f.appendChild(s); s.x = 0; s.y = 0; return s; }
-async function dialog(f, title, desc, kids, sec, pri, w) {
-  const d = await I('Dialog', null, { Title: title, Description: desc || ' ', 'Show description': !!desc, 'Show footer': !!(sec || pri), 'Show close': true }, 'Dialog · ' + title);
-  f.appendChild(d); if (w) d.resize(w, d.height);
-  const slot = d.findOne(n => n.type === 'SLOT');
-  if (slot) { for (const ch of [...slot.children]) ch.remove(); add(slot, kids, true); } else warn('Dialog slot not found');
-  const s = nested(d, 'Secondary action'), p = nested(d, 'Primary action');
-  if (s) { if (sec) setProps(s, Object.assign({ 'Show icon': false }, sec)); else s.visible = false; } else warn('Dialog secondary not found');
-  if (p) { if (pri) setProps(p, Object.assign({ 'Show icon': false }, pri)); else p.visible = false; } else warn('Dialog primary not found');
-  d.x = Math.round((1440 - d.width) / 2); d.y = Math.max(24, Math.round((900 - d.height) / 2));
-  if (d.height > 852) OUT.overflow.push(f.name + ': dialog taller than frame (' + Math.round(d.height) + ')');
-  return d;
-}
-async function drawer(f, title, sub, kids, left, right) {
-  const d = await I('Drawer', null, { Title: title, Subtitle: sub || ' ', 'Show subtitle': !!sub }, 'Drawer · ' + title);
-  f.appendChild(d); d.x = 960; d.y = 0;
-  const slots = d.findAll(n => n.type === 'SLOT');
-  if (slots.length < 2) { warn('Drawer slots not found'); return d; }
-  for (const s of slots) for (const ch of [...s.children]) ch.remove();
-  add(slots[0], kids, true);
-  if (left) add(slots[1], [left]);
-  const grp = row('Footer actions', 8, { justify: 'MAX' }); add(slots[1], [grp]); grow(grp); add(grp, right || []);
-  FITS.push([f.name + ' › drawer', slots[0]]);
-  return d;
-}
+// ---- overlays: none on this script's screens (X-10: unused scrim/dialog/drawer helpers dropped; D02 holds the staged versions)
 // ---- auth layout (signed-out screens: S1 visual direction)
 async function authDesk(f, kids) {
   f.layoutMode = 'HORIZONTAL'; f.primaryAxisSizingMode = 'FIXED'; f.counterAxisSizingMode = 'FIXED'; f.itemSpacing = 0;
@@ -379,9 +354,17 @@ function overlapCheck() {
 const FN = (scr, nm, dev, th, st) => `${scr} — ${nm} — ${dev} — ${th}${st ? ' — ' + st : ''}`;
 function screen(scr, nm) { const sec = getSection(`${scr} — ${nm}`); clearScreen(sec, scr); return { sec, L: lay(), scr, nm }; }
 // ---------- end helper library ----------
+// Touch IconButton: set nested Icon of Close/Back to the intended glyph (override only, no x/y/size).
+const _TI = { Close: await node(ICONS['x']), Back: await node(ICONS['chevron-left']) };
+function fixTouchIcons(root) {
+  for (const b of root.findAllWithCriteria({ types: ['INSTANCE'] }).filter(n => _TI[n.name])) {
+    const ic = b.findOne(n => n.type === 'INSTANCE' && n.name === 'Icon'); if (!ic) continue;
+    try { ic.swapComponent(_TI[b.name]); OUT.touchIconFix = (OUT.touchIconFix || 0) + 1; } catch (e) { warn('touch icon swap ' + b.name + ': ' + e.message); }
+  }
+}
 // ================= SCR-SHR-014 Save conflict + SCR-SHR-015 System state patterns (page 45) =================
 // ---------- SCR-SHR-014 — desktop: Data Entry edits a business (Karim Saleh); mobile: Developer edits a task (Lina Aoun)
-const DCOLS = [['Field', 200], ['When you opened (10:31)', 240], ['Saved by Rana Haddad (10:42)', 260], ['Your edit (not saved)', 260], ['Result', 152]];
+const DCOLS = [['Field', 150], ['When you opened (10:31)', 210], ['Saved by Rana Haddad (10:42)', 294], ['Your edit (not saved)', 294], ['Result', 162]];
 const DIFF = [
   ['Primary phone', '+000 70 000 101', '+000 70 000 108', '+000 70 000 101 (unchanged)', ['Their change', 'Neutral']],
   ['Instagram handle', '@glowbeauty.demo', '@glowbeauty.demo (unchanged)', '@glowbeautysalon.demo', ['Your change', 'Info']],
@@ -428,16 +411,18 @@ async function conflictMob(f) {
     ['Interaction', 'Intended interactions', 'Triggered on save when the record version changed (business edit, contact log, task, deal record, profile). Re-apply my edits → form reopens on the latest version with my edits applied → save again. Reload latest → discards my unsaved edits after confirming. Nothing is ever overwritten silently.'],
     ['Note', 'Roles', 'Desktop: Data Entry business edit (Call Center and Developer never edit master data — they use Request correction). Mobile: Developer task edit (sitemap M5).']
   ]);
-  for (const f of prim) fitReport(f);
+  for (const f of prim) { fixTouchIcons(f); fitReport(f); }
   finishSection(S.sec);
 }
 
 // ---------- SCR-SHR-015 System state patterns (reference sheet; may exceed 900 high, W3 rule)
 async function pattern(title, sub, kids, w) { const n = await sectionCard(title, sub, kids, { gap: 12, layer: 'Pattern · ' + title }); n.resize(w || 432, n.height); n.layoutSizingHorizontal = 'FIXED'; return n; }
+// R45-02: summary links use status/danger/fg + underline (on danger/bg: 7.68 L, 5.91 D)
+async function sLink(t) { const l = await link(t); for (const x of l.findAllWithCriteria({ types: ['TEXT'] })) { x.fills = [P('status/danger/fg')]; x.textDecoration = 'UNDERLINE'; } return l; }
 async function errSummary() {
   const e = await I('Banner/ErrorSummary', null, { Title: 'Fix 2 problems before saving' }, 'Error summary');
   const slot = e.findOne(n => n.type === 'SLOT');
-  if (slot) { for (const ch of [...slot.children]) ch.remove(); add(slot, [await link('Phone — enter a number like +000 70 000 101'), await link('Category — select a category')]); } else warn('ErrorSummary slot not found');
+  if (slot) { for (const ch of [...slot.children]) ch.remove(); add(slot, [await sLink('Phone — enter a number like +000 70 000 101'), await sLink('Category — select a category')]); } else warn('ErrorSummary slot not found');
   return e;
 }
 async function sheet(f) {

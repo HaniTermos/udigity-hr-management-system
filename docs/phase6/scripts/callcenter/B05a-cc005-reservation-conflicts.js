@@ -74,7 +74,7 @@ async function T(chars, style, color, o = {}) {
 function add(p, ...k) { for (const x of k) if (x) p.appendChild(x); return p; }
 function fillW(n) { if (n.type === 'TEXT') n.textAutoResize = 'HEIGHT'; n.layoutSizingHorizontal = 'FILL'; return n; }
 function fillH(n) { n.layoutSizingVertical = 'FILL'; return n; }
-function grow(n) { n.layoutGrow = 1; return n; }
+function grow(n) { try { if (n.name === 'Spacer' && 'children' in n && !n.children.length) { n.resize(n.width, 1); n.layoutSizingVertical = 'FIXED'; } n.layoutGrow = 1; } catch (e) { W('grow ' + n.name + ': ' + e.message); } return n; } // fit: empty spacers were 100 px tall (CC-007 Owner view Content +18)
 function fixedCol(n, w) { n.resize(w, 100); n.layoutSizingHorizontal = 'FIXED'; return n; }
 function put(p, n) { p.appendChild(n); fillW(n); return n; }
 function reg(k, n) { if (n) OUT.created[k] = n.id; return n; }
@@ -100,14 +100,30 @@ async function slotCard(parent, compName, o) {
 function slotOf(inst, name) { const s = inst.findAllWithCriteria({ types: ['SLOT'] }); return s.find(x => x.name === name) || null; }
 function clearSlot(s) { if (s) for (const k of [...s.children]) k.remove(); return s; }
 function relBottom(n, f) { return n.absoluteTransform[1][2] - f.absoluteTransform[1][2] + n.height; }
+// N43-1/N43-2: port of DEV-002 stage(). Instances moved into a slot keep the layout of their old (320 px default) width, so slot
+// content is built detached at the slot's inner width, then moved in: wrapper FILL, children FIXED→FILL, own text HEIGHT+FILL, relayout.
+function inInst(n, root) { for (let a = n.parent; a && a !== root; a = a.parent) if (a.type === 'INSTANCE') return true; return false; }
+function kick(b) { if (!b || b.removed) return; try { const w = b.width, fill = b.layoutSizingHorizontal === 'FILL'; b.layoutSizingHorizontal = 'FIXED'; b.resize(w - 1, b.height); if (fill) b.layoutSizingHorizontal = 'FILL'; else b.resize(w, b.height); b.layoutSizingVertical = 'HUG'; } catch (e) { W('relayout ' + b.name + ': ' + e.message); } }
+function stage(f, s, name, gap, nodes, hug) {
+  if (!s) { W('no Content slot in ' + f.name); return null; }
+  const w = Math.max(200, Math.round(s.width - (s.paddingLeft || 0) - (s.paddingRight || 0))); for (const k of [...s.children]) k.remove(); try { s.itemSpacing = 0; } catch (e) { }
+  const b = AL(name, 'VERTICAL', { gap }); f.appendChild(b); b.resize(w, 10); b.counterAxisSizingMode = 'FIXED'; b.primaryAxisSizingMode = 'AUTO';
+  const H = new Set((hug || []).map(n => n.id));
+  for (const n of nodes) if (n) { b.appendChild(n); if (!H.has(n.id)) fillW(n); }
+  s.appendChild(b); try { b.layoutSizingHorizontal = 'FILL'; } catch (e) { b.layoutSizingHorizontal = 'FIXED'; } b.layoutSizingVertical = 'HUG';
+  for (const n of b.children) if (!H.has(n.id)) { try { n.layoutSizingHorizontal = 'FIXED'; n.layoutSizingHorizontal = 'FILL'; } catch (e) { } }
+  for (const t of b.findAll(n => n.type === 'TEXT' && !inInst(n, b))) if (t.parent === b || t.layoutSizingHorizontal === 'FILL') { try { t.layoutSizingHorizontal = 'FILL'; t.textAutoResize = 'HEIGHT'; } catch (e) { } }
+  kick(b); return b;
+}
+function overrun(b) { const o = []; if (!b) return o; for (const i of b.findAll(n => n.type === 'INSTANCE' && !inInst(n, b) && n.visible)) { const ib = i.absoluteBoundingBox; if (!ib) continue; if (i.layoutSizingHorizontal === 'FILL' && i.parent === b && Math.abs(i.width - b.width) > 1.5) { o.push(i.name + ' ' + Math.round(i.width) + '/' + Math.round(b.width) + 'w'); continue; } for (const k of i.findAll(x => x.type === 'TEXT' && x.visible)) { const kb = k.absoluteRenderBounds; if (kb && kb.x + kb.width > ib.x + ib.width + 1.5) { o.push(i.name + ' › ' + k.name + ' +' + Math.round(kb.x + kb.width - ib.x - ib.width) + 'w'); break; } } } return o; }
 // ---------- sections & frames ----------
 let SEC = null, CUR = { x: 80, y: 80, rowH: 0, n: 0 }, PREFIX = '', PART = '';
 function getSection(name, part) {
   PREFIX = name.split(' — ')[0]; PART = part || '-';
   let s = page.children.find(n => n.type === 'SECTION' && n.name === name), y0 = 80;
   if (s) {
-    for (const k of [...s.children]) { const p = k.getPluginData('ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
-    for (const k of s.children) y0 = Math.max(y0, k.y + k.height + 160);
+    for (const k of [...s.children]) { const p = k.getSharedPluginData('udigity.cc', 'ccPart') || '-'; if (k.name.startsWith(PREFIX) && (p === PART || !part)) { OUT.removed.push(k.name); k.remove(); } }
+    for (const k of s.children) if ((k.getSharedPluginData('udigity.cc', 'ccPart') || '-') < PART) y0 = Math.max(y0, k.y + k.height + 160); // stack after earlier parts only; later parts are re-flowed in finishSection
     OUT.updated['section ' + PREFIX] = s.id;
   } else {
     const bottoms = page.children.filter(n => n.type === 'SECTION').map(n => n.y + n.height);
@@ -121,7 +137,7 @@ function newRow() { if (CUR.n) { CUR.y += CUR.rowH + 160; CUR.x = 80; CUR.rowH =
 function frame(suffix, mobile, dark) {
   const name = SEC.name + ' — ' + suffix; const w = mobile ? 390 : 1440, h = mobile ? 844 : 900;
   if (CUR.n >= (mobile ? 6 : 4)) newRow();
-  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setPluginData('ccPart', PART);
+  const f = figma.createFrame(); f.name = name; SEC.appendChild(f); f.resize(w, h); f.x = CUR.x; f.y = CUR.y; f.clipsContent = true; f.setSharedPluginData('udigity.cc', 'ccPart', PART);
   f.fills = [paint('surface/page')]; f.setExplicitVariableModeForCollection(semCol, dark ? DARK : LIGHT);
   CUR.x += w + 80; CUR.rowH = Math.max(CUR.rowH, h); CUR.n++;
   OUT.created[PREFIX + ' ' + suffix] = f.id; return f;
@@ -201,35 +217,45 @@ function fitFrame(f) {
 async function annotations(notes, w) {
   newRow();
   const a = AL(PREFIX + ' — Annotations' + (PART !== '-' ? ' (' + PART + ')' : ''), 'VERTICAL', { gap: 12, pad: 24, fill: 'surface/page', stroke: 'border/default', radius: 'xl' });
-  SEC.appendChild(a); a.setPluginData('ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
+  SEC.appendChild(a); a.setSharedPluginData('udigity.cc', 'ccPart', PART); a.x = 80; a.y = CUR.y; a.resize(w || 1440, 100); a.counterAxisSizingMode = 'FIXED'; a.primaryAxisSizingMode = 'AUTO';
   a.setExplicitVariableModeForCollection(semCol, LIGHT);
   a.appendChild(await T(PREFIX + ' annotations (designer notes and intended interactions, not product UI)', 'ds/H3', 'text/primary'));
   for (const [type, title, body] of notes) put(a, I('Annotation', { Type: type }, { Title: title, Body: body }, 'Annotation · ' + title));
   OUT.created['annotations ' + PREFIX] = a.id; CUR.y += a.height; return a;
 }
-function finishSection() { let mx = 0, my = 0; for (const c of SEC.children) { mx = Math.max(mx, c.x + c.width); my = Math.max(my, c.y + c.height); } SEC.resizeWithoutConstraints(mx + 80, my + 80); OUT.fit['section ' + PREFIX] = [Math.round(SEC.x), Math.round(SEC.y), Math.round(SEC.width), Math.round(SEC.height)]; }
+function finishSection() {
+  const pt = k => k.getSharedPluginData('udigity.cc', 'ccPart') || '-';
+  const mine = SEC.children.filter(k => pt(k) <= PART), later = SEC.children.filter(k => pt(k) > PART);
+  if (later.length) { // keep part order a â†’ b inside the section; frames move, the section never does
+    const top = Math.max(80, ...mine.map(k => k.y + k.height + 160)), d = top - Math.min(...later.map(k => k.y));
+    if (Math.abs(d) > 0.5) { for (const k of later) k.y += d; OUT.fit['later parts shifted ' + PREFIX] = Math.round(d); }
+  }
+  let mx = 0, my = 0; for (const c of SEC.children) { mx = Math.max(mx, c.x + c.width); my = Math.max(my, c.y + c.height); } SEC.resizeWithoutConstraints(mx + 80, my + 80); OUT.fit['section ' + PREFIX] = [Math.round(SEC.x), Math.round(SEC.y), Math.round(SEC.width), Math.round(SEC.height)];
+  for (const o of page.children) if (o !== SEC && o.type === 'SECTION' && o.x < SEC.x + SEC.width && SEC.x < o.x + o.width && o.y < SEC.y + SEC.height && SEC.y < o.y + o.height) W(`${PREFIX} section overlaps ${o.name.split(' â€” ')[0]} (section not moved)`);
+}
 // ---------- end helper library ----------
 
 // ---------- workspace module (queue column + business detail column + contact panel; approved S3 layout) ----------
 const QB = [
   { label: 'Callbacks due today', count: '2', exp: true, rows: [
     { name: 'Olive & Thyme Café', cat: 'Café', out: 'Needs another call', meta: 'Due 10:30 · last attempt 13 Oct 15:10' },
-    { name: 'Nova Dental Clinic', cat: 'Clinic', out: 'Needs another call', meta: 'Due 14:00 · last attempt 16 Oct 11:45' }] },
+    { name: 'Nova Dental Clinic', cat: 'Clinic', out: 'Needs another call', meta: 'Due 14:00 · held by Omar Nassar since 10:24', resv: 'Reserved' }] },
   { label: 'Overdue follow-ups', count: '1', exp: true, rows: [
     { name: 'Sunrise Bakery', cat: 'Shop', out: 'On hold', meta: 'Was due 19 Oct 16:00 · last attempt 15 Oct', flag: ['Danger', 'Overdue'] }] },
   { label: 'New assignments', count: '2', exp: false, rows: [] },
   { label: 'Callback to be scheduled', count: '1', exp: true, rows: [
     { name: 'Cedar Home Realty', cat: 'Real estate', out: 'Needs another call', meta: 'Time not set yet · last attempt 16 Oct' }] },
   { label: 'Data correction requested', count: '1', exp: true, rows: [
-    { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30', flag: ['Warning', 'Correction requested 14 Oct'] }] },
+    { name: 'Bloom Florist', cat: 'Shop', out: 'On hold', meta: 'Last attempt 14 Oct 12:30', flag: ['Warning', 'Correction submitted · 14 Oct'] }] },
   { label: 'Requires contact', count: '1', exp: false, rows: [] },
 ];
 function qRow(r, sel) {
-  const row = I('Queue/Row', { State: sel ? 'Selected' : 'Default' }, { Name: r.name, Meta: r.cat + ' · ' + r.meta, 'Show flag': !!r.flag }, 'Row · ' + r.name);
+  const row = I('Queue/Row', { State: sel ? 'Selected' : 'Default' }, { Name: r.name, Meta: r.cat + ' · ' + r.meta, 'Show flag': !!(r.flag || r.resv) }, 'Row · ' + r.name);
   const cat = nested(row, 'Category'); if (cat) cat.visible = false;
   for (const tn of ['Name', 'Meta']) { const t = row.findAllWithCriteria({ types: ['TEXT'] }).find(n => n.name === tn); if (t) { try { t.maxLines = 2; } catch (e) { } } }
   prop(nested(row, 'Outcome'), { Outcome: r.out });
   if (r.flag) prop(nested(row, 'Flag'), { Tone: r.flag[0], Label: r.flag[1] });
+  if (r.resv) { const fl = nested(row, 'Flag'); try { fl.swapComponent(variantOf('Chip/Derived', { Tone: 'Amber' })); prop(fl, { Label: r.resv }); } catch (e) { W('Reserved flag: ' + e.message); if (fl) prop(fl, { Tone: 'Warning', Label: r.resv }); } } // N43-11 / O-2: derived amber flag
   return row;
 }
 function bucketHeader(b) { const bh = I('Queue/BucketHeader', { Expanded: b.exp ? 'True' : 'False' }, { Label: b.label }, 'Bucket · ' + b.label); prop(nested(bh, 'Count'), { Count: b.count }); return bh; }
@@ -268,7 +294,7 @@ const TL_OLIVE = [
 async function dColumn(parent, o) {
   const b = BIZ[o.biz || 'olive'];
   const col = AL('Business detail column', 'VERTICAL', { gap: 8 }); parent.appendChild(col); fixedCol(col, 400); fillH(col);
-  const D = AL('Detail scroll area', 'VERTICAL', { gap: 12, clip: true }); put(col, D); fillH(D);
+  const D = AL('Detail scroll area (scrolls)', 'VERTICAL', { gap: 12, clip: true }); put(col, D); fillH(D);
   if (o.top) await o.top(D);
   const biz = await slotCard(D, 'Card/Section', { name: 'Business · ' + b.name, title: b.name, subtitle: o.bizSub || (b.cat + ' · Assigned to you'), action: { label: 'Request correction', icon: 'flag' } });
   for (const [num, lab] of b.phones) {
@@ -337,7 +363,7 @@ const TL_NOVA = [
   { type: 'Call attempt', title: 'Call attempt · Omar Nassar', time: '12 Oct, 10:20', body: 'Reception busy; asked to call later.', out: 'On hold' },
 ];
 function resvBanner(D, state, title, body, policy) {
-  const r = I('Banner/Reservation', { State: state, Size: 'Banner' }, { 'Show policy': policy !== false }, 'Reservation · ' + state); put(D, r);
+  const r = I('Banner/Reservation', { State: state, Size: 'Banner' }, { 'Show policy': policy === true }, 'Reservation · ' + state); put(D, r);
   layer(r, 'Title', title); layer(r, 'Body', body); return r;
 }
 async function resvDesk(suffix, o) {
@@ -367,15 +393,16 @@ async function footRow(pf, items, cap) {
 
 // ================= SCR-CC-005 Contact reservation & concurrency block (preserved ID) — part a =================
 getSection('SCR-CC-005 — Contact reservation & concurrency block', 'a');
+const OVR = 'Owner override · DEC-004 (Proposed)'; // N43-11: one label in every CC-005 frame (O-2)
 const OTHER = { biz: 'nova', state: 'Reserved by other', title: 'Reserved by Omar Nassar · since 10:24', body: 'Omar was the previous assignee and still has this business open. You can read it, but you cannot start a contact until the reservation ends.' };
 async function blockedPanel(pb, pf) {
   await panelTitle(pb, 'Contact unavailable', 'Reserved by another agent');
   const chip = I('Banner/Reservation', { State: 'Reserved by other', Size: 'Chip' }, null, 'Reservation chip'); pb.appendChild(chip); layer(chip, 'Label', 'Reserved · Omar Nassar');
   const s = await slotCard(pb, 'Card/Inset', { name: 'Reservation details', gap: 4 });
-  for (const [k, v] of [['Holder', 'Omar Nassar (Call Center)'], ['Since', 'Tue 20 Oct · 10:24'], ['Lease ends', '10:34 if not renewed (illustrative)'], ['Your assignment', 'Assigned to you since 09:15']]) put(s.body, kv(k, v));
+  for (const [k, v] of [['Holder', 'Omar Nassar (Call Center)'], ['Since', 'Tue 20 Oct · 10:24'], ['Lease ends', '10:34 if not renewed (illustrative)'], ['Your assignment', 'Yours since 09:15']]) put(s.body, kv(k, v));
   put(pb, await T('No reservation was created for you. Wait and retry, or go back to the queue. Only the Owner can override a reservation (proposed).', 'ds/Caption', 'text/muted', { w: 320 }));
   put(pb, notice('Inline', 'DEC-004', 'Lease length, idle rule and Owner override are undecided; times are illustrative.'));
-  put(pb, notice('Inline', 'Proposed', 'Owner force override (confirm + reason) is proposed, with no DEC ID.'));
+  put(pb, notice('Inline', 'DEC-004', OVR + '. Confirm + reason; who may override is pending.'));
   await footRow(pf, [button('Ghost', 'Medium', 'Back to queue'), button('Secondary', 'Medium', 'Retry', 'refresh')], 'Start Contact stays disabled while another user holds the reservation.');
   const sc = button('Primary', 'Medium', 'Start Contact', 'phone', 'Disabled'); pf.insertChild(0, sc); fillW(sc);
 }
@@ -388,19 +415,18 @@ for (const [s, d] of [['Desktop — Light — Reserved by another agent', false]
     panel: async (pb, pf) => {
       await panelTitle(pb, 'Reservation', 'Owner view');
       for (const [k, v] of [['Holder', 'Omar Nassar · since 10:24'], ['Assignee', 'Maya Khoury'], ['Lease', 'Renewing (Omar’s page is open)']]) put(pb, kv(k, v));
-      put(pb, notice('Inline', 'Proposed', 'Owner force override is proposed; override rules are undecided (no DEC ID).'));
+      put(pb, notice('Inline', 'DEC-004', OVR + '. Who may override and whether a reason is required are pending.'));
       await footRow(pf, [button('Secondary', 'Medium', 'Wait'), button('Destructive', 'Medium', 'Override reservation…', 'shield')], 'Override ends Omar’s reservation; it is audited.');
     } }));
   const f = r.f;
   const sc = I('Overlay/Scrim', { Size: 'Desktop' }, null, 'Overlay/Scrim'); f.appendChild(sc); sc.x = 0; sc.y = 0;
   const dl = I('Dialog', null, { Title: 'Override reservation?', Description: 'Nova Dental Clinic · reserved by Omar Nassar since 10:24', 'Show description': true, 'Show footer': true, 'Show close': true }, 'Dialog · Owner override'); f.appendChild(dl);
-  const s = clearSlot(slotOf(dl, 'Content') || dl.findAllWithCriteria({ types: ['SLOT'] })[0]);
-  if (s) {
-    try { s.itemSpacing = 12; } catch (e) { }
-    put(s, banner('Warning', 'Inline', 'Omar’s unsaved notes stay on his device', 'His reservation ends as Overridden and he is told at his next sync. A later save from him follows the stale-client rule (B3-Q05, undecided).'));
-    put(s, I('Textarea', { State: 'Filled' }, { Label: 'Reason', Value: 'Reassigned to Maya Khoury at 09:15; Omar’s page is stale.', 'Show label': true, Required: true, 'Show helper': true, Helper: 'Required. Recorded in the audit log (contact_reservation.overridden).', Counter: '54 / 500' }, 'Reason'));
-    put(s, notice('Inline', 'DEC-004', 'Who may override, and whether a reason is mandatory, is pending (proposed: Owner only, reason required).'));
-  } else W('Dialog slot missing');
+  // N43-8: body staged at the slot's inner width, so the Reason textarea and the O-2 warning FILL the dialog and wrap (no 320 px field, no clipping)
+  const db = stage(f, slotOf(dl, 'Content') || dl.findAllWithCriteria({ types: ['SLOT'] })[0], 'Dialog body', 12, [
+    banner('Warning', 'Inline', 'Omar’s unsaved notes stay on his device', 'His reservation ends as Overridden; he sees “overridden by Owner” at his next sync. A later save from him follows the stale-client rule (B3-Q05, undecided).'),
+    I('Textarea', { State: 'Filled' }, { Label: 'Reason', Value: 'Reassigned to Maya Khoury at 09:15; Omar’s page is stale.', 'Show label': true, Required: true, 'Show helper': true, Helper: 'Required. Audited (contact_reservation.overridden).', Counter: '54 / 500' }, 'Reason'),
+    notice('Inline', 'DEC-004', OVR + '. Who may override, and whether a reason is mandatory, is pending (proposed: Owner only, reason required).')]);
+  if (db) { const ov = overrun(db); OUT.fit[PREFIX + ' override dialog body'] = { bodyW: Math.round(db.width), overrun: ov }; if (ov.length) W('Override dialog: ' + ov.length + ' stale/overrunning layer(s), e.g. ' + ov[0]); }
   const b1 = nested(dl, 'Secondary action'), b2 = nested(dl, 'Primary action');
   if (b1) prop(b1, { Label: 'Wait instead', 'Show icon': false }); if (b2) prop(b2, { Variant: 'Destructive', Label: 'Override reservation', 'Show icon': false });
   dl.x = 460; dl.y = Math.round((900 - dl.height) / 2); reg(PREFIX + ' override dialog', dl);
@@ -423,7 +449,8 @@ await annotations([
   ['Interaction', 'Collision (WF-CALL-002)', 'Start Contact checks atomically for an Active reservation. Held by another user → this screen: holder and since-time shown, no reservation created; Retry re-checks; Back to queue returns to SCR-CC-001. Same user (second tab) is not a collision.'],
   ['Interaction', 'Owner force override', 'Owner selects Override, enters a required reason, confirms (destructive). Reservation ends as Overridden (audited); the Owner then acquires it or continues the reassignment. Reassignment never silently ends a reservation (Wait or Override).'],
   ['Note', 'Notice to holder', 'The holder learns at the next sync. Unsaved notes stay on the holder’s device; a late save follows the stale-client rule (B3-Q05 undecided). Other channels are undecided.'],
-  ['Note', 'Policies', 'DEC-004 (lease, idle rule, renewal, override) and the override rules are Proposed — every time shown is illustrative.'],
+  ['Note', 'Policies', 'DEC-004 (lease, idle rule, renewal) and Owner override · DEC-004 (Proposed) — every time shown is illustrative.'],
+['Note', 'Request correction target', 'Request correction opens SCR-SHR-009 (page 42, frame 175:10802); the request goes to Data Entry (WF-BIZ-002).'],
 ]);
 finishSection();
 return OUT;

@@ -1,0 +1,26 @@
+OpenLiteSpeed / CyberPanel / LiteSpeed (Hostinger "VPS with OpenLiteSpeed" templates). UNVERIFIED on the real server: check the field names in the WebAdmin console (port 7080) or CyberPanel before relying on this.
+
+1. Virtual host for hrsystem.udigity.com (CyberPanel: Websites > Create Website; WebAdmin: Virtual Hosts > Add). Issue the certificate with the panel:
+   CyberPanel: Websites > List Websites > Manage > "Issue SSL" (Let's Encrypt, automatic renewal). This is the "existing proxy's certificate tool".
+2. WebAdmin > Virtual Hosts > hrsystem.udigity.com > External App > Add:
+     Type: Web Server        Name: udigity        Address: 127.0.0.1:8080
+3. Virtual Hosts > hrsystem.udigity.com > Context > Add:
+     Type: Proxy             URI: /               Web Server: udigity
+4. The inner nginx answers only the Host "hrsystem.udigity.com", and OpenLiteSpeed's proxy would otherwise send "127.0.0.1:8080". Either
+   a) put this in the vhost's .htaccess (or Rewrite rules, Rewrite enabled):
+        RewriteEngine On
+        RewriteRule ^(.*)$ http://udigity/$1 [P,E=PROXY-HOST:hrsystem.udigity.com]
+      (with the Context from step 3 removed), or
+   b) if (a) is not supported by your build, tell the developer: the fallback is to give the inner nginx a second server_name for the
+      proxy's upstream address (devops/nginx/conf.d/udigity.conf, `server_name hrsystem.udigity.com 127.0.0.1:8080;`).
+4b. Access log (gap 3, V14.2-a): reset/invitation links carry ?token=<secret>. In WebAdmin > Virtual Hosts > hrsystem.udigity.com > Log >
+   Access Log set the Log Format to one WITHOUT the query string and the Referer, for example
+        "%h %l %u %t \"%m %U %H\" %>s %b \"%{User-Agent}i\""
+   (%U is the path only; field names UNVERIFIED for your build), or turn the access log off for this vhost. Do not use the default
+   combined format (`%r`, `%{Referer}i`) for this host.
+5. Headers: OpenLiteSpeed adds X-Forwarded-For (the TCP peer) itself. X-Forwarded-Proto is not needed by the app (the inner nginx sets https).
+6. HTTP -> HTTPS redirect: CyberPanel does it per site ("Force HTTPS" in the site's rewrite rules) or in .htaccess:
+        RewriteCond %{HTTPS} !=on
+        RewriteRule ^(.*)$ https://hrsystem.udigity.com/$1 [R=301,L]
+7. Check from the server: curl -sI -H 'Host: hrsystem.udigity.com' http://127.0.0.1:8080/login   -> 200 (inner nginx directly)
+                          curl -sI https://hrsystem.udigity.com/login                         -> 200 (through OpenLiteSpeed)

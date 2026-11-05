@@ -1,0 +1,288 @@
+/**
+ * DB-backed API tests. Run ONLY against a dedicated test database named by TEST_DATABASE_URL
+ * (globalSetup migrates and seeds it). Skipped entirely when TEST_DATABASE_URL is not set, so they
+ * can never write to the development database. They create uniquely-named rows and never delete
+ * employees or audit rows (FKs are RESTRICT and audit is append-only).
+ */
+import { describe, it, expect, afterAll } from 'vitest';
+import request from 'supertest';
+import bcrypt from 'bcryptjs';
+import { authenticator } from 'otplib';
+import { app } from '../app.js';
+import { pool, query } from '../db/pool.js';
+import { config } from '../config/index.js';
+import { relayOutboxOnce } from '../modules/platform/service.js';
+import { dispatchDueDeliveries } from '../modules/notifications/service.js';
+import { mailSink } from '../modules/notifications/transport.js';
+
+const hasTestDb = Boolean(process.env.TEST_DATABASE_URL);
+const OWNER_EMAIL = 'udigity@gmail.com';
+const AGENT_EMAIL = 'maya.khoury@udigity.demo';
+const PASSWORD = 'Password123!';
+const SEEDED_TOTP_SECRET = 'JBSWY3DPEHPK3PXP';
+const ORIGIN = 'http://localhost:3000';
+
+interface Agent {
+  cookie: string;
+  csrf: string;
+  body: Record<string, unknown>;
+  status: number;
+}
+
+function sessionCookieFrom(res: request.Response): string {
+  const cookies = ([] as string[]).concat(res.headers['set-cookie'] ?? []);
+  const c = cookies.find((x) => x.startsWith(`${config.session.cookieName}=`));
+  return c ? c.split(';')[0] : '';
+}
+
+async function login(email: string, password = PASSWORD): Promise<Agent> {
+  const res = await request(app).post('/api/auth/login').set('Origin', ORIGIN).send({ email, password });
+  return { cookie: sessionCookieFrom(res), csrf: res.body.csrfToken, body: res.body, status: res.status };
+}
+
+async function uniqueEmployee(role: string, isActive = true): Promise<{ id: string; email: string }> {
+  const email = `test.${role}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}@test.local`;
+  const { rows } = await query<{ id: string }>(
+    `INSERT INTO employees (email, full_name, role, is_active) VALUES ($1, 'Test User', $2, $3) RETURNING id`,
+    [email, role, isActive]
+  );
+  await query('INSERT INTO credentials (employee_id, password_hash) VALUES ($1, $2)', [rows[0].id, await bcrypt.hash(PASSWORD, 4)]);
+  return { id: rows[0].id, email };
+}
+
+// 60 s per test: relaying other files' backlog on the shared DB can exceed the 5 s default.
+describe.skipIf(!hasTestDb)('Identity API against TEST_DATABASE_URL', { timeout: 60_000 }, () => {
+  afterAll(async () => {
+    await pool.end();
+  });
+
+  it('GET /healthz and /readyz', async () => {
+    expect((await request(app).get('/healthz')).status).toBe(200);
+    const ready = await request(app).get('/readyz');
+    expect(ready.status).toBe(200);
+    expect(ready.body.error).toBeUndefined();
+    // C-15: generic body only (no configuration or database detail).
+    expect(ready.body).toEqual({ status: 'ready' });
+  });
+
+  it('generic failure for unknown email, wrong password and deactivated account', async () => {
+    const inactive = await uniqueEmployee('call_center', false);
+    const a = await login('nobody@test.local');
+    const b = await login(AGENT_EMAIL, 'WrongPassword999!');
+    const c = await login(inactive.email);
+    for (const r of [a, b, c]) {
+      expect(r.status).toBe(401);
+      expect(r.body.code).toBe('INVALID_CREDENTIALS');
+    }
+  });
+
+  it('non-owner login: cookie only, CSRF required for logout, session ends', async () => {
+    const s = await login(AGENT_EMAIL);
+    expect(s.status).toBe(200);
+    expect(s.body.token).toBeUndefined();
+    const me = await request(app).get('/api/auth/me').set('Cookie', s.cookie);
+    expect(me.status).toBe(200);
+    expect(me.body.user.sessionState).toBe('active');
+
+    const noCsrf = await request(app).post('/api/auth/logout').set('Cookie', s.cookie).set('Origin', ORIGIN);
+    expect(noCsrf.status).toBe(403);
+    const out = await request(app).post('/api/auth/logout').set('Cookie', s.cookie).set('Origin', ORIGIN).set('X-CSRF-Token', s.csrf);
+    expect(out.status).toBe(200);
+    expect((await request(app).get('/api/auth/me').set('Cookie', s.cookie)).status).toBe(401);
+
+    const forbidden = await request(app).get('/api/employees').set('Cookie', (await login(AGENT_EMAIL)).cookie);
+    expect(forbidden.body.code).toBe('FORBIDDEN_ROLE');
+  });
+
+  it('Owner: pending 2FA is restricted (R11-a working default), verify rotates the session', async () => {
+    const s = await login(OWNER_EMAIL);
+    expect(s.body.requires2FA).toBe(true);
+    expect((await request(app).get('/api/employees').set('Cookie', s.cookie)).body.code).toBe('OWNER_2FA_REQUIRED');
+
+    const bad = await request(app)
+      .post('/api/auth/2fa/verify')
+      .set('Cookie', s.cookie)
+      .set('Origin', ORIGIN)
+      .set('X-CSRF-Token', s.csrf)
+      .send({ token: '000000' });
+    expect([400, 401]).toContain(bad.status);
+
+    // Fresh step so the replay guard does not reject a code used by an earlier run.
+    await query(`UPDATE two_factor_factors SET last_used_step = NULL, failed_count = 0, locked_until = NULL
+                 WHERE employee_id = (SELECT id FROM employees WHERE email = $1)`, [OWNER_EMAIL]);
+    const s2 = await login(OWNER_EMAIL);
+    const ok = await request(app)
+      .post('/api/auth/2fa/verify')
+      .set('Cookie', s2.cookie)
+      .set('Origin', ORIGIN)
+      .set('X-CSRF-Token', s2.csrf)
+      .send({ token: authenticator.generate(SEEDED_TOTP_SECRET) });
+    expect(ok.status).toBe(200);
+    const rotated = sessionCookieFrom(ok);
+    expect(rotated).not.toBe(s2.cookie);
+    expect((await request(app).get('/api/auth/me').set('Cookie', s2.cookie)).status).toBe(401);
+    const list = await request(app).get('/api/employees').set('Cookie', rotated);
+    expect(list.status).toBe(200);
+    expect(list.body.employees[0].version).toBeDefined();
+  });
+
+  it('password reset: E-03 email via outbox, single-use hashed token, all sessions ended', async () => {
+    const emp = await uniqueEmployee('developer');
+    const before = await login(emp.email);
+    mailSink.clear();
+
+    const r = await request(app).post('/api/auth/password-reset/request').set('Origin', ORIGIN).send({ email: emp.email });
+    expect(r.status).toBe(202);
+    const unknown = await request(app).post('/api/auth/password-reset/request').set('Origin', ORIGIN).send({ email: 'x@test.local' });
+    expect(unknown.body).toEqual(r.body);
+    // E-03: outbox relay → security delivery → J-02 dispatch into the test mail sink (no real email).
+    // Relay until the backlog is drained: earlier suites in the same DB may have left events queued.
+    for (let i = 0; i < 500; i++) if ((await relayOutboxOnce()).claimed === 0) break;
+    // One J-02 pass claims only the 25 oldest due rows; drain so this test's email is sent on a reused DB.
+    for (let i = 0; i < 100; i++) if ((await dispatchDueDeliveries()).claimed === 0) break;
+    const sent = mailSink.messages().filter((m) => m.to.toLowerCase() === emp.email.toLowerCase());
+    expect(sent).toHaveLength(1);
+    const link = sent[0].text.match(/https?:\/\/\S+reset-password\?token=[^\s"<]+/)![0];
+    const token = decodeURIComponent(new URL(link).searchParams.get('token')!);
+    const stored = await query('SELECT 1 FROM security_tokens WHERE token_hash = $1', [token]);
+    expect(stored.rowCount).toBe(0); // raw token is never stored
+
+    const done = await request(app)
+      .post('/api/auth/password-reset/complete')
+      .set('Origin', ORIGIN)
+      .send({ token, newPassword: 'a brand new passphrase' });
+    expect(done.status).toBe(200);
+    const again = await request(app)
+      .post('/api/auth/password-reset/complete')
+      .set('Origin', ORIGIN)
+      .send({ token, newPassword: 'another new passphrase' });
+    expect(again.body.code).toBe('RESET_LINK_INVALID');
+    expect((await request(app).get('/api/auth/me').set('Cookie', before.cookie)).status).toBe(401);
+    expect((await login(emp.email, 'a brand new passphrase')).status).toBe(200);
+  });
+
+  // ---------------------------------------------------------------- review 2026-11-04 (FIX-SEC)
+  /** Runs `fn` with X-Forwarded-For honoured, so requests can come from different client addresses. */
+  async function withTrustedProxy<T>(fn: () => Promise<T>): Promise<T> {
+    const before = app.get('trust proxy');
+    app.set('trust proxy', true);
+    try {
+      return await fn();
+    } finally {
+      app.set('trust proxy', before);
+    }
+  }
+  const loginFrom = (ip: string, email: string, password: string) =>
+    request(app).post('/api/auth/login').set('Origin', ORIGIN).set('X-Forwarded-For', ip).send({ email, password });
+
+  it('E-01/F-04: failures from one address never lock the account; the right password from another address signs in', async () => {
+    const emp = await uniqueEmployee('call_center');
+    await withTrustedProxy(async () => {
+      for (let i = 0; i < config.lockout.maxFailures; i++) {
+        expect((await loginFrom('203.0.113.50', emp.email, 'Wrong-password-000')).status).toBe(401);
+      }
+      const pairLocked = await loginFrom('203.0.113.50', emp.email, PASSWORD);
+      expect(pairLocked.status).toBe(429);
+      expect(pairLocked.body.code).toBe('RATE_LIMITED');
+      expect(Number(pairLocked.headers['retry-after'])).toBeGreaterThan(0);
+      const elsewhere = await loginFrom('198.51.100.60', emp.email, PASSWORD);
+      expect(elsewhere.status).toBe(200);
+    });
+    const { rows } = await query<{ locked_until: Date | null; failed_count: number }>(
+      'SELECT locked_until, failed_count FROM credentials WHERE employee_id = $1',
+      [emp.id]
+    );
+    expect(rows[0].locked_until).toBeNull();
+  });
+
+  it('F-01: successful sign-ins never count toward the per-IP limit (office NAT)', async () => {
+    const emp = await uniqueEmployee('developer');
+    await withTrustedProxy(async () => {
+      for (let i = 0; i < 25; i++) expect((await loginFrom('192.0.2.77', emp.email, PASSWORD)).status).toBe(200);
+    });
+  });
+
+  it('E-05: wrong current passwords on /password/change count toward the lockout (429 RATE_LIMITED once locked)', async () => {
+    const emp = await uniqueEmployee('data_entry');
+    const s = await login(emp.email);
+    const change = (currentPassword: string) =>
+      request(app)
+        .post('/api/auth/password/change')
+        .set('Cookie', s.cookie)
+        .set('Origin', ORIGIN)
+        .set('X-CSRF-Token', s.csrf)
+        .send({ currentPassword, newPassword: 'A-new-password-456!' });
+    for (let i = 0; i < config.lockout.maxFailures - 1; i++) expect((await change('Not-the-password-1')).status).toBe(401);
+    const { rows } = await query<{ failed_count: number }>('SELECT failed_count FROM credentials WHERE employee_id = $1', [emp.id]);
+    expect(rows[0].failed_count).toBe(config.lockout.maxFailures - 1);
+    const locking = await change('Not-the-password-1'); // this failure sets the lock
+    expect(locking.status).toBe(429);
+    expect(locking.body.code).toBe('RATE_LIMITED');
+    const locked = await change(PASSWORD); // even the right password waits for the lock
+    expect(locked.status).toBe(429);
+    expect(locked.body.code).toBe('RATE_LIMITED');
+    expect(locked.headers['retry-after']).toBeDefined();
+  });
+
+  it('E-04 + E-09: a password change revokes open reset links and rotates the session token (session stays usable)', async () => {
+    const emp = await uniqueEmployee('developer');
+    const s = await login(emp.email);
+    const r = await request(app).post('/api/auth/password-reset/request').set('Origin', ORIGIN).send({ email: emp.email });
+    expect(r.status).toBe(202);
+    const open = await query(`SELECT 1 FROM security_tokens WHERE employee_id = $1 AND purpose = 'password_reset' AND used_at IS NULL AND superseded_at IS NULL`, [emp.id]);
+    expect(open.rowCount).toBe(1);
+
+    const changed = await request(app)
+      .post('/api/auth/password/change')
+      .set('Cookie', s.cookie)
+      .set('Origin', ORIGIN)
+      .set('X-CSRF-Token', s.csrf)
+      .send({ currentPassword: PASSWORD, newPassword: 'A-new-password-789!' });
+    expect(changed.status).toBe(200);
+    const after = await query(`SELECT 1 FROM security_tokens WHERE employee_id = $1 AND purpose = 'password_reset' AND used_at IS NULL AND superseded_at IS NULL`, [emp.id]);
+    expect(after.rowCount).toBe(0);
+
+    const rotated = sessionCookieFrom(changed);
+    expect(rotated).not.toBe('');
+    expect(rotated).not.toBe(s.cookie);
+    expect((await request(app).get('/api/auth/me').set('Cookie', s.cookie)).status).toBe(401); // old cookie dead
+    const me = await request(app).get('/api/auth/me').set('Cookie', rotated);
+    expect(me.status).toBe(200);
+    expect(me.body.csrfToken).toBe(s.csrf); // same session: CSRF token unchanged
+  });
+
+  it('F-05 + E-06: reset requests are capped per email silently and answer known and unknown emails alike', async () => {
+    const emp = await uniqueEmployee('developer');
+    const ask = async (email: string) => {
+      const t0 = Date.now();
+      const res = await request(app).post('/api/auth/password-reset/request').set('Origin', ORIGIN).send({ email });
+      return { res, ms: Date.now() - t0 };
+    };
+    const known = await ask(emp.email);
+    const unknown = await ask(`nobody.${Date.now()}@test.local`);
+    expect(known.res.status).toBe(202);
+    expect(unknown.res.body).toEqual(known.res.body);
+    // E-06: both answers wait for the same floor (500 ms), so the DB work of the known path is not visible.
+    expect(known.ms).toBeGreaterThanOrEqual(480);
+    expect(unknown.ms).toBeGreaterThanOrEqual(480);
+
+    for (let i = 0; i < 5; i++) expect((await ask(emp.email)).res.status).toBe(202);
+    const issued = await query(`SELECT count(*)::int AS n FROM security_tokens WHERE employee_id = $1 AND purpose = 'password_reset'`, [emp.id]);
+    expect(issued.rows[0].n).toBe(3); // RESET_REQUESTS_PER_EMAIL_PER_HOUR
+  });
+
+  it('F-08: an invalid reset link is refused without hashing (fast) and keeps the generic code', async () => {
+    const t0 = Date.now();
+    const res = await request(app)
+      .post('/api/auth/password-reset/complete')
+      .set('Origin', ORIGIN)
+      .send({ token: 'a'.repeat(64), newPassword: 'whatever passphrase' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('RESET_LINK_INVALID');
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+
+  it('audit rows cannot be updated or deleted', async () => {
+    await expect(query(`UPDATE audit_events SET event_name = 'x' WHERE false OR true`)).rejects.toThrow(/append-only/);
+  });
+});

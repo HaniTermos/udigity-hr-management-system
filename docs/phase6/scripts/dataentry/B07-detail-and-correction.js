@@ -113,7 +113,7 @@ function inputF(type, label, value, o) {
 }
 function textareaF(label, value, o) {
   o = o || {}; const st = o.err ? 'Error' : value ? 'Filled' : 'Default';
-  const t = { Label: label, Counter: (value || '').length + ' / ' + (o.max || 500) };
+  const t = { Label: label, Counter: (value || '').trim().length + ' / ' + (o.max || 500) };
   if (value) t.Value = value; else t.Placeholder = o.placeholder || ' ';
   if (o.err) t['Error message'] = o.err; else if (o.helper) t.Helper = o.helper;
   const n = I('Textarea', { State: st }, t, { 'Show label': true, Required: !!o.required, 'Show helper': !!(o.err || o.helper) });
@@ -188,7 +188,7 @@ function shell(frame, role, active, query) {
   } else W.push('TopBar not found');
   const sb = nested(sh, 'Sidebar');
   if (sb) {
-    for (const l of NAVS[role][1]) { const it = nested(sb, 'Nav/Item · ' + l); if (it) props(it, { Label: l, State: l === active ? 'Active' : 'Default' }); else W.push('nav item missing: ' + l); }
+    for (const l of NAVS[role][1]) { const it = nested(sb, 'Nav/Item · ' + l); if (it) props(it, { Label: l.replace(/ \[DEC-\d+\]$/, ''), State: l === active ? 'Active' : 'Default' }); else W.push('nav item missing: ' + l); }
     const secs = sb.findAll(n => n.type === 'INSTANCE' && n.name === 'Nav/SectionLabel');
     NAVS[role][0].forEach((l, i) => { if (secs[i]) props(secs[i], { Label: l }); });
     if (role === 'Call Center') props(nested(nested(sb, 'Nav/Item · Calling Queue'), 'Badge'), { Count: '7' });
@@ -316,14 +316,32 @@ function table(parent, cols, rows, o) {
     rw.c.forEach((v, j) => r.appendChild(cell(v, cols[j].w, cols[j].r)));
   });
   if (o.body) for (const n of o.body) put(tb, n, true);
-  if (o.pager) { const pg = I('Table/Pagination', null, { Range: o.pager }); put(tb, pg, true); tx(pg, 'Per page', '10 per page'); }
+  if (o.pager) { const pg = I('Table/Pagination', null, { Range: o.pager }); put(tb, pg, true); pagerProps(pg, o.pages, o.per); }
   return tb;
 }
 
 // ---------- fit / overflow / placeholder checks ----------
 const DEFAULTS = ['Dialog title', 'Short description of what happens next.', 'Drawer title', 'Section title', 'Banner title', 'Explain what happened and what to do next.', 'Column', 'Cell text', 'Meta line', 'Toast title', 'Toast body', 'DEC-000', 'Helper text', 'Schedule follow-up', 'Olive & Thyme Café moved to Follow-ups.', 'Confirm', 'Dialog content', 'Drawer content', 'Section content', 'Inset content', 'Card content'];
 function shown(n, root) { let p = n; while (p && p !== root) { if (p.visible === false) return false; p = p.parent; } return true; }
+function pagerProps(pg, pages, per) {
+  const p = { 'Per page': per || '10 per page' };
+  if (!pages || pages <= 1) p['Show page controls'] = false;
+  else Object.assign(p, { 'Show page controls': true, 'Show page 2': true, 'Show page 3': pages >= 3, 'Show gap': pages > 4, 'Show last page': pages > 3, 'Last page': String(pages) });
+  props(pg, p);
+}
+// DE-6 canvas patch mirrored: Touch Close = Icon/x 44:53, Back = Icon/chevron-left 44:38; DS-13d: Notice/Access FIXED→FILL re-lay-out.
+function touchFix(root) {
+  const ib = n => n.type === 'INSTANCE' && n.mainComponent && n.mainComponent.parent && n.mainComponent.parent.name === 'IconButton';
+  for (const b of root.findAll(n => (n.name === 'Close' || n.name === 'Back') && ib(n))) {
+    const k = Object.keys(b.componentProperties).find(x => x.split('#')[0] === 'Icon');
+    if (k) { try { b.setProperties({ [k]: b.name === 'Close' ? '44:53' : '44:38' }); } catch (e) { W.push('icon ' + b.name + ': ' + e.message); } }
+  }
+  for (const n of root.findAll(n => n.type === 'INSTANCE' && n.mainComponent && (n.mainComponent.name === 'Notice/Access' || (n.mainComponent.parent && n.mainComponent.parent.name === 'Notice/Access')) && n.layoutSizingHorizontal === 'FILL')) {
+    try { n.layoutSizingHorizontal = 'FIXED'; n.layoutSizingHorizontal = 'FILL'; } catch (e) { W.push('relayout ' + n.name + ': ' + e.message); }
+  }
+}
 function fit(frame) {
+  touchFix(frame);
   const key = frame.name.replace(/^SCR-[A-Z]+-\d+ — [^—]+ — /, '');
   const fb = frame.absoluteBoundingBox, rec = {};
   const ct = frame.children.find(n => n.name === 'Content');
@@ -353,6 +371,19 @@ function slotFit(label, slot, inner) {
   R.checks[label] = { freeHeight: free, spillRight: spillR };
   if (free < 0) W.push(label + ': content taller than its slot by ' + (-free) + ' px');
   if (spillR > 0) W.push(label + ': content wider than its slot by ' + spillR + ' px');
+}
+// N42-01: stage() from C02 (X-10): build the slot body at the slot's inner width, attach, FILL, text HEIGHT, kick.
+function lockedIn(p, root) { for (let a = p.parent; a && a !== root; a = a.parent) if (a.type === 'INSTANCE') return true; return false; }
+function hugK(n) { return n.type === 'INSTANCE' && (/^(Badge|Flag|Tag) · /.test(n.name) || (n.name.startsWith('Policy · ') && n.variantProperties && n.variantProperties.Size === 'Chip')) ? 'HUG' : 'FILL'; }
+function kick(b) { if (!b || b.removed) return; try { const w = b.width, fl = b.layoutSizingHorizontal === 'FILL'; b.layoutSizingHorizontal = 'FIXED'; b.resize(w - 1, b.height); if (fl) b.layoutSizingHorizontal = 'FILL'; else b.resize(w, b.height); b.layoutSizingVertical = 'HUG'; } catch (e) { W.push('relayout ' + b.name + ': ' + e.message); } }
+function stage(host, s, name, g, nodes) {
+  const w = Math.max(200, Math.round(s.width - (s.paddingLeft || 0) - (s.paddingRight || 0)));
+  const b = AL(name, 'VERTICAL', g); host.appendChild(b); b.resize(w, 10); b.counterAxisSizingMode = 'FIXED'; b.primaryAxisSizingMode = 'AUTO';
+  for (const n of nodes) if (n) put(b, n, hugK(n) === 'FILL');
+  s.appendChild(b); try { b.layoutSizingHorizontal = 'FILL'; } catch (e) { b.layoutSizingHorizontal = 'FIXED'; } b.layoutSizingVertical = 'HUG';
+  for (const n of b.children) if (hugK(n) === 'FILL') { try { n.layoutSizingHorizontal = 'FILL'; } catch (e) { } }
+  for (const t of b.findAll(n => n.type === 'TEXT' && !lockedIn(n, b))) if (t.parent === b || t.layoutSizingHorizontal === 'FILL') { try { t.layoutSizingHorizontal = 'FILL'; t.textAutoResize = 'HEIGHT'; } catch (e) { } }
+  kick(b); return b;
 }
 function center(frame, node, w, h) { node.x = Math.round(((w || frame.width) - node.width) / 2); node.y = Math.max(40, Math.round(((h || frame.height) - node.height) / 2)); }
 function scrimOn(frame, mobile) { const s = I('Overlay/Scrim', { Size: mobile ? 'Mobile' : 'Desktop' }); s.name = 'Scrim'; frame.appendChild(s); s.x = 0; s.y = 0; return s; }
@@ -433,7 +464,8 @@ const D3 = screen(S8, 'Desktop — Light — Edit history'); await detail(D3, 'D
 const D4 = screen(S8, 'Desktop — Light — Call Center read-only'); await detail(D4, 'Call Center');
 const D5 = screen(S8, 'Desktop — Light — Developer context-limited'); await detail(D5, 'Developer');
 const D6 = screen(S8, 'Desktop — Light — Hidden by policy');
-await centered(D6, 'Call Center', 'Calling Queue', access('Hidden by policy', 'Page', 'This record is not visible to you', 'It exists, but the visibility rules hide it from your role. No details are shown.', 'Back to queue'), ['DEC-001', 'DEC-002', 'DEC-003']);
+// N42-03 (X-3): same copy and pattern as the page-45 reference SCR-SHR-012 113:992. No name, no fields, no existence hint.
+await centered(D6, 'Call Center', 'Calling Queue', access('Hidden by policy', 'Page', 'This record isn’t available to you', 'It is outside what your role can see, so no details are shown.', 'Back to Calling Queue'), ['DEC-001', 'DEC-002', 'DEC-003']);
 const D7 = screen(S8, 'Desktop — Light — Permission denied');
 await centered(D7, 'Developer', 'Deals', access('Permission denied', 'Page', 'You do not have access to this business', 'Your role cannot open this business outside a deal or project you can see. If you need access, ask the Owner/Admin.', 'Go to My Day'), ['DEC-005']);
 const M1 = screen(S8, 'Mobile — Light', { mobile: true });
@@ -451,7 +483,7 @@ const M1 = screen(S8, 'Mobile — Light', { mobile: true });
 checkTaps(M1);
 await notesColumn(S8, [
   ['Interaction', 'Detail', 'Tabs: Overview, Edit history, Related (R-06 related records re-checked per item). Edit business → SCR-DE-004 (Data Entry, Owner). Flag incorrect data → SCR-SHR-009 drawer (Call Center, Developer, Owner).'],
-  ['Note', 'Access outcomes', 'Direct URL or stale link: hidden → “not visible to you”, no field values or name; role/scope denied → Permission denied; Developer gets only the context view (DEC-005).'],
+  ['Note', 'Access outcomes', 'Direct URL or stale link: hidden → “isn’t available to you” (X-3 reference SCR-SHR-012 113:992), no name, no field values, no existence hint; role/scope denied → Permission denied; Developer gets only the context view (DEC-005).'],
   ['Note', 'Boundaries', 'Call Center and Developers never edit master data. Calling outcome and assignment are read-only here. Edit history ≠ audit trail (Owner-only).'],
 ], [['DEC-001', '15-day timer basis.'], ['DEC-002', 'Exceptions that keep the business visible.'], ['DEC-005', 'Developer access before closure.'], ['R-06', 'Which related records appear on Related.']]);
 for (const f of [D1, D2, D3, D4, D5, D6, D7, M1]) fit(f);
@@ -463,13 +495,17 @@ const S9 = await sectionFor('SCR-SHR-009 — Submit data correction (drawer)', [
   'Frames: Open-request warning Light (primary) · Dark · Validation error · Submitted · Mobile sheet Light. Policy: recipients and notification (no DEC ID).',
 ]);
 async function fillCorrection(d, o) {
-  const slot = slotOf(d, 'Content'); const body = AL('Drawer body', 'VERTICAL', 12); slot.appendChild(body); body.layoutSizingHorizontal = 'FILL';
-  put(body, banner('Warning', 'Inline', '1 open request already exists', 'Incorrect phone — In review since 19 Oct. You can still report a different issue.'), true);
-  put(body, o.err ? selectF('Issue type', null, { required: true, err: 'Choose an issue type.', placeholder: 'Choose an issue' }) : selectF('Issue type', 'Outdated social link', { required: true }), true);
-  put(body, selectF('Field', o.err ? null : 'Social account · Instagram', { placeholder: 'Choose a field (optional)' }), true);
-  put(body, o.err ? textareaF('What is wrong?', '', { required: true, err: 'Describe what is wrong.', placeholder: 'Describe the problem' }) : textareaF('What is wrong?', 'The gym moved to a new Instagram handle last week.', { required: true }), true);
-  put(body, inputF('Text', 'Suggested value (optional)', o.err ? null : '@peakfitnessgym.demo', { placeholder: 'e.g. the correct handle', helper: 'Checked only when Data Entry applies it.' }), true);
-  if (!o.mobile) put(body, notice('Inline', 'No DEC ID', 'Who receives the request and how they are notified are not decided.'), true);
+  // N42-01: body staged at the slot width (stage()).
+  // N42-04: Error variants show the Value layer (not Placeholder), so errored fields get an explicit empty Value.
+  const slot = slotOf(d, 'Content');
+  const body = stage(d.parent, slot, 'Drawer body', 12, [
+    banner('Warning', 'Inline', '1 open request already exists', 'Incorrect phone — In review since 19 Oct. You can still report a different issue.'),
+    o.err ? selectF('Issue type', ' ', { required: true, err: 'Choose an issue type.' }) : selectF('Issue type', 'Outdated social link', { required: true }),
+    selectF('Field', o.err ? null : 'Social account · Instagram', { placeholder: 'Choose a field (optional)' }),
+    o.err ? textareaF('What is wrong?', ' ', { required: true, err: 'Describe what is wrong.' }) : textareaF('What is wrong?', 'The gym moved to a new Instagram handle last week.', { required: true }),
+    inputF('Text', 'Suggested value (optional)', o.err ? null : '@peakfitnessgym.demo', { placeholder: 'e.g. the correct handle', helper: 'Checked only when Data Entry applies it.' }),
+    o.mobile ? null : notice('Inline', 'No DEC ID', 'Who receives the request and how they are notified are not decided.'),
+  ]);
   const foot = slotOf(d, 'Footer'); const fr = row('Drawer actions', 8); foot.appendChild(fr); fr.layoutSizingHorizontal = 'FILL';
   if (o.mobile) { const a = btn('Secondary', 'Cancel', { size: 'Large' }), b = btn('Primary', 'Submit request', { size: 'Large' }); put(fr, a, true); put(fr, b, true); TAPS.push(a, b); }
   else { spacer(fr); fr.appendChild(btn('Secondary', 'Cancel')); fr.appendChild(btn('Primary', 'Submit request')); }
