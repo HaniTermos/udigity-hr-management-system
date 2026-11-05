@@ -19,6 +19,6 @@
     "otplib": "^12.0.1",
     "pixelmatch": "^5.3.0",
     "pngjs": "^7.0.0",
-    "typescript": "^5.8.2"
+    "typescript": "^7.0.2"
   }
 }
