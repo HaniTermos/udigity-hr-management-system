@@ -2,10 +2,10 @@ import bcrypt from 'bcryptjs';
 import { fileURLToPath } from 'url';
 import { pool, getClient } from './pool.js';
 import { resolveEnv } from '../config/index.js';
-import { encryptPlaintextSecrets, storeEnrolledSecret } from '../modules/identity/twoFactor.js';
+import { PUBLIC_TEST_TOTP_SECRET, encryptPlaintextSecrets, storeEnrolledSecret } from '../modules/identity/twoFactor.js';
 
 /** Public, well-known test secret. Dev/test only (SE-4 guard above). QA-2 fixed test TOTP secret. */
-export const DEV_TOTP_SECRET = 'JBSWY3DPEHPK3PXP';
+export const DEV_TOTP_SECRET = PUBLIC_TEST_TOTP_SECRET;
 
 export class SeedRefusedError extends Error {}
 

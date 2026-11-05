@@ -30,7 +30,7 @@ trap cleanup EXIT
 
 # Public dev-seed values come from the seed source itself (never hard-coded here).
 export E2E_PASSWORD="${E2E_PASSWORD:-$(grep -oE "bcrypt\.hash\('[^']+'" "$ROOT/backend/src/db/seed.ts" | head -1 | sed -E "s/.*\('//; s/'$//")}"
-export E2E_OWNER_TOTP_SECRET="${E2E_OWNER_TOTP_SECRET:-$(grep -oE "DEV_TOTP_SECRET = '[A-Z0-9]+'" "$ROOT/backend/src/db/seed.ts" | sed -E "s/.*= '//; s/'$//")}"
+export E2E_OWNER_TOTP_SECRET="${E2E_OWNER_TOTP_SECRET:-$(grep -oE "PUBLIC_TEST_TOTP_SECRET = '[A-Z0-9]+'" "$ROOT/backend/src/modules/identity/twoFactor.ts" | sed -E "s/.*= '//; s/'$//")}"
 export E2E_JOURNEYS="${E2E_JOURNEYS:-1}" E2E_BASE_URL="http://localhost:$FP"
 [ -n "$E2E_PASSWORD" ] && [ -n "$E2E_OWNER_TOTP_SECRET" ] || { echo "could not read the seed password/TOTP secret from seed.ts" >&2; exit 2; }
 

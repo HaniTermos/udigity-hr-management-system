@@ -19,7 +19,8 @@ export const identityPaths = {
 
 /** `POST /2fa/enroll/start` body. The token is 43 base64url characters, issued out of band (operator CLI or another Owner). */
 export interface EnrollStartInput {
-  enrollmentToken: string;
+  /** Omitted for the Owner's own setup from Settings (Owner 2026-11-05); required for custom-role holders. */
+  enrollmentToken?: string;
   currentPassword: string;
 }
 

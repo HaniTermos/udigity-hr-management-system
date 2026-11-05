@@ -230,15 +230,25 @@ docker compose -f docker-compose.prod.yml run --rm backend \
   node dist/modules/identity/bootstrap.js --email <owner e-mail> --name "Owner Full Name"
 ```
 
-The terminal prints, once, a random initial password and a one-time 2FA enrollment token (valid 24 h). Hand both to the
-Owner over separate channels and do not store them in shell history or chat. The Owner signs in at
-`https://hrsystem.udigity.com/login`, enrols the authenticator app (the password is required again at enrollment) and
-saves the recovery codes.
+The terminal prints, once, a random initial password (Owner decision 2026-11-05: no enrollment token any more). Run it
+yourself, in your own terminal; never paste the password into chat, tickets or shell history files. Then:
+
+1. Sign in at `https://hrsystem.udigity.com/login` with that password. You land on **Settings → Two-factor
+   authentication** (`/settings/two-factor`); until 2FA is on, this is the only page the session can open and every
+   API call answers `OWNER_2FA_REQUIRED`.
+2. **Turn on**: enter the password again, scan the QR code with an authenticator app, type the 6-digit code, and save
+   the recovery codes (shown once).
+3. Change the temporary password in **Profile**.
+
+The dev/test seeds (shared demo password, public TOTP test secret) are not in the production image, and production
+refuses that test secret even if a factor holds it; the API also logs an error at start-up if any `@udigity.demo`
+account exists. Never run `seed.ts` / `seed-demo.ts` against production.
 
 Recovery procedures with the same CLI (verify the person's identity out of band first):
 
 ```sh
-# Owner lost the authenticator AND the recovery codes: un-enrol 2FA, end sessions, issue a new token
+# Owner lost the authenticator AND the recovery codes: un-enrol 2FA and end sessions; the Owner then signs in
+# with the password and turns 2FA on again in Settings
 docker compose -f docker-compose.prod.yml run --rm backend \
   node dist/modules/identity/bootstrap.js --email <owner e-mail> --reset-2fa --reason "ticket or reason"
 # Re-encrypt any TOTP secret still stored in plaintext (one-off backfill)

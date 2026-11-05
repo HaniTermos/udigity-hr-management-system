@@ -7,6 +7,8 @@
  *   EMAIL_TRANSPORT=log|smtp (optional; default: smtp when SMTP_HOST is set, otherwise log)
  *   EMAIL_ALLOW_REAL_SEND=true   required for smtp; without it the worker refuses to start.
  *   EMAIL_LOG_LINKS=true         development only: the log transport prints the full link (token included).
+ *   SMTP_DEV_ALLOW_PLAINTEXT=true development only: allow an unencrypted SMTP hop to a LOCAL catcher (Mailpit in
+ *                                docker-compose.yml). Ignored outside NODE_ENV=development: production always requires TLS.
  *
  * Resolution:
  *   NODE_ENV=test           → memory (test sink; nodemailer jsonTransport, no network) — always.
@@ -28,6 +30,8 @@ export interface SmtpSettings {
   secure: boolean;
   user: string;
   pass: string;
+  /** Development only (SMTP_DEV_ALLOW_PLAINTEXT): no STARTTLS requirement, for a local catcher. Always false in production. */
+  allowPlaintext?: boolean;
 }
 
 export interface EmailConfig {
@@ -66,7 +70,14 @@ export function loadEmailConfig(env: Env, appEnv: string = config.env): EmailCon
     transport: 'smtp',
     from,
     allowRealSend,
-    smtp: { host, port, secure: env.SMTP_SECURE === 'true', user: env.SMTP_USER ?? '', pass: env.SMTP_PASS ?? '' },
+    smtp: {
+      host,
+      port,
+      secure: env.SMTP_SECURE === 'true',
+      user: env.SMTP_USER ?? '',
+      pass: env.SMTP_PASS ?? '',
+      allowPlaintext: appEnv === 'development' && env.SMTP_DEV_ALLOW_PLAINTEXT === 'true',
+    },
     revealLinks: false,
   };
 }

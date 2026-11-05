@@ -19,7 +19,12 @@ FROM deps AS build
 COPY backend backend
 RUN npm run build -w backend \
  && mkdir -p backend/dist/db/migrations \
- && cp backend/src/db/migrations/*.sql backend/dist/db/migrations/
+ && cp backend/src/db/migrations/*.sql backend/dist/db/migrations/ \
+ # Owner 2026-11-05: the dev/test seeds (shared demo password, public TOTP test secret) never ship in an image.
+ # They already refuse to run outside development/test; this removes them altogether. Owners come from bootstrap.js.
+ && rm -f backend/dist/db/seed.js backend/dist/db/seed-demo.js backend/dist/db/e2e-seed.js \
+          backend/dist/db/seed.js.map backend/dist/db/seed-demo.js.map backend/dist/db/e2e-seed.js.map \
+ && ! grep -rl "Password123!" backend/dist --include=*.js
 
 # ---- prod-deps: runtime dependencies only ----
 FROM ${NODE_IMAGE} AS prod-deps
@@ -35,7 +40,11 @@ FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production \
     PORT=5000
 WORKDIR /app
-RUN apk add --no-cache tini
+# Review 2026-11-05 (Trivy): the base image's bundled npm/yarn/corepack carry HIGH CVEs (brace-expansion, ip-address,
+# pacote, picomatch, sigstore) and are never used at runtime (every command is `node ...`). Remove them.
+RUN apk add --no-cache tini \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=prod-deps --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/backend/package.json ./backend/package.json

@@ -14,7 +14,8 @@ export const PUBLIC_PATHS = ['/login', '/reset-password', '/session-ended'] as c
 export const LOGIN_PATH = '/login';
 /** SCR-AUTH-002 (challenge) and SCR-AUTH-003 (enrollment) live on the login route as steps. */
 export const TWO_FACTOR_VERIFY_PATH = '/login?step=2fa';
-export const TWO_FACTOR_ENROLL_PATH = '/login?step=enroll';
+/** Owner 2026-11-05: 2FA setup lives in Settings → Two-factor authentication (the login step stays for old links). */
+export const TWO_FACTOR_ENROLL_PATH = '/settings/two-factor';
 /** SCR-AUTH-003 "Recover lost factor": sign in with a recovery code (pending verification only). */
 export const TWO_FACTOR_RECOVER_PATH = '/login?step=recover';
 
@@ -95,6 +96,8 @@ export function resolveGuardRedirect(
       const step = new URLSearchParams(search).get('step');
       if (step === '2fa' || step === 'enroll' || step === 'recover') return null;
     }
+    // Pending enrollment: Settings → Two-factor authentication is the one page that may render.
+    if (state === 'pending_2fa_enrollment' && pathname === TWO_FACTOR_ENROLL_PATH) return null;
     // Password reset stays reachable; everything else goes to the 2FA step.
     if (pathname === '/reset-password') return null;
     return pending;

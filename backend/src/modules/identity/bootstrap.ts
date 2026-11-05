@@ -3,9 +3,9 @@
  *
  * Run on the server by the operator (never over HTTP):
  *   npx tsx src/modules/identity/bootstrap.ts --email owner@company.tld --name "Full Name"
- *       Creates the first Owner if missing, with a random password, and issues a one-time 2FA
- *       enrollment token (24 h). Both are printed ONCE to this terminal; nothing is logged elsewhere.
- *       For an existing Owner without an enrolled factor: issues a new enrollment token only.
+ *       Creates the first Owner if missing, with a random password printed ONCE to this terminal (nothing is
+ *       logged elsewhere). The Owner signs in and turns 2FA on in Settings (password re-check, QR code); since
+ *       2026-11-05 no enrollment token is printed (one is still recorded internally and simply expires).
  *   npx tsx src/modules/identity/bootstrap.ts --email owner@company.tld --reset-2fa --reason "..."
  *       Operator recovery after the Owner lost the authenticator AND the recovery codes. The operator
  *       verifies identity out of band first. Un-enrolls the factor, voids recovery codes, ends all the
@@ -158,9 +158,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       // Printed once, to the operator's terminal only.
       if (r.kind === 'encrypted') console.log(`Encrypted ${r.count} plaintext TOTP secret(s).`);
       else {
+        // Owner 2026-11-05: the Owner turns 2FA on from Settings with a password re-check; no token is handed over.
         if (r.kind === 'created') console.log(`Owner created. Temporary password (shown once): ${r.password}`);
-        console.log(`2FA enrollment token (shown once, single use, expires ${r.expiresAt.toISOString()}): ${r.enrollmentToken}`);
-        console.log('Hand both over out of band. The Owner signs in, then enters the token and the password to enroll.');
+        else console.log('Owner has no 2FA now: they sign in with their password and turn 2FA on in Settings.');
+        console.log('Next: sign in, open Settings > Two-factor authentication > Turn on, scan the QR code, then change the');
+        console.log('temporary password in Profile. Owner tools stay locked until 2FA is on.');
       }
       await pool.end();
       process.exit(0);

@@ -41,6 +41,7 @@ import {
   consumeEnrollmentTokenById,
   countOpenRecoveryCodes,
   findOpenEnrollmentToken,
+  isRefusedTestSecret,
   issueEnrollmentToken,
   readFactorSecret,
   replaceRecoveryCodes,
@@ -122,8 +123,9 @@ const TotpCodeSchema = z.object({
 
 const EnrollStartSchema = z
   .object({
-    // AU-8: one-time enrollment token from the operator CLI or another Owner (shown once there).
-    enrollmentToken: z.string().trim().regex(/^[A-Za-z0-9_-]{43}$/, 'Enrollment token is invalid'),
+    // AU-8: one-time enrollment token issued by an Owner. Required for custom-role holders; an Owner enrols
+    // themselves from Settings with a fresh password re-authentication only (Owner 2026-11-05).
+    enrollmentToken: z.string().trim().regex(/^[A-Za-z0-9_-]{43}$/, 'Enrollment token is invalid').optional(),
     // Fresh re-authentication at the moment of enrollment.
     currentPassword: PasswordInputSchema,
   })
@@ -375,6 +377,11 @@ async function checkFactorCode(client: PoolClient, factor: FactorRow, code: stri
 
   // AU-13: the secret is stored encrypted; decrypt (and encrypt any legacy plaintext) here.
   const secret = await readFactorSecret(client, factor);
+  // The public test secret (dev seed) is never a valid factor in production, whatever code is sent.
+  if (isRefusedTestSecret(config.env, secret)) {
+    console.error('[security] a TOTP factor holds the PUBLIC TEST SECRET in production: refused. Reset this 2FA (bootstrap --reset-2fa).');
+    return { result: 'invalid', lockedNow: false };
+  }
   const delta = authenticator.checkDelta(code, secret);
   const step = delta === null ? null : totpStep(now, delta);
   const lastUsed = factor.last_used_step === null ? null : Number(factor.last_used_step);
@@ -533,7 +540,7 @@ async function completeSecondFactor(req: Request, code: string, mode: SecondFact
     if (mode === 'enroll') {
       // AU-8: the enrollment token bound at enroll/start must still be open; it is consumed here.
       const tokenId = factor.pending_enrollment_token_id;
-      if (!tokenId || !(await consumeEnrollmentTokenById(client, tokenId, user.id))) {
+      if (tokenId ? !(await consumeEnrollmentTokenById(client, tokenId, user.id)) : user.role !== 'owner') {
         return { kind: 'enrollment_token_invalid' };
       }
       await client.query(
@@ -547,7 +554,7 @@ async function completeSecondFactor(req: Request, code: string, mode: SecondFact
         entityType: 'employee',
         entityId: user.id,
         sessionId: user.sessionId,
-        payload: { method: 'totp', enrollmentTokenId: tokenId },
+        payload: { method: 'totp', enrollmentTokenId: tokenId, selfEnrolled: tokenId === null },
       });
       // Controls gap V6.4-b: security notice to the account holder (in-app; ids only).
       await outbox.emit(client, { name: 'two_factor.enrolled', aggregateType: 'employee', aggregateId: user.id, payload: {} });
@@ -686,8 +693,10 @@ router.post('/2fa/enroll/start', authenticate, twoFactorLimiter, async (req: Req
         await recordAuditEvent(client, { ...auditBase, eventName: 'session.second_factor_failed', payload: { reason: `reauth_${pw}`, mode: 'enroll' } });
         return pw === 'locked' ? 'locked' : 'password_invalid';
       }
-      const tokenId = await findOpenEnrollmentToken(client, user.id, enrollmentToken);
-      if (!tokenId) {
+      // Owner self-enrollment needs no token; anyone else must present an open Owner-issued token.
+      const selfEnroll = user.role === 'owner' && !enrollmentToken;
+      const tokenId = selfEnroll ? null : enrollmentToken ? await findOpenEnrollmentToken(client, user.id, enrollmentToken) : null;
+      if (!selfEnroll && !tokenId) {
         await recordAuditEvent(client, { ...auditBase, eventName: 'session.second_factor_failed', payload: { reason: 'enrollment_token_invalid', mode: 'enroll' } });
         return 'token_invalid';
       }

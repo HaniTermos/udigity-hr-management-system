@@ -49,13 +49,19 @@ function groupSecret(secret: string) {
   return secret.replace(/\s+/g, '').replace(/(.{4})/g, '$1 ').trim();
 }
 
-/** SCR-AUTH-003: forced Owner enrollment (token + password, code, then one-time recovery codes). */
+/**
+ * SCR-AUTH-003: 2FA enrollment (password re-check, code, then one-time recovery codes). The Owner sets it up from
+ * Settings without a token (Owner 2026-11-05); a custom-role holder also enters the token an Owner gave them.
+ */
 export function EnrollmentFlow({
   startEnrollment,
   confirmEnrollment,
   onFinish,
   onSignOut,
+  requireToken = true,
 }: {
+  /** false = Owner self-setup (no enrollment token field). */
+  requireToken?: boolean;
   startEnrollment: (input: EnrollStartInput) => Promise<EnrollmentStart>;
   confirmEnrollment: (code: string) => Promise<EnrollmentConfirm>;
   /** Called after the codes are acknowledged. */
@@ -85,14 +91,14 @@ export function EnrollmentFlow({
   const connect = async (e: React.FormEvent) => {
     e.preventDefault();
     setAlert(null);
-    const tErr = !ENROLLMENT_TOKEN_PATTERN.test(token.trim()) ? 'Enter the 43-character enrollment token you were given.' : null;
+    const tErr = requireToken && !ENROLLMENT_TOKEN_PATTERN.test(token.trim()) ? 'Enter the 43-character enrollment token you were given.' : null;
     const pErr = !password ? 'Enter your current password.' : null;
     setTokenError(tErr);
     setPasswordError(pErr);
     if (tErr || pErr) return;
 
     setBusy(true);
-    const res = await startEnrollment({ enrollmentToken: token, currentPassword: password });
+    const res = await startEnrollment(requireToken ? { enrollmentToken: token, currentPassword: password } : { currentPassword: password });
     setBusy(false);
     if (res.success && res.secret) {
       setSetup({ secret: res.secret, url: res.otpauthUrl });
@@ -289,12 +295,21 @@ export function EnrollmentFlow({
 
   return (
     <form onSubmit={connect} noValidate className="space-y-4" aria-label="Connect your second factor">
-      <SessionChip>Pending 2FA enrollment · admin locked</SessionChip>
-      <AuthTitle sub="Owner accounts must use 2FA before any admin access. This step is required.">Set up your second step</AuthTitle>
+      <SessionChip>{requireToken ? 'Pending 2FA enrollment · admin locked' : 'Settings · Two-factor authentication'}</SessionChip>
+      <AuthTitle
+        sub={
+          requireToken
+            ? 'Owner accounts must use 2FA before any admin access. This step is required.'
+            : 'Turn on two-factor authentication to unlock the Owner tools. You need an authenticator app (Google Authenticator, Microsoft Authenticator, Authy…).'
+        }
+      >
+        {requireToken ? 'Set up your second step' : 'Turn on two-factor authentication'}
+      </AuthTitle>
       <StepList phase="connect" />
 
       {alert && <Alert tone="danger" title={alert.title} body={alert.body} />}
 
+      {requireToken && (
       <Input
         label="Enrollment token"
         type="password"
@@ -309,6 +324,7 @@ export function EnrollmentFlow({
           if (tokenError) setTokenError(null);
         }}
       />
+      )}
       <Input
         label="Current password"
         type="password"

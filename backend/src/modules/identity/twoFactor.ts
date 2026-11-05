@@ -54,11 +54,23 @@ async function writeSealed(db: Queryable, factorId: string, employeeId: string, 
  * Store a new (not yet enrolled) secret for an Owner, encrypted. Returns false when a factor is
  * already enrolled (re-enrollment is not possible through this path).
  */
+/**
+ * Public, well-known TOTP test secret used by the dev/test seed (QA-2). It is published in this repository, so a
+ * production factor holding it is no second factor at all: production refuses every code checked against it.
+ */
+export const PUBLIC_TEST_TOTP_SECRET = 'JBSWY3DPEHPK3PXP';
+
+/** True when this factor must be refused: production holding the public test secret. */
+export function isRefusedTestSecret(appEnv: string, secret: string): boolean {
+  return appEnv === 'production' && secret.replace(/\s+/g, '').toUpperCase() === PUBLIC_TEST_TOTP_SECRET;
+}
+
+/** `enrollmentTokenId` null = Owner self-enrollment from Settings (Owner 2026-11-05); other roles always bind a token. */
 export async function storePendingSecret(
   db: Queryable,
   employeeId: string,
   secret: string,
-  enrollmentTokenId: string
+  enrollmentTokenId: string | null
 ): Promise<boolean> {
   const sealed = sealSecret(secret, employeeId, be1Env.totp.current);
   const { rowCount } = await db.query(
