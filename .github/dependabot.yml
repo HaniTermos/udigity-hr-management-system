@@ -1,5 +1,5 @@
 # T-08: automated update PRs (npm + GitHub Actions), weekly, minor/patch grouped into ONE PR per ecosystem and directory.
-# Majors arrive as separate PRs. `cooldown` holds every new release back for 14 days (same rule the owner applies by hand:
+# Major versions are ignored (Owner 2026-11-05): they are planned and tested by hand. `cooldown` holds every new release back for 14 days (same rule the owner applies by hand:
 # nothing younger than two weeks goes into the lockfile), security updates are not delayed by it. Exact-pinned runtime
 # packages (next, nodemailer) are bumped by Dependabot as exact versions too. Every PR still has to pass the CI gate.
 version: 2
@@ -9,6 +9,9 @@ updates:
     schedule: { interval: weekly, day: monday }
     open-pull-requests-limit: 5
     cooldown: { default-days: 14 }
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-patch: { update-types: [minor, patch] }
   - package-ecosystem: npm
@@ -16,6 +19,9 @@ updates:
     schedule: { interval: weekly, day: monday }
     open-pull-requests-limit: 5
     cooldown: { default-days: 14 }
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-patch: { update-types: [minor, patch] }
   - package-ecosystem: npm
@@ -23,6 +29,9 @@ updates:
     schedule: { interval: weekly, day: monday }
     open-pull-requests-limit: 5
     cooldown: { default-days: 14 }
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-patch: { update-types: [minor, patch] }
   - package-ecosystem: npm
@@ -30,6 +39,9 @@ updates:
     schedule: { interval: weekly, day: monday }
     open-pull-requests-limit: 5
     cooldown: { default-days: 14 }
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-patch: { update-types: [minor, patch] }
   - package-ecosystem: github-actions
@@ -37,5 +49,8 @@ updates:
     schedule: { interval: weekly, day: monday }
     open-pull-requests-limit: 5
     cooldown: { default-days: 14 }
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       actions-minor-patch: { update-types: [minor, patch] }
