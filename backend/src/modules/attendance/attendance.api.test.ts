@@ -948,7 +948,7 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', { timeout: 60
       });
     });
 
-    it('D3/D4: no self-approval of a correction, no self-granted or self-approved remote exception', async () => {
+    it('D3/D4/S-30: the Owner sends no request for their own attendance; no self-granted or self-approved remote exception', async () => {
       await query(`UPDATE attendance_sessions SET state = 'closed', check_out_at = check_in_at, effective_check_out_at = effective_check_in_at WHERE employee_id = $1 AND state = 'open'`, [owner.id]);
       // The seed Owner is shared by every run on this DB: a fresh day per run keeps the intervals apart.
       const day = new Date(Date.UTC(2027, 0, 4 + Math.floor(Math.random() * 3000))).toISOString().slice(0, 10);
@@ -958,12 +958,8 @@ describe.skipIf(!hasTestDb)('BE1 Increment 3 — attendance (DB)', { timeout: 60
       await call(owner, 'post', '/api/attendance/check-out', { summary: { workCompleted: 'Owner reviews and calls' } });
       pin(new Date(`${day}T20:00:00Z`));
       const own = await call(owner, 'post', '/api/attendance/corrections', { sessionId: s.id, proposedCheckInAt: `${day}T06:30:00Z`, reason: 'Arrived earlier' });
-      expect(own.status, JSON.stringify(own.body)).toBe(201);
-      const self = await call(owner, 'post', `/api/attendance/corrections/${own.body.id}/approve`, { version: own.body.version });
-      expect(self.status).toBe(403);
-      expect(self.body.details.reason).toBe('SELF_DECISION');
-      expect((await call(owner, 'get', `/api/attendance/corrections/${own.body.id}`)).body.status).toBe('submitted');
-      await call(owner, 'post', `/api/attendance/corrections/${own.body.id}/withdraw`, { version: own.body.version });
+      expect(own.status, JSON.stringify(own.body)).toBe(409);
+      expect(own.body.details.reason).toBe('OWNER_CORRECTS_DIRECTLY');
       const grant = await call(owner, 'post', '/api/attendance/remote-exceptions', { employeeId: owner.id, startDate: day, reason: 'Working from home' });
       expect(grant.status).toBe(403);
       setAttendanceFlagOverridesForTests({ 'attendance.remoteSelfRequest': true });

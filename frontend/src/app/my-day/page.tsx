@@ -15,6 +15,8 @@ import { useAuth } from '@/lib/auth';
 import { useCompanyTime } from '@/lib/hooks/useCompanyTime';
 
 import { formatRoleName } from '@/components/owner/format';
+import { Button } from '@/components/ui/Button';
+import { openSessionMessage } from '@/lib/attendance/openSessionMessage';
 
 /** SCR-SHR-001 My Day. Attendance never gates the work list (contract A1). */
 export default function MyDayPage() {
@@ -33,6 +35,13 @@ export default function MyDayPage() {
   }, [mutateToday]);
 
   const earlier = today.data?.openSessionFromEarlierDay;
+  const earlierMessage = earlier
+    ? openSessionMessage({
+        ownerCorrectsDirectly: Boolean(today.data?.ownerCorrectsDirectly),
+        checkedInAt: time.formatTime(earlier.effectiveCheckInAt),
+        sessionId: earlier.id,
+      })
+    : null;
 
   return (
     <AppShell>
@@ -46,12 +55,21 @@ export default function MyDayPage() {
         </div>
 
 
-        {earlier && !today.data?.session && (
-          <Alert
-            tone="warning"
-            title={`You still have an open session from ${dayLabel(earlier.workDate, 'short')}`}
-            body={`Checked in ${time.formatTime(earlier.effectiveCheckInAt)} with no checkout. Check-in stays blocked until you send a correction request with your checkout time.`}
-          />
+        {earlier && earlierMessage && !today.data?.session && (
+          <div className="space-y-2">
+            <Alert
+              tone="warning"
+              title={`You still have an open session from ${dayLabel(earlier.workDate, 'short')}`}
+              body={earlierMessage.body}
+            />
+            {earlierMessage.action && (
+              <div className="flex justify-end">
+                <Button variant="secondary" onClick={() => router.push(earlierMessage.action!.href)}>
+                  {earlierMessage.action.label}
+                </Button>
+              </div>
+            )}
+          </div>
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] gap-4 items-start">

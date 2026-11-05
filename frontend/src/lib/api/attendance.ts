@@ -133,6 +133,8 @@ export interface AttendanceTodayDto {
   canCheckOut: boolean;
   summaryRule: { required: boolean; minLength: number };
   employeeRequestsEnabled: boolean;
+  /** S-30: the Owner closes their own sessions directly (no requests). Absent on older servers. */
+  ownerCorrectsDirectly?: boolean;
   remoteSelfRequestEnabled: boolean;
   failedCheckout: string;
   /** Fixed v1 scope "no break tracking": false hides the break timer (the break routes answer 404). */

@@ -55,7 +55,12 @@ export function AttendanceCorrections() {
   const counts = data?.counts;
 
   const items = data?.items ?? [];
-  const selected = items.find((i) => i.id === selectedId) ?? items[0] ?? null;
+  // `?session=<id>` (My Day "Close this session", S-30) preselects that session in the review queue.
+  const [linkedSessionId] = useState<string | null>(() =>
+    typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('session')
+  );
+  const linked = selectedId === null && linkedSessionId ? items.find((i) => i.sessionId === linkedSessionId) : undefined;
+  const selected = items.find((i) => i.id === selectedId) ?? linked ?? items[0] ?? null;
   const denied = error instanceof ApiError && (error.isPermissionDenied || error.code === 'OWNER_2FA_REQUIRED');
 
   const tabs = [

@@ -20,6 +20,8 @@ import {
 import { offlineSaveMessage } from '@/lib/errorRouting';
 import { useCompanyTime, type CompanyTime } from '@/lib/hooks/useCompanyTime';
 import { CorrectionDrawer } from './CorrectionDrawer';
+import { useRouter } from 'next/navigation';
+import { openSessionMessage } from '@/lib/attendance/openSessionMessage';
 import { PUNCTUALITY_LABEL, dayLabel, verificationText } from './format';
 
 type Phase = 'idle' | 'verifying' | 'done' | 'failed' | 'blocked' | 'not-configured' | 'error' | 'remote' | 'remote-sent';
@@ -180,6 +182,7 @@ export function CheckInBody({
   onViewAttendance: () => void;
 }) {
   const time = useCompanyTime();
+  const router = useRouter();
   const { phase, result } = flow;
   const earlier = today?.openSessionFromEarlierDay;
   // D5: the correction request opens right here when check-in is blocked by an earlier open session.
@@ -233,12 +236,21 @@ export function CheckInBody({
   }
 
   if (phase === 'blocked') {
+    // S-30: the Owner closes their own session directly instead of sending a request.
+    const ownerMessage =
+      earlier && today?.ownerCorrectsDirectly
+        ? openSessionMessage({ ownerCorrectsDirectly: true, checkedInAt: time.formatTime(earlier.effectiveCheckInAt), sessionId: earlier.id })
+        : null;
     return (
       <div className="space-y-4">
         <Alert
           tone="warning"
           title={earlier ? `Open session from ${dayLabel(earlier.workDate, 'short')}` : 'Open session from an earlier day'}
-          body={`${earlier ? `Checked in ${time.formatTime(earlier.effectiveCheckInAt)} with no checkout. ` : ''}Send a correction request with your checkout time; you can check in again once it is sent.`}
+          body={
+            ownerMessage
+              ? ownerMessage.body
+              : `${earlier ? `Checked in ${time.formatTime(earlier.effectiveCheckInAt)} with no checkout. ` : ''}Send a correction request with your checkout time; you can check in again once it is sent.`
+          }
         />
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
@@ -246,6 +258,8 @@ export function CheckInBody({
           </Button>
           {correctionSent ? (
             <Button onClick={flow.start}>Check in now</Button>
+          ) : ownerMessage?.action ? (
+            <Button onClick={() => router.push(ownerMessage.action!.href)}>{ownerMessage.action.label}</Button>
           ) : earlier && today?.employeeRequestsEnabled ? (
             <Button onClick={() => setCorrecting(true)}>Request correction</Button>
           ) : (
