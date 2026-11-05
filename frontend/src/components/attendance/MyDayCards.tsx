@@ -15,6 +15,7 @@ import type { MyTargetsDto, WorkListDto } from '@/lib/api/myDay';
 import type { AttendanceTodayDto } from '@/lib/api/attendance';
 import { PUNCTUALITY_LABEL, formatHM, formatHMS, verificationText } from './format';
 import { useElapsedSeconds } from './hooks';
+import { missingCheckoutHint } from '@/lib/attendance/openSessionMessage';
 
 /** SCR-SHR-001 left card: elapsed time toward the confirmed 9 h workday and the check-in / check-out action. */
 export function AttendanceCard({
@@ -92,7 +93,7 @@ export function AttendanceCard({
             Check out
           </Button>
           {!today.canCheckOut && session.missingCheckout && (
-            <p className="text-[13px] text-text-secondary">This session is flagged as a missing checkout. Send a correction request with your checkout time from My Attendance.</p>
+            <p className="text-[13px] text-text-secondary">{missingCheckoutHint(Boolean(today.ownerCorrectsDirectly))}</p>
           )}
         </>
       ) : session ? (

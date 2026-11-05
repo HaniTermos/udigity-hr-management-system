@@ -429,7 +429,7 @@ describe.skipIf(!hasTestDb)('H: role journeys end to end (API)', { timeout: 180_
       expect(orig.rows[0].check_in_at.toISOString()).toBe('2026-11-11T07:00:00.000Z'); // original kept
     });
 
-    it('S-30 (was E-03 consequence): an Owner who forgot to check out cannot approve their own request, but may adjust their own session with a reason', async () => {
+    it('S-30: an Owner who forgot to check out cannot send a request (409 OWNER_CORRECTS_DIRECTLY) and adjusts their own session with a reason', async () => {
       const o2 = await ownerAgent();
       clock.set(beirut('2026-11-16', '09:00:00'));
       const s = await call(o2, 'post', '/api/attendance/check-in', {}, inOffice);
@@ -440,13 +440,9 @@ describe.skipIf(!hasTestDb)('H: role journeys end to end (API)', { timeout: 180_
       expect((await call(o2, 'post', '/api/attendance/check-in', {}, inOffice)).status).toBe(409);
       expect((await call(o2, 'post', '/api/attendance/check-out', { summary: { workCompleted: 'Owner day of reviews' } }, inOffice)).status).toBe(409);
       const cr = await call(o2, 'post', '/api/attendance/corrections', { sessionId: s.body.session.id, proposedCheckOutAt: '2026-11-16T18:00:00+02:00', reason: 'Forgot' });
-      expect(cr.status).toBe(201);
-      // Approving one's own correction request stays refused (SELF_DECISION) for the Owner too.
-      const own = await call(o2, 'post', `/api/attendance/corrections/${cr.body.id}/approve`, { version: cr.body.version });
-      expect(own.status).toBe(403);
-      expect(own.body.details?.reason).toBe('SELF_DECISION');
-      // Never locked out of attendance: the pending request lets the Owner check in today (S-24).
-      expect((await call(o2, 'post', '/api/attendance/check-in', {}, inOffice)).status).toBe(201);
+      // S-30 (Owner 2026-11-05): the Owner never sends a request for their own attendance.
+      expect(cr.status, JSON.stringify(cr.body)).toBe(409);
+      expect(cr.body.details?.reason).toBe('OWNER_CORRECTS_DIRECTLY');
       // S-30 (Owner 2026-11-04, H-01): a single Owner adjusts their own session directly, with a reason, audited selfAdjusted.
       const sv = await ver('attendance_sessions', s.body.session.id);
       const adj = await call(o2, 'post', `/api/attendance/sessions/${s.body.session.id}/adjust`, { version: sv, checkOutAt: '2026-11-16T16:00:00Z', reason: 'Forgot to check out' });
@@ -456,6 +452,54 @@ describe.skipIf(!hasTestDb)('H: role journeys end to end (API)', { timeout: 180_
         [s.body.session.id]
       );
       expect(a.rows[0].after).toMatchObject({ selfAdjusted: true });
+      // The adjustment closes the session, so check-in is unblocked.
+      expect((await call(o2, 'post', '/api/attendance/check-in', {}, inOffice)).status).toBe(201);
+    });
+
+    it('S-30 (2026-11-05): an Owner request sent before the rule changed is decided by the Owner, audited selfAdjusted', async () => {
+      const o3 = await ownerAgent();
+      const ownerId = o3.id; // the Owner deciding is the Owner who sent the request
+      // Two forgotten checkouts, each with a request created the way the old UI allowed (inserted directly).
+      const legacy = async (day: string) => {
+        clock.set(beirut(day, '08:10:00'));
+        const s = await call(o3, 'post', '/api/attendance/check-in', {}, inOffice);
+        expect(s.status, JSON.stringify(s.body)).toBe(201);
+        const id = await withTransaction(async (tx) => {
+          await tx.query(`UPDATE attendance_sessions SET state = 'pending_review' WHERE id = $1`, [s.body.session.id]);
+          const { rows } = await tx.query<{ id: string }>(
+            `INSERT INTO attendance_corrections (session_id, employee_id, kind, status, proposed_check_out_at, proposed_check_out_unknown,
+               previous_check_in_at, reason, closed_session_provisionally, created_by)
+             VALUES ($1, $2, 'request', 'submitted', $3, false, $4, 'Forgot to check out', true, $2) RETURNING id`,
+            [s.body.session.id, ownerId, beirut(day, '16:26:00'), beirut(day, '08:10:00')]
+          );
+          return rows[0].id;
+        });
+        return { sessionId: s.body.session.id as string, id };
+      };
+      const a = await legacy('2026-11-23');
+      clock.set(beirut('2026-11-24', '07:00:00'));
+      const ok = await call(o3, 'post', `/api/attendance/corrections/${a.id}/approve`, { version: await ver('attendance_corrections', a.id) });
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+      expect(ok.body.status).toBe('approved');
+      const sess = await query<{ state: string; effective_check_out_at: Date }>('SELECT state, effective_check_out_at FROM attendance_sessions WHERE id = $1', [a.sessionId]);
+      expect(sess.rows[0].state).toBe('closed');
+      expect(sess.rows[0].effective_check_out_at.toISOString()).toBe(beirut('2026-11-23', '16:26:00').toISOString());
+      const au = await query<{ after: Record<string, unknown>; reason: string | null }>(
+        `SELECT after_state AS after, reason FROM audit_events WHERE event_name = 'attendance_correction.approved' AND entity_id = $1`,
+        [a.id]
+      );
+      expect(au.rows[0].after).toMatchObject({ selfAdjusted: true });
+      expect(au.rows[0].reason).toBe('Forgot to check out');
+
+      const b = await legacy('2026-11-24');
+      clock.set(beirut('2026-11-25', '07:00:00'));
+      const no = await call(o3, 'post', `/api/attendance/corrections/${b.id}/reject`, { version: await ver('attendance_corrections', b.id), reason: 'Will adjust directly' });
+      expect(no.status, JSON.stringify(no.body)).toBe(200);
+      const au2 = await query<{ after: Record<string, unknown> }>(
+        `SELECT after_state AS after FROM audit_events WHERE event_name = 'attendance_correction.rejected' AND entity_id = $1`,
+        [b.id]
+      );
+      expect(au2.rows[0].after).toMatchObject({ selfAdjusted: true });
     });
   });
 });

@@ -258,7 +258,8 @@ function selfDecision(message: string): HttpError {
  * S-30 (Owner 2026-11-04, review H-01): the Owner may adjust, resolve the review of, or create a retroactive
  * session for THEIR OWN attendance, with a mandatory reason; the audit row then carries `selfAdjusted: true`.
  * Anyone else (custom roles included) still gets 403 SELF_DECISION on their own record. Approving one's own
- * correction request stays refused for everyone (the Owner adjusts directly instead).
+ * correction request is refused for everyone except the Owner (2026-11-05), who never needs to send one: the
+ * Owner's own requests are refused at submission and any earlier one can be approved/rejected by the Owner.
  * Returns true when this is an allowed Owner self-decision, false when the record is someone else's.
  */
 export function ownerSelfDecision(
@@ -925,7 +926,9 @@ export async function getToday(db: Queryable, principal: Principal) {
     // D5: an earlier-day or missing-checkout session needs a correction request, not a checkout.
     canCheckOut: configured && Boolean(open) && !earlier && !(sessionDto?.state === 'open' && sessionDto.missingCheckout),
     summaryRule: { required: true, minLength: SUMMARY_MIN_CHARS },
-    employeeRequestsEnabled: flag('attendance.employeeRequests'),
+    // S-30 (Owner 2026-11-05): the Owner corrects their own sessions directly and never sends a request.
+    employeeRequestsEnabled: flag('attendance.employeeRequests') && principal.role !== 'owner',
+    ownerCorrectsDirectly: principal.role === 'owner',
     remoteSelfRequestEnabled: flag('attendance.remoteSelfRequest'),
     failedCheckout: 'provisional' as const,
     breaksEnabled: flag('attendance.breaksEnabled'),
@@ -1007,6 +1010,10 @@ async function assertNoOverlap(db: Queryable, employeeId: string, from: Date, to
 /** POST /corrections (employee request, DEC-011 Alt B). */
 export async function requestCorrection(ctx: CommandContext, input: CorrectionRequestInput): Promise<CorrectionDto> {
   if (!flag('attendance.employeeRequests')) throw permissionDenied(); // Alt A: Owner-only corrections
+  // S-30 (Owner 2026-11-05): the Owner never sends a request for their own attendance; they correct it directly.
+  if (selfActor(ctx).role === 'owner') {
+    throw stateConflict('As Owner, correct your own session directly in Attendance → Corrections & review', { reason: 'OWNER_CORRECTS_DIRECTLY' });
+  }
   const employeeId = actorIdOf(ctx);
   await repo.lockEmployeeAttendance(ctx.tx, employeeId);
   const now = clock.now();
@@ -1109,8 +1116,9 @@ async function lockedCorrection(ctx: CommandContext, id: string) {
 export async function approveCorrection(ctx: CommandContext, id: string, input: { version: number; reason?: string }) {
   const c = await lockedCorrection(ctx, id);
   const decidedBy = actorIdOf(ctx);
-  // D4: nobody approves their own correction (the Owner corrects their own record by a direct adjustment).
-  if (c.employee_id === decidedBy) throw selfDecision('You cannot approve your own correction request');
+  // D4 / S-30 (Owner 2026-11-05): nobody else approves their own request; the Owner may, audited as a
+  // self-adjustment with the request's reason (so an Owner request can never get stuck).
+  const selfAdjusted = ownerSelfDecision(selfActor(ctx), c.employee_id, input.reason ?? c.reason, 'You cannot approve your own correction request');
   if (c.status === 'approved') return correctionDto(c); // repeat = no-op (§4.5)
   if (c.status !== 'submitted') throw stateConflict('Only a submitted request can be approved', { status: c.status });
   if (c.version !== input.version) throw versionConflict(c.version, correctionDto(c)); // BL-09
@@ -1138,7 +1146,7 @@ export async function approveCorrection(ctx: CommandContext, id: string, input: 
       entityType: 'attendance_session',
       entityId: s.id,
       before: sessionAuditState(s),
-      after: { state: closes ? 'closed' : s.state, effectiveCheckInAt: newIn.toISOString(), effectiveCheckOutAt: iso(newOut), correctionId: c.id },
+      after: { state: closes ? 'closed' : s.state, effectiveCheckInAt: newIn.toISOString(), effectiveCheckOutAt: iso(newOut), correctionId: c.id, ...(selfAdjusted ? { selfAdjusted: true } : {}) },
       reason: input.reason ?? c.reason,
       sourceWorkflow: 'WF-ATT-003',
     });
@@ -1167,7 +1175,7 @@ export async function approveCorrection(ctx: CommandContext, id: string, input: 
       eventName: 'attendance.corrected',
       entityType: 'attendance_session',
       entityId: sessionId,
-      after: { state: 'closed', origin: 'retroactive', effectiveCheckInAt: inAt.toISOString(), effectiveCheckOutAt: outAt.toISOString(), correctionId: c.id },
+      after: { state: 'closed', origin: 'retroactive', effectiveCheckInAt: inAt.toISOString(), effectiveCheckOutAt: outAt.toISOString(), correctionId: c.id, ...(selfAdjusted ? { selfAdjusted: true } : {}) },
       reason: input.reason ?? c.reason,
       sourceWorkflow: 'WF-ATT-003',
     });
@@ -1185,8 +1193,8 @@ export async function approveCorrection(ctx: CommandContext, id: string, input: 
     entityType: 'attendance_correction',
     entityId: c.id,
     before: { status: 'submitted', version: c.version },
-    after: { status: 'approved', sessionId, version: c.version + 1 },
-    reason: input.reason ?? null,
+    after: { status: 'approved', sessionId, version: c.version + 1, ...(selfAdjusted ? { selfAdjusted: true } : {}) },
+    reason: input.reason ?? (selfAdjusted ? c.reason : null),
     sourceWorkflow: 'WF-ATT-003',
   });
   return correctionDto((await repo.correctionById(ctx.tx, c.id))!);
@@ -1199,6 +1207,8 @@ export async function rejectCorrection(
   input: { version: number; reason: string; effectiveCheckOutAt?: string | null }
 ) {
   const c = await lockedCorrection(ctx, id);
+  // D4 / S-30: only the Owner decides their own request (reason is mandatory here anyway); audited self-adjusted.
+  const selfAdjusted = ownerSelfDecision(selfActor(ctx), c.employee_id, input.reason, 'You cannot reject your own correction request');
   if (c.status === 'rejected') return correctionDto(c);
   if (c.status !== 'submitted') throw stateConflict('Only a submitted request can be rejected', { status: c.status });
   if (c.version !== input.version) throw versionConflict(c.version, correctionDto(c)); // BL-09
@@ -1243,7 +1253,7 @@ export async function rejectCorrection(
         entityType: 'attendance_session',
         entityId: s.id,
         before: sessionAuditState(s),
-        after: { state: 'closed', effectiveCheckOutAt: iso(out), checkOutUnknown: out === null, correctionId: c.id },
+        after: { state: 'closed', effectiveCheckOutAt: iso(out), checkOutUnknown: out === null, correctionId: c.id, ...(selfAdjusted ? { selfAdjusted: true } : {}) },
         reason: input.reason,
         sourceWorkflow: 'WF-ATT-003',
       });
@@ -1256,7 +1266,7 @@ export async function rejectCorrection(
     entityType: 'attendance_correction',
     entityId: c.id,
     before: { status: 'submitted', version: c.version },
-    after: { status: 'rejected', version: c.version + 1 },
+    after: { status: 'rejected', version: c.version + 1, ...(selfAdjusted ? { selfAdjusted: true } : {}) },
     reason: input.reason,
     sourceWorkflow: 'WF-ATT-003',
   });
