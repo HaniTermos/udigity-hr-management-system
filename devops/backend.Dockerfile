@@ -40,7 +40,11 @@ FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production \
     PORT=5000
 WORKDIR /app
-RUN apk add --no-cache tini
+# Review 2026-11-05 (Trivy): the base image's bundled npm/yarn/corepack carry HIGH CVEs (brace-expansion, ip-address,
+# pacote, picomatch, sigstore) and are never used at runtime (every command is `node ...`). Remove them.
+RUN apk add --no-cache tini \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=prod-deps --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/backend/package.json ./backend/package.json
