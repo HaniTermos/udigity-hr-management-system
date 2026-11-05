@@ -3,10 +3,13 @@ import { config } from './config/index.js';
 import { pool } from './db/pool.js';
 import { assertRuntimeRole } from './shared/runtimeRole.js';
 import { exitOnCrash } from './shared/crash.js';
+import { warnIfDemoAccounts } from './shared/productionDataCheck.js';
 
 async function main(): Promise<void> {
   // UDI-6: never serve production traffic as the owner/superuser role.
   if (config.isProduction) await assertRuntimeRole(pool);
+  // Owner 2026-11-05: loud warning when dev/test seed accounts exist in production (never blocks start-up).
+  await warnIfDemoAccounts(pool, config.env).catch((err: Error) => console.error('[security] demo-account check failed:', err.message));
 
   const server = app.listen(config.port, () => {
     console.log(`🚀 Udigity Backend Server running on port ${config.port} (${config.env})`);

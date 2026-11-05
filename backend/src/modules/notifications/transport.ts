@@ -170,7 +170,8 @@ export function createSmtpTransport(cfg: EmailConfig): NodemailerEmailTransport 
     host: cfg.smtp.host,
     port: cfg.smtp.port,
     secure: cfg.smtp.secure,
-    requireTLS: !cfg.smtp.secure, // EM-6: never plain text
+    requireTLS: !cfg.smtp.secure && !cfg.smtp.allowPlaintext, // EM-6: never plain text (dev catcher excepted)
+    ...(cfg.smtp.allowPlaintext ? { ignoreTLS: true } : {}),
     auth: cfg.smtp.user ? { user: cfg.smtp.user, pass: cfg.smtp.pass } : undefined,
     logger: false,
     debug: false,

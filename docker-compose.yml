@@ -78,8 +78,18 @@ services:
       SESSION_SECRET: udigity_dev_session_secret_32chars_long_random_value
       POLICY_COMPANY_TIMEZONE: Asia/Beirut
       TOTP_ENC_KEY_ID: dev-only
-      EMAIL_TRANSPORT: log
+      # Local email catcher (Owner 2026-11-05): every email lands in Mailpit at http://localhost:8025 and NOTHING
+      # leaves this machine (Mailpit has no relay configured). Plain SMTP is allowed only because NODE_ENV=development.
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_SECURE: "false"
+      SMTP_DEV_ALLOW_PLAINTEXT: "true"
+      SMTP_FROM: hr@udigity.local
+      EMAIL_ALLOW_REAL_SEND: "true"
+      PUBLIC_APP_URL: http://localhost:3000
     depends_on:
+      mailpit:
+        condition: service_started
       db:
         condition: service_healthy
       backend:
@@ -91,6 +101,18 @@ services:
       interval: 15s
       timeout: 5s
       retries: 3
+
+  mailpit:
+    # Local-only inbox for the invitation / password-reset flows. UI: http://localhost:8025. No outbound relay.
+    image: axllent/mailpit:v1.27.0@sha256:fb84cfb1c3a33007cfdee8ba5a77b8c6c894de5b1a368372ddc5c965cf5c0b6d
+    container_name: udigity-mailpit
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: "500"
+    ports:
+      - "127.0.0.1:8025:8025"
+    networks:
+      - udigity-net
 
   frontend:
     build:

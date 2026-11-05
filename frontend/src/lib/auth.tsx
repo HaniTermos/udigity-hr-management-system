@@ -206,7 +206,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const startEnrollment = async (input: EnrollStartInput): Promise<EnrollmentStart> => {
     const res = await apiFetch<EnrollStartDto>(identityPaths.enrollStart, {
       method: 'POST',
-      body: { enrollmentToken: input.enrollmentToken.trim(), currentPassword: input.currentPassword },
+      // The Owner sets 2FA up without a token (Owner 2026-11-05): omit the field rather than send an empty one.
+      body: input.enrollmentToken ? { enrollmentToken: input.enrollmentToken.trim(), currentPassword: input.currentPassword } : { currentPassword: input.currentPassword },
     });
     if (!res.ok || !res.data) {
       const f = authFailureText(res, res.error?.error || 'Could not start setup.');

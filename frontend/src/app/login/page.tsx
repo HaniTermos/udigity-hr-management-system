@@ -75,7 +75,7 @@ function LoginContent() {
         return;
       }
       if (result.requires2FA) {
-        router.replace(`${result.twoFactorStep === 'enroll' ? TWO_FACTOR_ENROLL_PATH : TWO_FACTOR_VERIFY_PATH}${keep}`);
+        router.replace(result.twoFactorStep === 'enroll' ? TWO_FACTOR_ENROLL_PATH : `${TWO_FACTOR_VERIFY_PATH}${keep}`);
         return;
       }
       router.replace(safeRedirectTarget(redirectParam, '/my-day'));
@@ -191,7 +191,7 @@ function LoginContent() {
             needsReEnrollment={sessionState === 'pending_2fa_enrollment'}
             onContinue={() =>
               sessionState === 'pending_2fa_enrollment'
-                ? router.replace(`${TWO_FACTOR_ENROLL_PATH}${keep}`)
+                ? router.replace(TWO_FACTOR_ENROLL_PATH)
                 : router.replace(afterTwoFactorTarget)
             }
           />

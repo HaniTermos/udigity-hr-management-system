@@ -19,7 +19,12 @@ FROM deps AS build
 COPY backend backend
 RUN npm run build -w backend \
  && mkdir -p backend/dist/db/migrations \
- && cp backend/src/db/migrations/*.sql backend/dist/db/migrations/
+ && cp backend/src/db/migrations/*.sql backend/dist/db/migrations/ \
+ # Owner 2026-11-05: the dev/test seeds (shared demo password, public TOTP test secret) never ship in an image.
+ # They already refuse to run outside development/test; this removes them altogether. Owners come from bootstrap.js.
+ && rm -f backend/dist/db/seed.js backend/dist/db/seed-demo.js backend/dist/db/e2e-seed.js \
+          backend/dist/db/seed.js.map backend/dist/db/seed-demo.js.map backend/dist/db/e2e-seed.js.map \
+ && ! grep -rl "Password123!" backend/dist --include=*.js
 
 # ---- prod-deps: runtime dependencies only ----
 FROM ${NODE_IMAGE} AS prod-deps
